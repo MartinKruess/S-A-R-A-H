@@ -1,0 +1,20 @@
+{
+  "name": "s-a-r-a-h",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && electron .",
+    "dev": "tsc && electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "electron": "^41.1.1",
+    "typescript": "^6.0.2"
+  }
+}
