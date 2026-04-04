@@ -1,16 +1,11 @@
-export {};
-
 // --- Type declarations for preload-exposed API ---
 interface SarahAPI {
   version: string;
   splashDone: () => void;
 }
 
-declare global {
-  interface Window {
-    sarah: SarahAPI;
-  }
-}
+// In a non-module script, Window is already the global scope
+declare var sarah: SarahAPI;
 
 // ============================================================
 // Canvas setup
@@ -303,7 +298,7 @@ function tick(now: number): void {
     }
 
     case "done": {
-      window.sarah.splashDone();
+      sarah.splashDone();
       return;
     }
   }
