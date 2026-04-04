@@ -1,10 +1,14 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import * as path from "path";
 
+let mainWindow: BrowserWindow | null = null;
+
 function createWindow(): void {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
+    show: false,
+    backgroundColor: "#0a0a1a",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -12,8 +16,18 @@ function createWindow(): void {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, "..", "index.html"));
+  mainWindow.loadFile(path.join(__dirname, "..", "splash.html"));
+
+  mainWindow.once("ready-to-show", () => {
+    mainWindow?.show();
+  });
 }
+
+ipcMain.on("splash-done", () => {
+  if (mainWindow) {
+    mainWindow.loadFile(path.join(__dirname, "..", "dashboard.html"));
+  }
+});
 
 app.whenReady().then(() => {
   createWindow();
