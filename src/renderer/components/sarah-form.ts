@@ -23,8 +23,8 @@ const CSS = `
   }
 
   .form-fields {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr;
     gap: var(--sarah-space-md);
   }
 `;

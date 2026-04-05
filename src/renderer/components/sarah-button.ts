@@ -87,10 +87,10 @@ export class SarahButton extends SarahElement {
     return ['label', 'variant', 'disabled'];
   }
 
-  attributeChangedCallback(name: string, _old: string, value: string): void {
+  attributeChangedCallback(name: string, _old: string | null, value: string | null): void {
     if (!this.button) return;
-    if (name === 'label') this.button.textContent = value;
-    if (name === 'variant') this.button.className = value;
+    if (name === 'label') this.button.textContent = value ?? '';
+    if (name === 'variant') this.button.className = value ?? 'primary';
     if (name === 'disabled') this.button.disabled = value !== null;
   }
 }

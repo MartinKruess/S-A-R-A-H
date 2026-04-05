@@ -89,7 +89,8 @@ export function createSystemScanStep(data: WizardData): HTMLElement {
   scan.appendChild(grid);
   container.appendChild(scan);
 
-  runScan(data, progress, grid, subtitle);
+  // Defer scan until elements are connected to DOM (connectedCallback needs to fire)
+  setTimeout(() => runScan(data, progress, grid, subtitle), 0);
 
   return container;
 }
@@ -122,6 +123,7 @@ async function runScan(
     progress.setProgress(60 + (shown / entries.length) * 40);
   }
 
+  progress.setProgress(100);
   subtitle.textContent = 'Scan abgeschlossen!';
 }
 
