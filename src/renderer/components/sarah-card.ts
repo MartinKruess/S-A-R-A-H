@@ -38,6 +38,9 @@ const CSS = `
     font-size: var(--sarah-font-size-lg);
     color: var(--sarah-text-primary);
     font-weight: 300;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 `;
 
