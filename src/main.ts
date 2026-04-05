@@ -177,18 +177,30 @@ app.whenReady().then(() => {
 
   ipcMain.handle('detect-programs', () => {
     try {
+      // Scan Start Menu .lnk shortcuts — only returns launchable .exe programs
       const script = [
-        "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' 2>$null |",
-        "Where-Object { $_.DisplayName -and $_.DisplayName -notmatch '(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit|Visual C\\+\\+)' } |",
-        "Sort-Object DisplayName -Unique |",
-        "ForEach-Object {",
-        "  $p = ''",
-        "  if($_.DisplayIcon) { $p = ($_.DisplayIcon -split ',')[0].Trim('\"') }",
-        "  if(-not $p -and $_.InstallLocation) { $p = $_.InstallLocation.TrimEnd('\\') }",
-        "  \"$($_.DisplayName)\t$p\"",
+        "$userPath = [Environment]::GetFolderPath('StartMenu') + '\\Programs'",
+        "$commonPath = [Environment]::GetFolderPath('CommonStartMenu') + '\\Programs'",
+        "$shell = New-Object -ComObject WScript.Shell",
+        "$seen = @{}",
+        "$userLnks = Get-ChildItem -Path $userPath -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue",
+        "$commonLnks = Get-ChildItem -Path $commonPath -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue",
+        "$allLnks = @($userLnks) + @($commonLnks)",
+        "foreach ($file in $allLnks) {",
+        "  if ($null -eq $file) { continue }",
+        "  if ($file.Name -match '(Uninstall|Deinstall|Help|Hilfe|Readme|Release|License|Documentation|Diagnos)') { continue }",
+        "  if ($file.BaseName -match '^(Magnify|Narrator|On-Screen Keyboard|Steps Recorder|Windows Speech|Internet Explorer|Quick Assist|Remote Desktop Connection|WordPad|Character Map|Math Input|XPS Viewer)$') { continue }",
+        "  try {",
+        "    $lnk = $shell.CreateShortcut($file.FullName)",
+        "    $target = $lnk.TargetPath",
+        "    if ($target -and $target -match '\\.exe$' -and -not $seen[$target]) {",
+        "      $seen[$target] = $true",
+        "      \"$($file.BaseName)\t$target\"",
+        "    }",
+        "  } catch {}",
         "}",
       ].join('\n');
-      const result = spawnSync('powershell', ['-NoProfile', '-Command', script], {
+      const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
         encoding: 'utf-8',
         timeout: 15000,
       });
@@ -200,7 +212,7 @@ app.whenReady().then(() => {
           const trimmed = line.trim();
           if (!trimmed) return null;
           const tabIdx = trimmed.indexOf('\t');
-          if (tabIdx === -1) return { name: trimmed, path: '' };
+          if (tabIdx === -1) return null;
           return { name: trimmed.substring(0, tabIdx), path: trimmed.substring(tabIdx + 1) };
         })
         .filter((p): p is { name: string; path: string } => p !== null && p.name.length > 0);
