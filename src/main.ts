@@ -115,21 +115,21 @@ app.whenReady().then(() => {
   ipcMain.handle('detect-programs', () => {
     try {
       const ps = [
-        'Get-ItemProperty',
-        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,',
-        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
-        '2>$null',
-        '| Where-Object {',
-        '  $_.DisplayName -and',
-        '  $_.DisplayName -notmatch',
-        "  \"(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit)\"",
-        '}',
-        '| Select-Object -ExpandProperty DisplayName -Unique',
-        '| Sort-Object',
+        "Get-ItemProperty",
+        "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+        "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+        "2>$null",
+        "| Where-Object {",
+        "$_.DisplayName -and",
+        "$_.DisplayName -notmatch",
+        "'(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit|Visual C\\+\\+)'",
+        "}",
+        "| Select-Object -ExpandProperty DisplayName -Unique",
+        "| Sort-Object",
       ].join(' ');
       const output = execSync(`powershell -NoProfile -Command "${ps}"`, {
         encoding: 'utf-8',
-        timeout: 10000,
+        timeout: 15000,
       });
       return output
         .split('\n')

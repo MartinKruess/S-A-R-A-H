@@ -130,10 +130,28 @@ const STEPS: StepDef[] = [
 ];
 
 let currentStep = 0;
+let navigating = false;
 
 const sidebar = document.getElementById('sidebar')!;
 const slideArea = document.getElementById('slide-area')!;
 const navArea = document.getElementById('nav-area')!;
+
+function validateCurrentStep(): boolean {
+  const step = visibleSteps[currentStep];
+
+  // System scan must complete before advancing
+  if (step.id === 'system' && !wizardData.system.os) {
+    return false;
+  }
+
+  // Check all required sarah-input elements in current slide
+  const inputs = slideArea.querySelectorAll('sarah-input[required]');
+  let valid = true;
+  inputs.forEach(input => {
+    if (!(input as any).validate()) valid = false;
+  });
+  return valid;
+}
 
 function getVisibleSteps(): StepDef[] {
   return STEPS.filter(s => !s.shouldShow || s.shouldShow(wizardData));
@@ -192,7 +210,9 @@ function renderNav(): void {
     navArea.appendChild(sarahButton({
       label: nextLabel,
       variant: 'primary',
-      onClick: () => goToStep(currentStep + 1),
+      onClick: () => {
+        if (validateCurrentStep()) goToStep(currentStep + 1);
+      },
     }));
   }
 
@@ -206,10 +226,13 @@ function renderNav(): void {
 }
 
 function goToStep(index: number): void {
+  if (navigating) return;
+  navigating = true;
   currentStep = index;
   refreshStepper();
   renderStep();
   renderNav();
+  setTimeout(() => { navigating = false; }, 200);
 }
 
 function renderStep(): void {
