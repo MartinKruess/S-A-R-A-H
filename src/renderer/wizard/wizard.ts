@@ -19,7 +19,7 @@ declare const sarah: {
   saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
   isFirstRun: () => Promise<boolean>;
   selectFolder: (title?: string) => Promise<string | null>;
-  detectPrograms: () => Promise<string[]>;
+  detectPrograms: () => Promise<{ name: string; path: string }[]>;
 };
 
 (window as any).__sarah = sarah;
@@ -47,7 +47,7 @@ export interface WizardData {
   };
   files: {
     emails: string[];
-    importantPrograms: string[];
+    importantPrograms: { name: string; path: string }[];
     favoriteLinks: string[];
     importantFolders: string[];
     pdfFolder: string;

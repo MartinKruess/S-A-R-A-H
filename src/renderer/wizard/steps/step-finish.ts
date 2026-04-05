@@ -147,7 +147,7 @@ export function createFinishStep(data: WizardData): HTMLElement {
     addSkipped(finish, 'Dateien & Programme', 'Übersprungen — kannst du jederzeit in den Einstellungen nachholen');
   } else {
     addSection(finish, 'Dateien & Programme', [
-      ['Programme', data.files.importantPrograms.join(', ') || '—'],
+      ['Programme', data.files.importantPrograms.map(p => p.name).join(', ') || '—'],
       ['PDF-Ordner', data.files.pdfFolder || '—'],
       ['Bilder', data.files.picturesFolder || '—'],
     ]);

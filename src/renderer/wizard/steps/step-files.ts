@@ -7,6 +7,9 @@ function getSarah(): any {
   return (window as any).__sarah;
 }
 
+/** Maps program display name → exe/install path (populated by detectPrograms) */
+const programPathMap = new Map<string, string>();
+
 const KNOWN_ICONS: Record<string, string> = {
   'visual studio code': '💻',
   'vs code': '💻',
@@ -95,31 +98,47 @@ export function createFilesStep(data: WizardData): HTMLElement {
   container.appendChild(form);
 
   // Async: detect programs and replace placeholder with tag-select
-  getSarah().detectPrograms().then((programs: string[]) => {
+  const alreadySelected = data.files.importantPrograms.map(p => p.name);
+
+  getSarah().detectPrograms().then((programs: { name: string; path: string }[]) => {
+    // Build path lookup map
+    for (const prog of programs) {
+      programPathMap.set(prog.name, prog.path);
+    }
+
     const top10 = programs.slice(0, 10);
-    const options = top10.map((name: string) => ({
-      value: name,
-      label: name,
-      icon: getIcon(name),
+    const options = top10.map(prog => ({
+      value: prog.name,
+      label: prog.name,
+      icon: getIcon(prog.name),
     }));
 
     const tagSelect = sarahTagSelect({
       label: 'Welche Programme nutzt du oft?',
       options,
-      selected: data.files.importantPrograms,
+      selected: alreadySelected,
       allowCustom: true,
-      onChange: (values) => { data.files.importantPrograms = values; },
+      onChange: (values) => {
+        data.files.importantPrograms = values.map(name => ({
+          name,
+          path: programPathMap.get(name) || '',
+        }));
+      },
     });
 
     programsPlaceholder.replaceWith(tagSelect);
   }).catch(() => {
-    // On failure, show a basic empty tag-select with allowCustom
     const tagSelect = sarahTagSelect({
       label: 'Welche Programme nutzt du oft?',
       options: [],
-      selected: data.files.importantPrograms,
+      selected: alreadySelected,
       allowCustom: true,
-      onChange: (values) => { data.files.importantPrograms = values; },
+      onChange: (values) => {
+        data.files.importantPrograms = values.map(name => ({
+          name,
+          path: programPathMap.get(name) || '',
+        }));
+      },
     });
     programsPlaceholder.replaceWith(tagSelect);
   });

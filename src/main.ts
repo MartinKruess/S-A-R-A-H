@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 
 try {
   require('electron-reloader')(module);
@@ -114,27 +114,32 @@ app.whenReady().then(() => {
 
   ipcMain.handle('detect-programs', () => {
     try {
-      const ps = [
-        "Get-ItemProperty",
-        "'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
-        "'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
-        "2>$null",
-        "| Where-Object {",
-        "$_.DisplayName -and",
-        "$_.DisplayName -notmatch",
-        "'(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit|Visual C\\+\\+)'",
+      const script = [
+        "Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*', 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' 2>$null |",
+        "Where-Object { $_.DisplayName -and $_.DisplayName -notmatch '(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit|Visual C\\+\\+)' } |",
+        "Sort-Object DisplayName -Unique |",
+        "ForEach-Object {",
+        "  $p = ''",
+        "  if($_.DisplayIcon) { $p = ($_.DisplayIcon -split ',')[0].Trim('\"') }",
+        "  if(-not $p -and $_.InstallLocation) { $p = $_.InstallLocation.TrimEnd('\\') }",
+        "  \"$($_.DisplayName)\t$p\"",
         "}",
-        "| Select-Object -ExpandProperty DisplayName -Unique",
-        "| Sort-Object",
-      ].join(' ');
-      const output = execSync(`powershell -NoProfile -Command "${ps}"`, {
+      ].join('\n');
+      const result = spawnSync('powershell', ['-NoProfile', '-Command', script], {
         encoding: 'utf-8',
         timeout: 15000,
       });
-      return output
+      if (result.status !== 0 || !result.stdout) return [];
+      return result.stdout
         .split('\n')
-        .map((line: string) => line.trim())
-        .filter((line: string) => line.length > 0);
+        .map((line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed) return null;
+          const tabIdx = trimmed.indexOf('\t');
+          if (tabIdx === -1) return { name: trimmed, path: '' };
+          return { name: trimmed.substring(0, tabIdx), path: trimmed.substring(tabIdx + 1) };
+        })
+        .filter((p): p is { name: string; path: string } => p !== null && p.name.length > 0);
     } catch {
       return [];
     }
