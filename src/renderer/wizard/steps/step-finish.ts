@@ -6,7 +6,7 @@ const FINISH_CSS = `
     flex-direction: column;
     align-items: center;
     gap: var(--sarah-space-lg);
-    max-width: 550px;
+    max-width: 720px;
     text-align: center;
     overflow-y: auto;
     max-height: 100%;

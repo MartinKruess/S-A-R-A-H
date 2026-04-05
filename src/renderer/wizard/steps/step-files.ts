@@ -113,7 +113,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
       detectedProgramMap.set(prog.name, { path: prog.path, verified: prog.verified, aliases: prog.aliases });
     }
 
-    const top10 = programs.slice(0, 10);
+    const top10 = programs.slice(0, 30);
     const options = top10.map(prog => ({
       value: prog.name,
       label: prog.name,

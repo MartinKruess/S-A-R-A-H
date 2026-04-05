@@ -13,7 +13,7 @@ const SCAN_CSS = `
     align-items: center;
     gap: var(--sarah-space-lg);
     width: 100%;
-    max-width: 600px;
+    max-width: 800px;
   }
 
   .scan-title {
@@ -30,7 +30,7 @@ const SCAN_CSS = `
 
   .scan-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
     gap: var(--sarah-space-md);
     width: 100%;
   }

@@ -6,7 +6,7 @@ const CSS = `
     flex-direction: column;
     gap: var(--sarah-space-lg);
     width: 100%;
-    max-width: 480px;
+    max-width: 720px;
   }
 
   .form-title {
