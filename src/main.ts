@@ -1,46 +1,105 @@
-import { app, BrowserWindow, ipcMain } from "electron";
-import * as path from "path";
+import { app, BrowserWindow, ipcMain } from 'electron';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
+
+try {
+  require('electron-reloader')(module);
+} catch {}
 
 let mainWindow: BrowserWindow | null = null;
+
+function getConfigPath(): string {
+  return path.join(app.getPath('userData'), 'config.json');
+}
+
+function loadConfig(): Record<string, unknown> {
+  try {
+    const data = fs.readFileSync(getConfigPath(), 'utf-8');
+    return JSON.parse(data);
+  } catch {
+    return {};
+  }
+}
+
+function saveConfig(config: Record<string, unknown>): void {
+  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
     show: false,
-    backgroundColor: "#0a0a1a",
+    backgroundColor: '#0a0a1a',
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, "..", "splash.html"));
+  mainWindow.loadFile(path.join(__dirname, '..', 'splash.html'));
 
-  mainWindow.once("ready-to-show", () => {
+  mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
   });
 }
 
-ipcMain.on("splash-done", () => {
-  if (mainWindow) {
-    mainWindow.loadFile(path.join(__dirname, "..", "dashboard.html"));
-  }
-});
-
 app.whenReady().then(() => {
   createWindow();
 
-  app.on("activate", () => {
+  ipcMain.on('splash-done', () => {
+    if (mainWindow) {
+      const config = loadConfig();
+      if (config.setupComplete) {
+        mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
+      } else {
+        mainWindow.loadFile(path.join(__dirname, '..', 'wizard.html'));
+      }
+    }
+  });
+
+  ipcMain.handle('get-system-info', async () => {
+    const cpus = os.cpus();
+    return {
+      os: `${os.type()} ${os.release()}`,
+      platform: process.platform,
+      arch: os.arch(),
+      cpu: cpus.length > 0 ? cpus[0].model : 'Unknown',
+      cpuCores: cpus.length,
+      totalMemory: `${Math.round(os.totalmem() / (1024 ** 3))} GB`,
+      freeMemory: `${Math.round(os.freemem() / (1024 ** 3))} GB`,
+      hostname: os.hostname(),
+      shell: process.env.SHELL || process.env.COMSPEC || 'Unknown',
+    };
+  });
+
+  ipcMain.handle('get-config', () => {
+    return loadConfig();
+  });
+
+  ipcMain.handle('save-config', (_event, config: Record<string, unknown>) => {
+    const existing = loadConfig();
+    const merged = { ...existing, ...config };
+    saveConfig(merged);
+    return merged;
+  });
+
+  ipcMain.handle('is-first-run', () => {
+    const config = loadConfig();
+    return !config.setupComplete;
+  });
+
+  app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
 });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
     app.quit();
   }
 });
