@@ -19,6 +19,7 @@ declare const sarah: {
   saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
   isFirstRun: () => Promise<boolean>;
   selectFolder: (title?: string) => Promise<string | null>;
+  detectPrograms: () => Promise<string[]>;
 };
 
 (window as any).__sarah = sarah;

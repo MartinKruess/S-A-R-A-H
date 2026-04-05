@@ -8,4 +8,5 @@ contextBridge.exposeInMainWorld('sarah', {
   saveConfig: (config: unknown) => ipcRenderer.invoke('save-config', config),
   isFirstRun: () => ipcRenderer.invoke('is-first-run'),
   selectFolder: (title?: string) => ipcRenderer.invoke('select-folder', title),
+  detectPrograms: () => ipcRenderer.invoke('detect-programs'),
 });
