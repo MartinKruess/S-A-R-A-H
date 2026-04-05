@@ -11,6 +11,14 @@ import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 
+export interface ProgramEntry {
+  name: string;
+  path: string;
+  source: 'detected' | 'manual' | 'learned';
+  verified: boolean;
+  aliases: string[];
+}
+
 declare const sarah: {
   version: string;
   splashDone: () => void;
@@ -19,7 +27,7 @@ declare const sarah: {
   saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
   isFirstRun: () => Promise<boolean>;
   selectFolder: (title?: string) => Promise<string | null>;
-  detectPrograms: () => Promise<{ name: string; path: string }[]>;
+  detectPrograms: () => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
 };
 
 (window as any).__sarah = sarah;
@@ -47,7 +55,7 @@ export interface WizardData {
   };
   files: {
     emails: string[];
-    importantPrograms: { name: string; path: string }[];
+    importantPrograms: ProgramEntry[];
     favoriteLinks: string[];
     importantFolders: string[];
     pdfFolder: string;

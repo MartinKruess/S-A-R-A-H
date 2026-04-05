@@ -1,4 +1,4 @@
-import type { WizardData } from '../wizard.js';
+import type { WizardData, ProgramEntry } from '../wizard.js';
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
@@ -7,8 +7,8 @@ function getSarah(): any {
   return (window as any).__sarah;
 }
 
-/** Maps program display name → exe/install path (populated by detectPrograms) */
-const programPathMap = new Map<string, string>();
+/** Maps program name → detected metadata (path, verified, aliases) */
+const detectedProgramMap = new Map<string, { path: string; verified: boolean; aliases: string[] }>();
 
 const KNOWN_ICONS: Record<string, string> = {
   'visual studio code': '💻',
@@ -100,10 +100,17 @@ export function createFilesStep(data: WizardData): HTMLElement {
   // Async: detect programs and replace placeholder with tag-select
   const alreadySelected = data.files.importantPrograms.map(p => p.name);
 
-  getSarah().detectPrograms().then((programs: { name: string; path: string }[]) => {
-    // Build path lookup map
+  function buildProgramEntry(name: string): ProgramEntry {
+    const detected = detectedProgramMap.get(name);
+    if (detected) {
+      return { name, path: detected.path, source: 'detected', verified: detected.verified, aliases: detected.aliases };
+    }
+    return { name, path: '', source: 'manual', verified: false, aliases: [] };
+  }
+
+  getSarah().detectPrograms().then((programs: { name: string; path: string; verified: boolean; aliases: string[] }[]) => {
     for (const prog of programs) {
-      programPathMap.set(prog.name, prog.path);
+      detectedProgramMap.set(prog.name, { path: prog.path, verified: prog.verified, aliases: prog.aliases });
     }
 
     const top10 = programs.slice(0, 10);
@@ -118,12 +125,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
       options,
       selected: alreadySelected,
       allowCustom: true,
-      onChange: (values) => {
-        data.files.importantPrograms = values.map(name => ({
-          name,
-          path: programPathMap.get(name) || '',
-        }));
-      },
+      onChange: (values) => { data.files.importantPrograms = values.map(buildProgramEntry); },
     });
 
     programsPlaceholder.replaceWith(tagSelect);
@@ -133,12 +135,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
       options: [],
       selected: alreadySelected,
       allowCustom: true,
-      onChange: (values) => {
-        data.files.importantPrograms = values.map(name => ({
-          name,
-          path: programPathMap.get(name) || '',
-        }));
-      },
+      onChange: (values) => { data.files.importantPrograms = values.map(buildProgramEntry); },
     });
     programsPlaceholder.replaceWith(tagSelect);
   });
