@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 
 try {
   require('electron-reloader')(module);
@@ -51,6 +52,7 @@ app.whenReady().then(() => {
 
   ipcMain.on('splash-done', () => {
     if (mainWindow) {
+      mainWindow.maximize();
       const config = loadConfig();
       if (config.setupComplete) {
         mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
@@ -108,6 +110,34 @@ app.whenReady().then(() => {
     });
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
+  });
+
+  ipcMain.handle('detect-programs', () => {
+    try {
+      const ps = [
+        'Get-ItemProperty',
+        'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,',
+        'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',
+        '2>$null',
+        '| Where-Object {',
+        '  $_.DisplayName -and',
+        '  $_.DisplayName -notmatch',
+        "  \"(Update|Redistributable|SDK|Runtime|Pack|Driver|Microsoft \\.NET|Windows Kit)\"",
+        '}',
+        '| Select-Object -ExpandProperty DisplayName -Unique',
+        '| Sort-Object',
+      ].join(' ');
+      const output = execSync(`powershell -NoProfile -Command "${ps}"`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+      });
+      return output
+        .split('\n')
+        .map((line: string) => line.trim())
+        .filter((line: string) => line.length > 0);
+    } catch {
+      return [];
+    }
   });
 
   app.on('activate', () => {
