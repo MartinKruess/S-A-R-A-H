@@ -3,11 +3,14 @@ import { sarahStepper } from '../components/sarah-stepper.js';
 import { sarahButton } from '../components/sarah-button.js';
 import { createWelcomeStep } from './steps/step-welcome.js';
 import { createSystemScanStep } from './steps/step-system-scan.js';
-import { createProfileStep } from './steps/step-profile.js';
+import { createRequiredStep } from './steps/step-required.js';
+import { createPersonalStep } from './steps/step-personal.js';
+import { createDynamicStep, hasDynamicQuestions } from './steps/step-dynamic.js';
+import { createFilesStep } from './steps/step-files.js';
+import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 
-// Type declarations for preload bridge
 declare const sarah: {
   version: string;
   splashDone: () => void;
@@ -15,28 +18,51 @@ declare const sarah: {
   getConfig: () => Promise<Record<string, unknown>>;
   saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
   isFirstRun: () => Promise<boolean>;
+  selectFolder: (title?: string) => Promise<string | null>;
 };
 
-// Make sarah available to step modules
 (window as any).__sarah = sarah;
 
-// Register all Web Components
 registerComponents();
 
-// Wizard state
 export interface WizardData {
   system: Record<string, string>;
   profile: {
     displayName: string;
     city: string;
-    language: string;
-    timezone: string;
+    usagePurposes: string[];
+    lastName: string;
+    address: string;
+    hobbies: string[];
+    profession: string;
+    activities: string;
+    responseStyle: string;
+    tone: string;
+  };
+  skills: {
+    programming: string | null;
+    design: string | null;
+    office: string | null;
+  };
+  files: {
+    emails: string[];
+    importantPrograms: string[];
+    favoriteLinks: string[];
+    importantFolders: string[];
+    pdfFolder: string;
+    picturesFolder: string;
+    installFolder: string;
+  };
+  trust: {
+    memoryAllowed: boolean;
+    fileAccess: string;
   };
   personalization: {
     accentColor: string;
     voice: string;
     speechRate: number;
   };
+  skippedSteps: Set<string>;
 }
 
 const wizardData: WizardData = {
@@ -44,34 +70,78 @@ const wizardData: WizardData = {
   profile: {
     displayName: '',
     city: '',
-    language: 'de',
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    usagePurposes: [],
+    lastName: '',
+    address: '',
+    hobbies: [],
+    profession: '',
+    activities: '',
+    responseStyle: 'mittel',
+    tone: 'freundlich',
+  },
+  skills: {
+    programming: null,
+    design: null,
+    office: null,
+  },
+  files: {
+    emails: [],
+    importantPrograms: [],
+    favoriteLinks: [],
+    importantFolders: [],
+    pdfFolder: '',
+    picturesFolder: '',
+    installFolder: '',
+  },
+  trust: {
+    memoryAllowed: true,
+    fileAccess: 'specific-folders',
   },
   personalization: {
     accentColor: '#00d4ff',
     voice: 'default-female-de',
     speechRate: 1.0,
   },
+  skippedSteps: new Set(),
 };
 
-const STEPS = [
-  { id: 'welcome', label: 'Willkommen' },
-  { id: 'system', label: 'System-Scan' },
-  { id: 'profile', label: 'Profil' },
-  { id: 'personalization', label: 'Personalisierung' },
-  { id: 'finish', label: 'Fertig' },
+interface StepDef {
+  id: string;
+  label: string;
+  optional: boolean;
+  renderer: (data: WizardData) => HTMLElement;
+  shouldShow?: (data: WizardData) => boolean;
+}
+
+const STEPS: StepDef[] = [
+  { id: 'welcome', label: 'Willkommen', optional: false, renderer: createWelcomeStep },
+  { id: 'system', label: 'System-Scan', optional: false, renderer: createSystemScanStep },
+  { id: 'required', label: 'Pflichtfelder', optional: false, renderer: createRequiredStep },
+  { id: 'personal', label: 'Persönliches', optional: true, renderer: createPersonalStep },
+  {
+    id: 'dynamic', label: 'Vertiefung', optional: false, renderer: createDynamicStep,
+    shouldShow: (data) => hasDynamicQuestions(data),
+  },
+  { id: 'files', label: 'Dateien & Apps', optional: true, renderer: createFilesStep },
+  { id: 'trust', label: 'Vertrauen', optional: false, renderer: createTrustStep },
+  { id: 'personalization', label: 'Personalisierung', optional: false, renderer: createPersonalizationStep },
+  { id: 'finish', label: 'Fertig', optional: false, renderer: createFinishStep },
 ];
 
 let currentStep = 0;
 
-// DOM references
 const sidebar = document.getElementById('sidebar')!;
 const slideArea = document.getElementById('slide-area')!;
 const navArea = document.getElementById('nav-area')!;
 
-// Create stepper
+function getVisibleSteps(): StepDef[] {
+  return STEPS.filter(s => !s.shouldShow || s.shouldShow(wizardData));
+}
+
+let visibleSteps = getVisibleSteps();
+
 const stepper = sarahStepper({
-  steps: STEPS,
+  steps: visibleSteps.map(s => ({ id: s.id, label: s.label })),
   activeIndex: 0,
   onStepClick: (index) => {
     if (index < currentStep) goToStep(index);
@@ -79,20 +149,16 @@ const stepper = sarahStepper({
 });
 sidebar.appendChild(stepper);
 
-// Step renderers — each returns an HTMLElement
-type StepRenderer = (data: WizardData) => HTMLElement;
+function refreshStepper(): void {
+  visibleSteps = getVisibleSteps();
+  stepper.setSteps(visibleSteps.map(s => ({ id: s.id, label: s.label })));
+  stepper.setActive(currentStep);
+}
 
-const stepRenderers: StepRenderer[] = [
-  createWelcomeStep,
-  createSystemScanStep,
-  createProfileStep,
-  createPersonalizationStep,
-  createFinishStep,
-];
-
-// Navigation
 function renderNav(): void {
   navArea.innerHTML = '';
+
+  const step = visibleSteps[currentStep];
 
   if (currentStep > 0) {
     navArea.appendChild(sarahButton({
@@ -102,15 +168,34 @@ function renderNav(): void {
     }));
   }
 
-  if (currentStep < STEPS.length - 1) {
+  const spacer = document.createElement('div');
+  spacer.style.flex = '1';
+  navArea.appendChild(spacer);
+
+  if (step.optional && currentStep < visibleSteps.length - 1) {
     navArea.appendChild(sarahButton({
-      label: 'Weiter',
+      label: 'Überspringen',
+      variant: 'ghost',
+      onClick: () => {
+        wizardData.skippedSteps.add(step.id);
+        goToStep(currentStep + 1);
+      },
+    }));
+  }
+
+  if (currentStep < visibleSteps.length - 1) {
+    const nextStep = visibleSteps[currentStep + 1];
+    const nextLabel = step.optional
+      ? `Weiter mit ${nextStep.label}`
+      : 'Weiter';
+    navArea.appendChild(sarahButton({
+      label: nextLabel,
       variant: 'primary',
       onClick: () => goToStep(currentStep + 1),
     }));
   }
 
-  if (currentStep === STEPS.length - 1) {
+  if (currentStep === visibleSteps.length - 1) {
     navArea.appendChild(sarahButton({
       label: 'S.A.R.A.H. starten',
       variant: 'primary',
@@ -121,14 +206,15 @@ function renderNav(): void {
 
 function goToStep(index: number): void {
   currentStep = index;
-  stepper.setActive(currentStep);
+  refreshStepper();
   renderStep();
   renderNav();
 }
 
 function renderStep(): void {
   slideArea.innerHTML = '';
-  const stepContent = stepRenderers[currentStep](wizardData);
+  const step = visibleSteps[currentStep];
+  const stepContent = step.renderer(wizardData);
   slideArea.appendChild(stepContent);
 }
 
@@ -136,13 +222,18 @@ async function finishWizard(): Promise<void> {
   await sarah.saveConfig({
     setupComplete: true,
     system: wizardData.system,
-    profile: wizardData.profile,
+    profile: {
+      ...wizardData.profile,
+      usagePurposes: wizardData.profile.usagePurposes,
+      hobbies: wizardData.profile.hobbies,
+    },
+    skills: wizardData.skills,
+    files: wizardData.files,
+    trust: wizardData.trust,
     personalization: wizardData.personalization,
   });
 
-  // Reload to dashboard
   window.location.href = 'dashboard.html';
 }
 
-// Initialize
 goToStep(0);
