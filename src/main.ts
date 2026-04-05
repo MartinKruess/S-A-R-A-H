@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -62,16 +62,25 @@ app.whenReady().then(() => {
 
   ipcMain.handle('get-system-info', async () => {
     const cpus = os.cpus();
+    const homedir = os.homedir();
     return {
       os: `${os.type()} ${os.release()}`,
       platform: process.platform,
       arch: os.arch(),
       cpu: cpus.length > 0 ? cpus[0].model : 'Unknown',
-      cpuCores: cpus.length,
+      cpuCores: String(cpus.length),
       totalMemory: `${Math.round(os.totalmem() / (1024 ** 3))} GB`,
       freeMemory: `${Math.round(os.freemem() / (1024 ** 3))} GB`,
       hostname: os.hostname(),
       shell: process.env.SHELL || process.env.COMSPEC || 'Unknown',
+      language: app.getLocale(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      folders: JSON.stringify({
+        documents: path.join(homedir, 'Documents'),
+        downloads: path.join(homedir, 'Downloads'),
+        pictures: path.join(homedir, 'Pictures'),
+        desktop: path.join(homedir, 'Desktop'),
+      }),
     };
   });
 
@@ -89,6 +98,16 @@ app.whenReady().then(() => {
   ipcMain.handle('is-first-run', () => {
     const config = loadConfig();
     return !config.setupComplete;
+  });
+
+  ipcMain.handle('select-folder', async (_event, title?: string) => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: title ?? 'Ordner auswählen',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
   });
 
   app.on('activate', () => {
