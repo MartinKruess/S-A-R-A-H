@@ -4,9 +4,9 @@
   "description": "",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc",
-    "start": "tsc && electron .",
-    "dev": "tsc && electron ."
+    "build": "tsc && tsc -p tsconfig.renderer.json",
+    "start": "npm run build && electron .",
+    "dev": "concurrently \"tsc --watch\" \"tsc -p tsconfig.renderer.json --watch\" \"electron .\""
   },
   "keywords": [],
   "author": "",
@@ -14,7 +14,9 @@
   "type": "commonjs",
   "devDependencies": {
     "@types/node": "^25.5.2",
+    "concurrently": "^9.2.1",
     "electron": "^41.1.1",
+    "electron-reloader": "^1.2.3",
     "typescript": "^6.0.2"
   }
 }

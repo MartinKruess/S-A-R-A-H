@@ -1,0 +1,40 @@
+@import url('./base.css');
+
+.wizard-layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+.wizard-sidebar {
+  width: 220px;
+  padding: var(--sarah-space-xl) var(--sarah-space-lg);
+  border-right: 1px solid var(--sarah-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.wizard-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+.wizard-slide-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sarah-space-xl);
+}
+
+.wizard-nav {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sarah-space-md);
+  padding: var(--sarah-space-lg) var(--sarah-space-xl);
+  border-top: 1px solid var(--sarah-border);
+}
