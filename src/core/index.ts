@@ -13,3 +13,10 @@ export { ServiceRegistry } from './service-registry.js';
 export type { StorageProvider, Filter } from './storage/storage.interface.js';
 export { JsonStorage } from './storage/json-storage.js';
 export { SqliteStorage } from './storage/sqlite-storage.js';
+
+// Crypto
+export { encrypt, decrypt } from './crypto/crypto.js';
+export { KeyManager } from './crypto/key-manager.js';
+
+// Encrypted Storage
+export { EncryptedStorage } from './storage/encrypted-storage.js';
