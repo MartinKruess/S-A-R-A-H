@@ -3,29 +3,14 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
 import { spawnSync } from 'child_process';
+import { bootstrap, AppContext } from './core/bootstrap.js';
 
 try {
   require('electron-reloader')(module);
 } catch {}
 
 let mainWindow: BrowserWindow | null = null;
-
-function getConfigPath(): string {
-  return path.join(app.getPath('userData'), 'config.json');
-}
-
-function loadConfig(): Record<string, unknown> {
-  try {
-    const data = fs.readFileSync(getConfigPath(), 'utf-8');
-    return JSON.parse(data);
-  } catch {
-    return {};
-  }
-}
-
-function saveConfig(config: Record<string, unknown>): void {
-  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2), 'utf-8');
-}
+let appContext: AppContext | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -68,6 +53,7 @@ const KNOWN_ALIASES: Record<string, string[]> = {
   'notepad++': ['Notepad++', 'Notepad Plus'],
   'obs studio': ['OBS'],
   'vlc media player': ['VLC'],
+  'davinci resolve': ['DaVinci', 'Resolve'],
   'steam': ['Steam'],
   'discord': ['Discord'],
   'spotify': ['Spotify'],
@@ -80,6 +66,14 @@ const KNOWN_ALIASES: Record<string, string[]> = {
   'winrar': ['WinRAR'],
   'sublime text': ['Sublime'],
   'jetbrains': ['IntelliJ', 'WebStorm', 'PyCharm'],
+  'opera gx': ['Opera'],
+  'brave': ['Brave'],
+  'blender': ['Blender'],
+  'gimp': ['GIMP'],
+  'audacity': ['Audacity'],
+  'filezilla': ['FileZilla'],
+  'postman': ['Postman'],
+  'docker': ['Docker'],
 };
 
 function generateAliases(displayName: string): string[] {
@@ -101,6 +95,18 @@ function generateAliases(displayName: string): string[] {
   return [...new Set(aliases)];
 }
 
+/** Patterns that indicate a launcher/updater instead of the real exe */
+const UPDATER_PATTERNS = /[/\\](update|updater|auto-?update)\.exe$/i;
+const LAUNCHER_PATTERNS = /[/\\](launcher|pdflauncher|.*launcher)\.exe$/i;
+
+function classifyProgramPath(programPath: string): 'exe' | 'launcher' | 'appx' | 'updater' {
+  if (!programPath) return 'exe';
+  if (programPath.startsWith('appx:')) return 'appx';
+  if (UPDATER_PATTERNS.test(programPath)) return 'updater';
+  if (LAUNCHER_PATTERNS.test(programPath)) return 'launcher';
+  return 'exe';
+}
+
 function verifyProgramPath(programPath: string): boolean {
   if (!programPath) return false;
   try {
@@ -110,14 +116,44 @@ function verifyProgramPath(programPath: string): boolean {
   }
 }
 
-app.whenReady().then(() => {
-  createWindow();
+/**
+ * Find programs that share overlapping aliases and mark them with a duplicateGroup.
+ * e.g. "OpenOffice Calc", "OpenOffice Writer", "OpenOffice Base" → group "OpenOffice"
+ */
+function markDuplicateGroups(
+  programs: { name: string; path: string; type: string; verified: boolean; aliases: string[]; duplicateGroup?: string }[],
+): void {
+  // Group by longest shared alias
+  const aliasOwners = new Map<string, string[]>();
+  for (const prog of programs) {
+    for (const alias of prog.aliases) {
+      const lower = alias.toLowerCase();
+      if (!aliasOwners.has(lower)) aliasOwners.set(lower, []);
+      aliasOwners.get(lower)!.push(prog.name);
+    }
+  }
 
-  ipcMain.on('splash-done', () => {
+  // Aliases shared by 2+ programs → mark those programs
+  for (const [alias, owners] of aliasOwners) {
+    if (owners.length >= 2) {
+      for (const prog of programs) {
+        if (owners.includes(prog.name)) {
+          prog.duplicateGroup = alias;
+        }
+      }
+    }
+  }
+}
+
+app.whenReady().then(async () => {
+  createWindow();
+  appContext = await bootstrap(app.getPath('userData'));
+
+  ipcMain.on('splash-done', async () => {
     if (mainWindow) {
       mainWindow.maximize();
-      const config = loadConfig();
-      if (config.setupComplete) {
+      const config = (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
+      if ((config as any).onboarding?.setupComplete) {
         mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
       } else {
         mainWindow.loadFile(path.join(__dirname, '..', 'wizard.html'));
@@ -140,29 +176,29 @@ app.whenReady().then(() => {
       shell: process.env.SHELL || process.env.COMSPEC || 'Unknown',
       language: app.getLocale(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      folders: JSON.stringify({
+      folders: {
         documents: path.join(homedir, 'Documents'),
         downloads: path.join(homedir, 'Downloads'),
         pictures: path.join(homedir, 'Pictures'),
         desktop: path.join(homedir, 'Desktop'),
-      }),
+      },
     };
   });
 
-  ipcMain.handle('get-config', () => {
-    return loadConfig();
+  ipcMain.handle('get-config', async () => {
+    return (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
   });
 
-  ipcMain.handle('save-config', (_event, config: Record<string, unknown>) => {
-    const existing = loadConfig();
+  ipcMain.handle('save-config', async (_event, config: Record<string, unknown>) => {
+    const existing = (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
     const merged = { ...existing, ...config };
-    saveConfig(merged);
+    await appContext!.config.set('root', merged);
     return merged;
   });
 
-  ipcMain.handle('is-first-run', () => {
-    const config = loadConfig();
-    return !config.setupComplete;
+  ipcMain.handle('is-first-run', async () => {
+    const config = (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
+    return !(config as any).onboarding?.setupComplete;
   });
 
   ipcMain.handle('select-folder', async (_event, title?: string) => {
@@ -175,34 +211,146 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
+  ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
+    try {
+      if (!folderPath || !fs.existsSync(folderPath)) return [];
+      const results: { name: string; path: string }[] = [];
+      const seen = new Set<string>();
+
+      // Strategy: scan top-level subdirectories, pick the "main" exe per folder
+      // (the one whose name matches the folder name, or the largest exe)
+      let topEntries: fs.Dirent[];
+      try {
+        topEntries = fs.readdirSync(folderPath, { withFileTypes: true });
+      } catch { return []; }
+
+      for (const entry of topEntries) {
+        const full = path.join(folderPath, entry.name);
+
+        if (entry.isFile() && entry.name.toLowerCase().endsWith('.exe')) {
+          // Direct exe in the scanned folder
+          const lower = entry.name.toLowerCase();
+          if (lower.match(/(unins|setup|install|update|crash|helper|redis|vc_red|dxsetup|dotnet)/i)) continue;
+          const baseName = entry.name.replace(/\.exe$/i, '');
+          if (!seen.has(lower)) {
+            seen.add(lower);
+            results.push({ name: baseName, path: full });
+          }
+          continue;
+        }
+
+        if (!entry.isDirectory()) continue;
+
+        // For each subfolder, find the "best" exe
+        const folderName = entry.name.toLowerCase();
+        let bestExe: { name: string; path: string; score: number } | null = null;
+
+        function findExes(dir: string, depth: number): void {
+          if (depth > 2) return;
+          let children: fs.Dirent[];
+          try { children = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+          for (const child of children) {
+            const childPath = path.join(dir, child.name);
+            if (child.isDirectory() && depth < 2) {
+              findExes(childPath, depth + 1);
+            } else if (child.isFile() && child.name.toLowerCase().endsWith('.exe')) {
+              const exeLower = child.name.toLowerCase().replace(/\.exe$/, '');
+              if (exeLower.match(/(unins|setup|install|update|crash|helper|redis|vc_red|dxsetup|dotnet|web[vw]iew|cef|_)/)) continue;
+              // Score: prefer exe name matching folder name
+              const normExe = exeLower.replace(/[\s\-.]/g, '');
+              const normFolder = folderName.replace(/[\s\-.]/g, '');
+              let score = 0;
+              if (normExe === normFolder) score = 100;
+              else if (normFolder.includes(normExe) || normExe.includes(normFolder)) score = 50;
+              else score = 0;
+              if (!bestExe || score > bestExe.score) {
+                bestExe = { name: child.name.replace(/\.exe$/i, ''), path: childPath, score };
+              }
+            }
+          }
+        }
+
+        findExes(full, 0);
+        // Only accept if the exe name relates to the folder name
+        if (bestExe && (bestExe as any).score >= 50 && !seen.has((bestExe as any).name.toLowerCase())) {
+          seen.add((bestExe as any).name.toLowerCase());
+          results.push({ name: (bestExe as any).name, path: (bestExe as any).path });
+        }
+      }
+
+      const mapped = results.map(p => ({
+        name: p.name,
+        path: p.path,
+        type: classifyProgramPath(p.path),
+        verified: verifyProgramPath(p.path),
+        aliases: generateAliases(p.name),
+        duplicateGroup: undefined as string | undefined,
+      }));
+      markDuplicateGroups(mapped);
+      return mapped;
+    } catch {
+      return [];
+    }
+  });
+
   ipcMain.handle('detect-programs', () => {
     try {
-      // Scan Start Menu .lnk shortcuts — only returns launchable .exe programs
       const script = [
+        "# Shared noise filter",
+        "function Test-Noise($name) {",
+        "  if ($name -match '(Uninstall|Deinstall|Help|Hilfe|Readme|Release Note|License|Documentation|Diagnos|Installer|Setup|Updater|AutoUpdate|Crash|Reporter|Migration|Repair|Proxy|entfernen|Website|FAQs|User Guide|Getting Started|Support Center|Manuals|Module Docs|Samples|im Internet|Private Brows|reset prefer|skinned|Cert Kit|Immersive Control)') { return $true }",
+        "  if ($name -match '(Application Verifier|Developer |IDLE \\(|iSCSI|ODBC|Math Input|SDK Shell|SDK$|Windows Fax|Windows PowerShell|Windows Software|Windows Media|Windows App|Fairlight|Control Panel|Blackmagic RAW|Blackmagic Proxy|DaVinci Control|Neu in dieser)') { return $true }",
+        "  if ($name -match '(^Magnify|^Narrator|^On-Screen Keyboard|^Steps Recorder|^Windows Speech|^Internet Explorer|Quick Assist|Remote Desktop|^WordPad|^Character Map|^XPS Viewer|^Administrative|^RecoveryDrive|^Speech Recognition|^Task Manager|^System Configuration|^System Information|^Registry Editor|^Resource Monitor|^Disk Cleanup|^Snipping Tool|^dfrgui|^Paint$|MDN Web)') { return $true }",
+        "  if ($name -match '(^Notepad$|^Command Prompt|^Git (Bash|CMD|GUI)|^Filme|^Medien-|^Solitaire|Native Tools|Cross Tools)') { return $true }",
+        "  return $false",
+        "}",
+        "",
+        "# Phase 1: .lnk shortcuts",
+        "$shell = New-Object -ComObject WScript.Shell",
+        "$seenExe = @{}",
+        "$results = @{}",
         "$userPath = [Environment]::GetFolderPath('StartMenu') + '\\Programs'",
         "$commonPath = [Environment]::GetFolderPath('CommonStartMenu') + '\\Programs'",
-        "$shell = New-Object -ComObject WScript.Shell",
-        "$seen = @{}",
         "$userLnks = Get-ChildItem -Path $userPath -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue",
         "$commonLnks = Get-ChildItem -Path $commonPath -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue",
         "$allLnks = @($userLnks) + @($commonLnks)",
         "foreach ($file in $allLnks) {",
         "  if ($null -eq $file) { continue }",
-        "  if ($file.Name -match '(Uninstall|Deinstall|Help|Hilfe|Readme|Release|License|Documentation|Diagnos)') { continue }",
-        "  if ($file.BaseName -match '^(Magnify|Narrator|On-Screen Keyboard|Steps Recorder|Windows Speech|Internet Explorer|Quick Assist|Remote Desktop Connection|WordPad|Character Map|Math Input|XPS Viewer)$') { continue }",
+        "  if (Test-Noise $file.BaseName) { continue }",
         "  try {",
         "    $lnk = $shell.CreateShortcut($file.FullName)",
         "    $target = $lnk.TargetPath",
-        "    if ($target -and $target -match '\\.exe$' -and -not $seen[$target]) {",
-        "      $seen[$target] = $true",
-        "      \"$($file.BaseName)\t$target\"",
+        "    if ($target -and $target -match '\\.exe$' -and -not $seenExe[$target]) {",
+        "      $seenExe[$target] = $true",
+        "      $results[$file.BaseName] = $target",
         "    }",
         "  } catch {}",
+        "}",
+        "",
+        "# Phase 2: Get-StartApps (Store/UWP apps like Spotify)",
+        "try {",
+        "  Get-StartApps 2>$null | ForEach-Object {",
+        "    $name = $_.Name",
+        "    $appId = $_.AppID",
+        "    if (-not $name -or $name.Length -gt 50) { return }",
+        "    if (Test-Noise $name) { return }",
+        "    if ($name -match '(Settings|Store|Cortana|Microsoft Store|Tools for)') { return }",
+        "    if ($appId -match '^(Microsoft\\.(Windows|Xbox|Bing|GetHelp|People|Tips|Maps|Messaging|MixedReality|3D|Print|Wallet|549981|ScreenSketch|MSPaint|YourPhone|MicrosoftEdge)|windows\\.|ms-resource:)') { return }",
+        "    if ($name -match '^(Bildschirm|Aufgaben|Computer|Datentr|Dienste|Druckv|Editor|Eingabe|Ereignis|Komponenten|Kurznotizen|Laufwerke|Leistungs|Lokale Sicher|Registrier|Ressource|Schritt|Sprachausgabe|System|Task-Manager|Wiederherstell|Windows-|Zeichentabelle|Tipps|3D-Viewer)') { return }",
+        "    if (-not $results.ContainsKey($name)) {",
+        "      $results[$name] = \"appx:$appId\"",
+        "    }",
+        "  }",
+        "} catch {}",
+        "",
+        "# Output sorted",
+        "foreach ($entry in $results.GetEnumerator() | Sort-Object Key) {",
+        "  \"$($entry.Key)\t$($entry.Value)\"",
         "}",
       ].join('\n');
       const result = spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
         encoding: 'utf-8',
-        timeout: 15000,
+        timeout: 20000,
       });
       if (result.status !== 0 || !result.stdout) return [];
 
@@ -217,12 +365,16 @@ app.whenReady().then(() => {
         })
         .filter((p): p is { name: string; path: string } => p !== null && p.name.length > 0);
 
-      return raw.map(p => ({
+      const mapped = raw.map(p => ({
         name: p.name,
         path: p.path,
-        verified: verifyProgramPath(p.path),
+        type: classifyProgramPath(p.path),
+        verified: p.path.startsWith('appx:') ? true : verifyProgramPath(p.path),
         aliases: generateAliases(p.name),
+        duplicateGroup: undefined as string | undefined,
       }));
+      markDuplicateGroups(mapped);
+      return mapped;
     } catch {
       return [];
     }
@@ -235,7 +387,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
+  if (appContext) {
+    await appContext.shutdown();
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
