@@ -20,3 +20,7 @@ export { KeyManager } from './crypto/key-manager.js';
 
 // Encrypted Storage
 export { EncryptedStorage } from './storage/encrypted-storage.js';
+
+// Bootstrap
+export { bootstrap } from './bootstrap.js';
+export type { AppContext } from './bootstrap.js';
