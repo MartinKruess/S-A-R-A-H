@@ -37,7 +37,11 @@ export class OllamaProvider implements LlmProvider {
       throw new Error(`Ollama error: ${res.status} ${res.statusText}`);
     }
 
-    const reader = res.body!.getReader();
+    if (!res.body) {
+      throw new Error('Ollama returned empty response body');
+    }
+
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
     let buffer = '';

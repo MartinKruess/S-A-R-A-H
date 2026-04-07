@@ -46,7 +46,11 @@ export class LlmService implements SarahService {
   onMessage(msg: BusMessage): void {
     if (msg.topic === 'chat:message') {
       const text = msg.data.text as string;
-      this.handleChatMessage(text);
+      this.handleChatMessage(text).catch(() => {
+        this.context.bus.emit(this.id, 'llm:error', {
+          message: ERROR_MESSAGES.connection,
+        });
+      });
     }
   }
 
@@ -71,15 +75,23 @@ export class LlmService implements SarahService {
 
     try {
       let fullText = '';
+      let timeoutId: ReturnType<typeof setTimeout>;
+      let rejectTimeout: (err: Error) => void;
+
       const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('timeout')), STREAM_TIMEOUT_MS);
+        rejectTimeout = reject;
+        timeoutId = setTimeout(() => reject(new Error('timeout')), STREAM_TIMEOUT_MS);
       });
 
       const chatPromise = this.provider.chat(messages, (chunk) => {
+        // Reset timeout on each chunk
+        clearTimeout(timeoutId);
+        timeoutId = setTimeout(() => rejectTimeout(new Error('timeout')), STREAM_TIMEOUT_MS);
         this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
       });
 
       fullText = await Promise.race([chatPromise, timeoutPromise]);
+      clearTimeout(timeoutId!);
 
       this.history.push({ role: 'assistant', content: fullText });
 
