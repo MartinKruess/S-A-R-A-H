@@ -1,0 +1,149 @@
+@import url('./base.css');
+@import url('./chat.css');
+
+/* ── App layout ── */
+.app-layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+.app-sidebar {
+  width: 48px;
+  flex-shrink: 0;
+  background: var(--sarah-sidebar-bg);
+  border-right: 1px solid var(--sarah-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--sarah-space-sm) 0;
+  gap: 4px;
+  z-index: var(--sarah-z-sidebar);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  color: var(--sarah-text-secondary);
+  cursor: pointer;
+  transition: all var(--sarah-transition-fast);
+  border: none;
+  background: none;
+  border-radius: var(--sarah-radius-md);
+}
+
+.nav-item:hover {
+  color: var(--sarah-text-primary);
+  background: var(--sarah-bg-surface-hover);
+}
+
+.nav-item.active {
+  color: var(--sarah-accent);
+  background: rgba(var(--sarah-accent-rgb), 0.12);
+}
+
+.nav-item svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Large orb on Sarah main page — don't let nav-item svg rule shrink it */
+.app-main sarah-svg svg {
+  width: 200px;
+  height: 200px;
+}
+
+/* ── Sarah main area ── */
+.app-main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.sarah-placeholder {
+  font-size: var(--sarah-font-size-lg);
+  color: var(--sarah-text-muted);
+  letter-spacing: 0.1em;
+}
+
+/* ── Standalone dialog window ── */
+.dialog-standalone {
+  width: 100%;
+  height: 100vh;
+  background: var(--sarah-bg-primary);
+  overflow-y: auto;
+  padding: var(--sarah-space-xl);
+}
+
+.dialog-standalone > * {
+  max-width: 800px;
+}
+
+/* ── Settings sections ── */
+.settings-section {
+  margin-bottom: var(--sarah-space-xl);
+}
+
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sarah-space-lg);
+}
+
+.settings-section-title {
+  font-size: var(--sarah-font-size-lg);
+  color: var(--sarah-text-primary);
+  font-weight: 400;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sarah-space-md);
+}
+
+@media (max-width: 900px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Home / Dashboard view ── */
+.home-greeting {
+  font-size: var(--sarah-font-size-xl);
+  font-weight: 300;
+  color: var(--sarah-text-primary);
+  margin-bottom: var(--sarah-space-sm);
+}
+
+.home-subtitle {
+  font-size: var(--sarah-font-size-md);
+  color: var(--sarah-text-secondary);
+  margin-bottom: var(--sarah-space-xl);
+}
+
+.home-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sarah-space-md);
+}
+
+/* ── Save feedback ── */
+.save-feedback {
+  color: var(--sarah-accent);
+  font-size: var(--sarah-font-size-sm);
+  opacity: 0;
+  transition: opacity var(--sarah-transition-fast);
+}
+
+.save-feedback.visible {
+  opacity: 1;
+}
