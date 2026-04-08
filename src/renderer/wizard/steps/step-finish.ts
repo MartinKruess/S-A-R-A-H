@@ -162,10 +162,23 @@ export function createFinishStep(data: WizardData): HTMLElement {
   }
 
   // Trust
-  addSection(finish, 'Vertrauen', [
+  const fileAccessLabels: Record<string, string> = {
+    all: 'Alle Dateien', 'specific-folders': 'Nur bestimmte Ordner', none: 'Kein Zugriff',
+  };
+  const confirmLabels: Record<string, string> = {
+    minimal: 'Minimal', standard: 'Standard', maximal: 'Maximal',
+  };
+  const trustRows: [string, string][] = [
     ['Memory', data.trust.memoryAllowed ? 'Erlaubt' : 'Nicht erlaubt'],
-    ['Dateizugriff', data.trust.fileAccess],
-  ]);
+    ['Dateizugriff', fileAccessLabels[data.trust.fileAccess] ?? data.trust.fileAccess],
+    ['Bestätigungen', confirmLabels[data.trust.confirmationLevel] ?? 'Standard'],
+  ];
+  if (data.trust.memoryExclusions.length > 0) {
+    trustRows.push(['Ausnahmen', data.trust.memoryExclusions.join(', ')]);
+  }
+  trustRows.push(['/showcontext', data.trust.showContextEnabled ? 'Aktiv' : 'Aus']);
+  trustRows.push(['/anonymous', data.trust.anonymousEnabled ? 'Aktiv' : 'Aus']);
+  addSection(finish, 'Vertrauen', trustRows);
 
   // Personalization
   const fontSizeLabels: Record<string, string> = { small: 'Klein', default: 'Standard', large: 'Groß' };
