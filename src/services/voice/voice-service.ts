@@ -24,7 +24,7 @@ const SAMPLE_RATE = 16_000;
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
-  readonly subscriptions = ['llm:done', 'llm:chunk'];
+  readonly subscriptions = ['llm:done'];
   status: ServiceStatus = 'pending';
 
   private voiceMode: VoiceMode = 'off';
@@ -34,8 +34,6 @@ export class VoiceService implements SarahService {
   private conversationActive = false;
   private conversationTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  private busUnsubscribes: (() => void)[] = [];
 
   constructor(
     private context: AppContext,
@@ -81,11 +79,6 @@ export class VoiceService implements SarahService {
     if (this.audio.isRecording) {
       this.audio.stopRecording();
     }
-
-    for (const unsub of this.busUnsubscribes) {
-      unsub();
-    }
-    this.busUnsubscribes = [];
 
     await this.stt.destroy();
     await this.tts.destroy();
@@ -212,9 +205,25 @@ export class VoiceService implements SarahService {
       const audioData = await this.tts.speak(text);
       this.audio.setPlaying(true);
 
-      // Simulate playback completion
-      this.audio.setPlaying(false);
+      // Send audio to renderer for playback via IPC
+      // The renderer plays it via Web Audio API and sends 'voice:playback-done' when finished
+      this.context.bus.emit(this.id, 'voice:play-audio', {
+        audio: Array.from(audioData),
+        sampleRate: 22_050,
+      });
 
+      // Wait for playback to finish (renderer signals via IPC → bus)
+      await new Promise<void>((resolve) => {
+        const unsub = this.context.bus.on('voice:playback-done', () => {
+          unsub();
+          resolve();
+        });
+        // Fallback timeout based on audio duration
+        const durationMs = (audioData.length / 22_050) * 1000 + 500;
+        setTimeout(() => { unsub(); resolve(); }, durationMs);
+      });
+
+      this.audio.setPlaying(false);
       this.context.bus.emit(this.id, 'voice:done', {});
 
       // After speaking, decide next state
@@ -283,7 +292,6 @@ export class VoiceService implements SarahService {
     }
 
     this.setState('idle');
-    this.context.bus.emit(this.id, 'voice:done', {});
 
     // Restart wake-word listening
     if (this.voiceMode === 'keyword') {
@@ -292,11 +300,7 @@ export class VoiceService implements SarahService {
   }
 
   private handleEmptyTranscript(): void {
-    if (this.voiceMode === 'keyword' && this.conversationActive) {
-      this.startListening();
-    } else {
-      this.setState('idle');
-    }
+    this.setState('idle');
   }
 
   // --- Timer helpers ---

@@ -134,7 +134,7 @@ describe('VoiceService', () => {
   it('has correct id, initial status, and subscriptions', () => {
     expect(service.id).toBe('voice');
     expect(service.status).toBe('pending');
-    expect(service.subscriptions).toEqual(['llm:done', 'llm:chunk']);
+    expect(service.subscriptions).toEqual(['llm:done']);
     expect(service.voiceState).toBe('idle');
   });
 
@@ -279,6 +279,11 @@ describe('VoiceService', () => {
     const doneListener = vi.fn();
     bus.on('voice:done', doneListener);
 
+    // Auto-respond to voice:play-audio with voice:playback-done
+    bus.on('voice:play-audio', () => {
+      setTimeout(() => bus.emit('renderer', 'voice:playback-done', {}), 0);
+    });
+
     service.onMessage({
       source: 'llm',
       topic: 'llm:done',
@@ -287,6 +292,7 @@ describe('VoiceService', () => {
     });
 
     await flush();
+    await flush(); // Extra flush for the playback-done timeout
 
     expect(tts.speak).toHaveBeenCalledWith('Hallo! Wie kann ich helfen?');
     expect(speakingListener).toHaveBeenCalledOnce();
