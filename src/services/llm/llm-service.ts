@@ -144,6 +144,7 @@ export class LlmService implements SarahService {
     const skills = config.skills ?? {};
     const resources = config.resources ?? {};
     const personalization = config.personalization ?? {};
+    const trust = config.trust ?? {};
 
     const name = profile.displayName || 'User';
     const city = profile.city ? `, wohnt in ${profile.city}` : '';
@@ -254,6 +255,28 @@ export class LlmService implements SarahService {
     if (quirk) {
       const quirkText = quirkPrompts[quirk] ?? quirk;
       lines.push(quirkText);
+    }
+
+    // Confirmation level
+    const confirmationMap: Record<string, string> = {
+      minimal: 'Frage nur bei kritischen Aktionen nach Bestätigung: Bezahlen, Löschen, Buchen. Alles andere darfst du eigenständig ausführen.',
+      standard: 'Frage nach Bestätigung wenn du dir unsicher bist oder eine Aktion Konsequenzen hat die schwer rückgängig zu machen sind. Bei harmlosen Aktionen handle eigenständig.',
+      maximal: 'Frage bei jeder Aktion die etwas verändert nach Bestätigung, bevor du sie ausführst. Der User möchte volle Kontrolle.',
+    };
+    const confirmInstruction = confirmationMap[trust.confirmationLevel];
+    if (confirmInstruction) {
+      lines.push(confirmInstruction);
+    }
+
+    // Memory exclusions
+    const exclusions: string[] = trust.memoryExclusions ?? [];
+    if (exclusions.length > 0) {
+      lines.push(`Merke dir nichts zu folgenden Themen: ${exclusions.join(', ')}. Informationen dazu darfst du im Gespräch verwenden, aber nicht langfristig speichern.`);
+    }
+
+    // Anonymous command
+    if (trust.anonymousEnabled !== false) {
+      lines.push('Der User kann /anonymous vor eine Nachricht setzen. Reagiere normal darauf, aber die Nachricht wird nach der Session vergessen.');
     }
 
     // Content moderation
