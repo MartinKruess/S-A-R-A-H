@@ -61,7 +61,11 @@ export class VoiceService implements SarahService {
 
       await this.stt.init();
       await this.tts.init();
-      await this.wakeWord.init();
+
+      // Only init wake-word provider when keyword mode is active
+      if (this.voiceMode === 'keyword') {
+        await this.wakeWord.init();
+      }
 
       this.setupMode();
       this.status = 'running';

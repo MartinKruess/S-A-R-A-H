@@ -140,12 +140,12 @@ describe('VoiceService', () => {
 
   // --- 2. Initializes providers on init ---
 
-  it('initializes all providers on init', async () => {
+  it('initializes STT and TTS on init (PTT mode)', async () => {
     await service.init();
 
     expect(stt.init).toHaveBeenCalledOnce();
     expect(tts.init).toHaveBeenCalledOnce();
-    expect(wakeWord.init).toHaveBeenCalledOnce();
+    expect(wakeWord.init).not.toHaveBeenCalled(); // only in keyword mode
     expect(service.status).toBe('running');
   });
 
