@@ -312,7 +312,7 @@ async function finishWizard(): Promise<void> {
     },
   });
 
-  window.location.href = 'dashboard.html';
+  sarah.splashDone();
 }
 
 goToStep(0);
