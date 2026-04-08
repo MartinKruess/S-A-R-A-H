@@ -54,6 +54,7 @@ export interface SelectOption {
 export class SarahSelect extends SarahElement {
   private select!: HTMLSelectElement;
   private _options: SelectOption[] = [];
+  private _pendingValue: string | null = null;
 
   connectedCallback(): void {
     this.injectStyles(CSS);
@@ -88,7 +89,11 @@ export class SarahSelect extends SarahElement {
   }
 
   set value(v: string) {
-    if (this.select) this.select.value = v;
+    if (this.select) {
+      this.select.value = v;
+    } else {
+      this._pendingValue = v;
+    }
   }
 
   setOptions(options: SelectOption[]): void {
@@ -103,6 +108,10 @@ export class SarahSelect extends SarahElement {
       option.value = opt.value;
       option.textContent = opt.label;
       this.select.appendChild(option);
+    }
+    if (this._pendingValue !== null) {
+      this.select.value = this._pendingValue;
+      this._pendingValue = null;
     }
   }
 }

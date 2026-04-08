@@ -39,6 +39,23 @@
   --sarah-radius-md: 8px;
   --sarah-radius-lg: 16px;
 
+  /* Shadows */
+  --sarah-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --sarah-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --sarah-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --sarah-shadow-glow: 0 0 20px var(--sarah-glow-subtle);
+
+  /* Z-index layers */
+  --sarah-z-base: 1;
+  --sarah-z-sidebar: 10;
+  --sarah-z-overlay: 100;
+  --sarah-z-modal: 200;
+  --sarah-z-toast: 300;
+
+  /* Sidebar */
+  --sarah-sidebar-width: 240px;
+  --sarah-sidebar-bg: var(--sarah-bg-secondary);
+
   /* Transitions */
   --sarah-transition-fast: 150ms ease;
   --sarah-transition-normal: 300ms ease;
