@@ -9,6 +9,13 @@ const CSS = `
     max-width: 720px;
   }
 
+  @media (min-width: 600px) {
+    .form-wrapper {
+      max-width: 80%;
+      margin: 0 auto;
+    }
+  }
+
   .form-title {
     font-size: var(--sarah-font-size-lg);
     color: var(--sarah-text-primary);
