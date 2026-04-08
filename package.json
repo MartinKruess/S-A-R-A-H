@@ -26,6 +26,7 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "@picovoice/porcupine-node": "^4.0.2",
     "better-sqlite3": "^12.8.0",
     "three": "^0.183.2"
   }
