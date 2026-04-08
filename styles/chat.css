@@ -112,6 +112,10 @@
 }
 
 .chat-mode-toggle {
+  position: absolute;
+  top: var(--sarah-space-sm);
+  right: var(--sarah-space-sm);
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: center;
