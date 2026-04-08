@@ -42,7 +42,7 @@
   flex-direction: column;
   gap: var(--sarah-space-sm);
   overflow-y: auto;
-  padding-bottom: var(--sarah-space-sm);
+  padding: var(--sarah-space-sm);
 }
 
 .chat-bubble {
