@@ -5,11 +5,9 @@
   flex: 1;
   min-height: 0;
   position: relative;
-}
-
-.app-main {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .chat-container {
@@ -25,7 +23,7 @@
   flex-direction: column;
 }
 
-/* In chatmode: orb shrinks, chat appears */
+/* In chatmode: orb shrinks to 30%, chat takes remaining space */
 .app-main.chatmode .sarah-orb-wrapper {
   flex: 0 0 30%;
 }
@@ -33,7 +31,8 @@
 .app-main.chatmode .chat-container {
   display: flex;
   flex-direction: column;
-  flex: 0 0 70%;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Messages ── */
@@ -82,6 +81,14 @@
   gap: var(--sarah-space-xs);
   padding: var(--sarah-space-xs) var(--sarah-space-sm);
   border-top: 1px solid var(--sarah-border);
+  width: 90%;
+  margin: 0 auto;
+}
+
+@media (min-width: 600px) {
+  .chat-input-bar {
+    width: 75%;
+  }
 }
 
 .chat-input {
