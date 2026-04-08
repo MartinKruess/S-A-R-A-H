@@ -1,3 +1,92 @@
+# Dashboard Settings Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Rewrite Settings view with updated fields from wizard, add new Steuerung section (voice control, quiet mode, slash commands), extend data model and system prompt.
+
+**Architecture:** Single file rewrite of `settings.ts` split into section factory functions. New `controls` config block. Each section is independent and saves immediately on change. Shared constants (colors, traits, quirks, PDF categories) are duplicated from wizard steps to keep settings self-contained.
+
+**Tech Stack:** TypeScript, Custom Elements (SarahElement factory functions), CSS Custom Properties
+
+---
+
+## File Structure
+
+**Modified files:**
+- `src/renderer/wizard/wizard.ts` — Add `controls` to WizardData interface + defaults
+- `src/renderer/dashboard/views/settings.ts` — Full rewrite with 5 sections
+- `src/services/llm/llm-service.ts` — Add controls fields to buildSystemPrompt()
+
+**No new files.**
+
+---
+
+### Task 1: Extend data model with controls
+
+**Files:**
+- Modify: `src/renderer/wizard/wizard.ts` (WizardData interface + defaults)
+
+- [ ] **Step 1: Add CustomCommand interface and controls block to WizardData**
+
+In `src/renderer/wizard/wizard.ts`, add after the `PdfCategory` interface:
+
+```ts
+export interface CustomCommand {
+  command: string;
+  prompt: string;
+}
+```
+
+Then add `controls` to the `WizardData` interface, after the `personalization` block:
+
+```ts
+  controls: {
+    voiceMode: 'keyword' | 'push-to-talk' | 'off';
+    quietModeDuration: number;
+    customCommands: CustomCommand[];
+  };
+```
+
+- [ ] **Step 2: Add controls defaults**
+
+In the `wizardData` const, add after the `personalization` defaults:
+
+```ts
+  controls: {
+    voiceMode: 'off',
+    quietModeDuration: 60,
+    customCommands: [],
+  },
+```
+
+- [ ] **Step 3: Add controls to finishWizard save**
+
+In `finishWizard()`, add `controls: wizardData.controls,` to the `sarah.saveConfig()` call, after the `personalization` line.
+
+- [ ] **Step 4: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/renderer/wizard/wizard.ts
+git commit -m "refactor(wizard): add controls data model (voiceMode, quietMode, customCommands)"
+```
+
+---
+
+### Task 2: Rewrite Settings — Profil section (no changes, just cleanup)
+
+**Files:**
+- Modify: `src/renderer/dashboard/views/settings.ts`
+
+- [ ] **Step 1: Replace the entire settings.ts**
+
+Replace the full content of `src/renderer/dashboard/views/settings.ts` with the Profil section as foundation. The remaining sections will be added in subsequent tasks.
+
+```ts
 import { sarahInput } from '../../components/sarah-input.js';
 import { sarahSelect } from '../../components/sarah-select.js';
 import { sarahToggle } from '../../components/sarah-toggle.js';
@@ -9,7 +98,7 @@ import { applyAccentColor } from '../accent.js';
 type Config = Record<string, Record<string, unknown>>;
 
 function getSarah(): Record<string, (...args: unknown[]) => unknown> {
-  return ((window as unknown) as Record<string, unknown>).__sarah as Record<string, (...args: unknown[]) => unknown>;
+  return (window as Record<string, unknown>).__sarah as Record<string, (...args: unknown[]) => unknown>;
 }
 
 function showSaved(feedback: HTMLElement): void {
@@ -92,6 +181,59 @@ function createProfileSection(config: Config): HTMLElement {
   return section;
 }
 
+// ── Main export ──
+
+export async function createSettingsView(): Promise<HTMLElement> {
+  const container = document.createElement('div');
+
+  const pageTitle = document.createElement('div');
+  pageTitle.className = 'home-greeting';
+  pageTitle.style.marginBottom = 'var(--sarah-space-xl)';
+  pageTitle.textContent = 'Einstellungen';
+  container.appendChild(pageTitle);
+
+  const config = await (getSarah().getConfig as () => Promise<Config>)() as Config;
+
+  container.appendChild(createProfileSection(config));
+
+  // Wizard re-run button
+  const wizardSection = document.createElement('div');
+  wizardSection.className = 'settings-section';
+  wizardSection.appendChild(sarahButton({
+    label: 'Einrichtung erneut durchführen',
+    variant: 'secondary',
+    onClick: () => { window.location.href = 'wizard.html'; },
+  }));
+  container.appendChild(wizardSection);
+
+  return container;
+}
+```
+
+- [ ] **Step 2: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/renderer/dashboard/views/settings.ts
+git commit -m "refactor(settings): rewrite settings with typed helpers, start with profil section"
+```
+
+---
+
+### Task 3: Settings — Dateien & Ordner section
+
+**Files:**
+- Modify: `src/renderer/dashboard/views/settings.ts`
+
+- [ ] **Step 1: Add PDF constants and Dateien section**
+
+Add the following constants and function BEFORE the `createSettingsView` export function:
+
+```ts
 // ── Section: Dateien & Ordner ──
 
 const PDF_CATEGORY_OPTIONS = [
@@ -245,7 +387,40 @@ function createFilesSection(config: Config): HTMLElement {
 
   return section;
 }
+```
 
+- [ ] **Step 2: Wire into createSettingsView**
+
+In the `createSettingsView` function, add after `createProfileSection(config)`:
+
+```ts
+  container.appendChild(createFilesSection(config));
+```
+
+- [ ] **Step 3: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/renderer/dashboard/views/settings.ts
+git commit -m "feat(settings): add Dateien & Ordner section with PDF categories"
+```
+
+---
+
+### Task 4: Settings — Vertrauen section
+
+**Files:**
+- Modify: `src/renderer/dashboard/views/settings.ts`
+
+- [ ] **Step 1: Add Vertrauen section**
+
+Add BEFORE the `createSettingsView` export:
+
+```ts
 // ── Section: Vertrauen ──
 
 const EXCLUSION_OPTIONS = [
@@ -302,9 +477,9 @@ function createTrustSection(config: Config): HTMLElement {
     options: [
       { value: 'none', label: 'Kein Zugriff' },
       { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
-      { value: 'all', label: 'Alle Dateien' },
+      { value: 'all', label: 'Voller Zugriff' },
     ],
-    value: ((trust.fileAccess as string) === 'full' ? 'all' : (trust.fileAccess as string)) || 'specific-folders',
+    value: (trust.fileAccess as string) || 'specific-folders',
     onChange: (val) => { trust.fileAccess = val; save('trust', trust); showSaved(feedback); },
   }));
 
@@ -325,7 +500,40 @@ function createTrustSection(config: Config): HTMLElement {
 
   return section;
 }
+```
 
+- [ ] **Step 2: Wire into createSettingsView**
+
+Add after `createFilesSection(config)`:
+
+```ts
+  container.appendChild(createTrustSection(config));
+```
+
+- [ ] **Step 3: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/renderer/dashboard/views/settings.ts
+git commit -m "feat(settings): add Vertrauen section with exclusions and confirmation level"
+```
+
+---
+
+### Task 5: Settings — Personalisierung section
+
+**Files:**
+- Modify: `src/renderer/dashboard/views/settings.ts`
+
+- [ ] **Step 1: Add Personalisierung section**
+
+Add BEFORE the `createSettingsView` export:
+
+```ts
 // ── Section: Personalisierung ──
 
 const ACCENT_COLORS = [
@@ -539,7 +747,40 @@ function createPersonalizationSection(config: Config): HTMLElement {
 
   return section;
 }
+```
 
+- [ ] **Step 2: Wire into createSettingsView**
+
+Add after `createTrustSection(config)`:
+
+```ts
+  container.appendChild(createPersonalizationSection(config));
+```
+
+- [ ] **Step 3: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/renderer/dashboard/views/settings.ts
+git commit -m "feat(settings): add Personalisierung section with all wizard fields"
+```
+
+---
+
+### Task 6: Settings — Steuerung section
+
+**Files:**
+- Modify: `src/renderer/dashboard/views/settings.ts`
+
+- [ ] **Step 1: Add Steuerung section**
+
+Add BEFORE the `createSettingsView` export:
+
+```ts
 // ── Section: Steuerung ──
 
 const BUILTIN_COMMANDS = [
@@ -703,36 +944,91 @@ function createControlsSection(config: Config): HTMLElement {
 
   return section;
 }
+```
 
-// ── Main export ──
+- [ ] **Step 2: Wire into createSettingsView**
 
-export async function createSettingsView(): Promise<HTMLElement> {
-  const container = document.createElement('div');
+Add after `createPersonalizationSection(config)`:
 
-  const pageTitle = document.createElement('div');
-  pageTitle.className = 'home-greeting';
-  pageTitle.style.marginBottom = 'var(--sarah-space-xl)';
-  pageTitle.textContent = 'Einstellungen';
-  container.appendChild(pageTitle);
-
-  const config = await (getSarah().getConfig as () => Promise<Config>)() as Config;
-
-  container.appendChild(createProfileSection(config));
-  container.appendChild(createFilesSection(config));
-  container.appendChild(createTrustSection(config));
-  container.appendChild(createPersonalizationSection(config));
+```ts
   container.appendChild(createControlsSection(config));
+```
 
-  // Wizard re-run button
-  const wizardSection = document.createElement('div');
-  wizardSection.className = 'settings-section';
-  wizardSection.appendChild(sarahButton({
-    label: 'Einrichtung erneut durchführen',
-    variant: 'secondary',
-    onClick: () => { window.location.href = 'wizard.html'; },
-  }));
-  container.appendChild(wizardSection);
+- [ ] **Step 3: Build and verify**
 
-  return container;
-}
+Run: `npm run build`
+Expected: PASS
 
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/renderer/dashboard/views/settings.ts
+git commit -m "feat(settings): add Steuerung section with voice control, quiet mode, slash commands"
+```
+
+---
+
+### Task 7: System prompt integration
+
+**Files:**
+- Modify: `src/services/llm/llm-service.ts`
+
+- [ ] **Step 1: Add controls to buildSystemPrompt**
+
+In `src/services/llm/llm-service.ts`, in `buildSystemPrompt()`, add after `const trust = config.trust ?? {};`:
+
+```ts
+    const controls = config.controls ?? {};
+```
+
+Then add BEFORE the content moderation line (`lines.push('Ignoriere Eigenarten...')`):
+
+```ts
+    // Custom slash commands
+    const customCmds: { command: string; prompt: string }[] = controls.customCommands ?? [];
+    if (customCmds.length > 0) {
+      lines.push('');
+      lines.push('Der User hat folgende Slash-Command Shortcuts definiert:');
+      for (const cmd of customCmds) {
+        lines.push(`- ${cmd.command} = "${cmd.prompt}"`);
+      }
+      lines.push('Wenn der User einen dieser Befehle eingibt, führe den zugehörigen Prompt aus.');
+    }
+```
+
+- [ ] **Step 2: Build and verify**
+
+Run: `npm run build`
+Expected: PASS
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/services/llm/llm-service.ts
+git commit -m "feat(llm): add custom slash commands to system prompt"
+```
+
+---
+
+### Task 8: Build + Smoke Test
+
+- [ ] **Step 1: Full build**
+
+Run: `npm run build`
+Expected: PASS — no TypeScript errors
+
+- [ ] **Step 2: Start the app**
+
+Run: `npm start`
+Expected: App launches.
+
+- [ ] **Step 3: Open settings and verify**
+
+Verify:
+1. Settings shows 5 sections: Profil, Dateien & Ordner, Vertrauen, Personalisierung, Steuerung
+2. Profil: all fields populated from config
+3. Dateien & Ordner: folder pickers, PDF categories with dynamic blocks
+4. Vertrauen: memory toggle + exclusions, file access, confirmation level
+5. Personalisierung: accent color, voice, chat settings, traits, quirk
+6. Steuerung: voice mode, quiet mode duration, built-in commands listed, custom command add/delete works
+7. Changes save immediately with "Gespeichert!" feedback

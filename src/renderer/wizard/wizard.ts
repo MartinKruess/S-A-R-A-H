@@ -30,6 +30,11 @@ export interface PdfCategory {
   inferFromExisting: boolean;
 }
 
+export interface CustomCommand {
+  command: string;
+  prompt: string;
+}
+
 declare const sarah: {
   version: string;
   splashDone: () => void;
@@ -97,6 +102,11 @@ export interface WizardData {
     characterTraits: string[];
     quirk: string | null;
   };
+  controls: {
+    voiceMode: 'keyword' | 'push-to-talk' | 'off';
+    quietModeDuration: number;
+    customCommands: CustomCommand[];
+  };
   skippedSteps: Set<string>;
 }
 
@@ -150,6 +160,11 @@ const wizardData: WizardData = {
     responseMode: 'normal',
     characterTraits: [],
     quirk: null,
+  },
+  controls: {
+    voiceMode: 'off',
+    quietModeDuration: 60,
+    customCommands: [],
   },
   skippedSteps: new Set(),
 };
@@ -307,6 +322,7 @@ async function finishWizard(): Promise<void> {
     resources: wizardData.resources,
     trust: wizardData.trust,
     personalization: wizardData.personalization,
+    controls: wizardData.controls,
     integrations: {
       context7: useContext7,
     },

@@ -145,6 +145,7 @@ export class LlmService implements SarahService {
     const resources = config.resources ?? {};
     const personalization = config.personalization ?? {};
     const trust = config.trust ?? {};
+    const controls = config.controls ?? {};
 
     const name = profile.displayName || 'User';
     const city = profile.city ? `, wohnt in ${profile.city}` : '';
@@ -277,6 +278,17 @@ export class LlmService implements SarahService {
     // Anonymous command
     if (trust.anonymousEnabled !== false) {
       lines.push('Der User kann /anonymous vor eine Nachricht setzen. Reagiere normal darauf, aber die Nachricht wird nach der Session vergessen.');
+    }
+
+    // Custom slash commands
+    const customCmds: { command: string; prompt: string }[] = controls.customCommands ?? [];
+    if (customCmds.length > 0) {
+      lines.push('');
+      lines.push('Der User hat folgende Slash-Command Shortcuts definiert:');
+      for (const cmd of customCmds) {
+        lines.push(`- ${cmd.command} = "${cmd.prompt}"`);
+      }
+      lines.push('Wenn der User einen dieser Befehle eingibt, führe den zugehörigen Prompt aus.');
     }
 
     // Content moderation
