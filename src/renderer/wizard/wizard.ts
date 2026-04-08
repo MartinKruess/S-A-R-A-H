@@ -86,6 +86,12 @@ export interface WizardData {
     accentColor: string;
     voice: string;
     speechRate: number;
+    chatFontSize: 'small' | 'default' | 'large';
+    chatAlignment: 'stacked' | 'bubbles';
+    emojisEnabled: boolean;
+    responseMode: 'normal' | 'spontaneous' | 'thoughtful';
+    characterTraits: string[];
+    quirk: string | null;
   };
   skippedSteps: Set<string>;
 }
@@ -130,6 +136,12 @@ const wizardData: WizardData = {
     accentColor: '#00d4ff',
     voice: 'default-female-de',
     speechRate: 1.0,
+    chatFontSize: 'default',
+    chatAlignment: 'stacked',
+    emojisEnabled: true,
+    responseMode: 'normal',
+    characterTraits: [],
+    quirk: null,
   },
   skippedSteps: new Set(),
 };
