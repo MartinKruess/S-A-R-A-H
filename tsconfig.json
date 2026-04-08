@@ -16,5 +16,5 @@
     "ignoreDeprecations": "6.0"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/renderer", "src/splash.ts", "src/sarahOrb.ts"]
+  "exclude": ["node_modules", "dist"]
 }
