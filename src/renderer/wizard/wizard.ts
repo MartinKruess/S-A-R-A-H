@@ -11,12 +11,23 @@ import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 
+export type ProgramType = 'exe' | 'launcher' | 'appx' | 'updater';
+
 export interface ProgramEntry {
   name: string;
   path: string;
+  type: ProgramType;
   source: 'detected' | 'manual' | 'learned';
   verified: boolean;
   aliases: string[];
+  duplicateGroup?: string;
+}
+
+export interface PdfCategory {
+  tag: string;
+  folder: string;
+  pattern: string;
+  inferFromExisting: boolean;
 }
 
 declare const sarah: {
@@ -28,6 +39,7 @@ declare const sarah: {
   isFirstRun: () => Promise<boolean>;
   selectFolder: (title?: string) => Promise<string | null>;
   detectPrograms: () => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
+  scanFolderExes: (folderPath: string) => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
 };
 
 (window as any).__sarah = sarah;
@@ -50,17 +62,21 @@ export interface WizardData {
   };
   skills: {
     programming: string | null;
+    programmingStack: string[];
+    programmingResources: string[];
+    programmingProjectsFolder: string;
     design: string | null;
     office: string | null;
   };
-  files: {
+  resources: {
     emails: string[];
-    importantPrograms: ProgramEntry[];
+    programs: ProgramEntry[];
     favoriteLinks: string[];
-    importantFolders: string[];
-    pdfFolder: string;
+    pdfCategories: PdfCategory[];
     picturesFolder: string;
     installFolder: string;
+    gamesFolder: string;
+    extraProgramsFolder: string;
   };
   trust: {
     memoryAllowed: boolean;
@@ -90,17 +106,21 @@ const wizardData: WizardData = {
   },
   skills: {
     programming: null,
+    programmingStack: [],
+    programmingResources: ['Stack Overflow', 'GitHub', 'MDN'],
+    programmingProjectsFolder: '',
     design: null,
     office: null,
   },
-  files: {
+  resources: {
     emails: [],
-    importantPrograms: [],
+    programs: [],
     favoriteLinks: [],
-    importantFolders: [],
-    pdfFolder: '',
+    pdfCategories: [],
     picturesFolder: '',
     installFolder: '',
+    gamesFolder: '',
+    extraProgramsFolder: '',
   },
   trust: {
     memoryAllowed: true,
@@ -251,8 +271,12 @@ function renderStep(): void {
 }
 
 async function finishWizard(): Promise<void> {
+  const useContext7 = wizardData.profile.usagePurposes.includes('Programmieren');
+
   await sarah.saveConfig({
-    setupComplete: true,
+    onboarding: {
+      setupComplete: true,
+    },
     system: wizardData.system,
     profile: {
       ...wizardData.profile,
@@ -260,9 +284,12 @@ async function finishWizard(): Promise<void> {
       hobbies: wizardData.profile.hobbies,
     },
     skills: wizardData.skills,
-    files: wizardData.files,
+    resources: wizardData.resources,
     trust: wizardData.trust,
     personalization: wizardData.personalization,
+    integrations: {
+      context7: useContext7,
+    },
   });
 
   window.location.href = 'dashboard.html';
