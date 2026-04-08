@@ -1,25 +1,37 @@
+import { SarahHexOrb } from './sarahHexOrb';
+
 // --- Type declarations for preload-exposed API ---
 interface SarahAPI {
   version: string;
   splashDone: () => void;
 }
 
-// In a non-module script, Window is already the global scope
 declare var sarah: SarahAPI;
 
 // ============================================================
-// Canvas setup
+// Three.js HexOrb
 // ============================================================
-const canvas = document.getElementById("splash-canvas") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
+const orbContainer = document.getElementById('orb')!;
+const orb = new SarahHexOrb(orbContainer);
+
+// Click triggers break effect for testing
+orbContainer.addEventListener('click', () => {
+  orb.triggerBreak();
+});
+
+// ============================================================
+// 2D Canvas for particles/streak (overlay)
+// ============================================================
+const canvas2d = document.getElementById('splash-canvas') as HTMLCanvasElement;
+const ctx = canvas2d.getContext('2d')!;
 
 function resizeCanvas(): void {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  canvas2d.width = window.innerWidth;
+  canvas2d.height = window.innerHeight;
 }
 
 resizeCanvas();
-window.addEventListener("resize", resizeCanvas);
+window.addEventListener('resize', resizeCanvas);
 
 // ============================================================
 // Bezier path utility
@@ -42,8 +54,8 @@ function getStreakPath(): {
   control: [number, number];
   end: [number, number];
 } {
-  const w = canvas.width;
-  const h = canvas.height;
+  const w = canvas2d.width;
+  const h = canvas2d.height;
   const centerY = h * 0.52;
   const arcDepth = h * 0.10;
 
@@ -69,17 +81,17 @@ const trail: TrailPoint[] = [];
 
 function drawStreakHead(x: number, y: number): void {
   const glow = ctx.createRadialGradient(x, y, 0, x, y, 30);
-  glow.addColorStop(0, "rgba(255, 248, 235, 0.9)");
-  glow.addColorStop(0.3, "rgba(255, 240, 220, 0.4)");
-  glow.addColorStop(1, "rgba(255, 240, 220, 0)");
+  glow.addColorStop(0, 'rgba(255, 248, 235, 0.9)');
+  glow.addColorStop(0.3, 'rgba(255, 240, 220, 0.4)');
+  glow.addColorStop(1, 'rgba(255, 240, 220, 0)');
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.arc(x, y, 30, 0, Math.PI * 2);
   ctx.fill();
 
   const core = ctx.createRadialGradient(x, y, 0, x, y, 6);
-  core.addColorStop(0, "rgba(255, 255, 255, 1)");
-  core.addColorStop(1, "rgba(255, 248, 235, 0)");
+  core.addColorStop(0, 'rgba(255, 255, 255, 1)');
+  core.addColorStop(1, 'rgba(255, 248, 235, 0)');
   ctx.fillStyle = core;
   ctx.beginPath();
   ctx.arc(x, y, 6, 0, Math.PI * 2);
@@ -97,7 +109,7 @@ function drawTrail(): void {
     const width = life * 4;
     ctx.strokeStyle = `rgba(255, 245, 230, ${alpha})`;
     ctx.lineWidth = width;
-    ctx.lineCap = "round";
+    ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(prev.x, prev.y);
     ctx.lineTo(curr.x, curr.y);
@@ -179,7 +191,7 @@ function spawnParticlesFromTrail(): void {
       life: 1.0,
       decay: 0.01 + Math.random() * 0.015,
       size: 1 + Math.random() * 2,
-      color: "rgba(255, 245, 230, 1)",
+      color: 'rgba(255, 245, 230, 1)',
     });
   }
 }
@@ -209,12 +221,12 @@ function updateAndDrawParticles(): boolean {
 // ============================================================
 // Animation timeline
 // ============================================================
-const title = document.getElementById("splash-title")!;
-const subtitle = document.getElementById("splash-subtitle")!;
+const title = document.getElementById('splash-title')!;
+const subtitle = document.getElementById('splash-subtitle')!;
 
-type Phase = "fade-in" | "streak" | "streak-fade" | "pause" | "dissolve" | "done";
+type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve' | 'done';
 
-let phase: Phase = "fade-in";
+let phase: Phase = 'fade-in';
 let phaseStart = 0;
 let streakProgress = 0;
 
@@ -228,24 +240,25 @@ function elapsed(): number {
 }
 
 function tick(now: number): void {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // 2D overlay
+  ctx.clearRect(0, 0, canvas2d.width, canvas2d.height);
 
   switch (phase) {
-    case "fade-in": {
+    case 'fade-in': {
       const t = elapsed();
-      if (t < 50) {
-        title.classList.add("visible");
+      if (t > 600) {
+        title.classList.add('visible');
       }
-      if (t > 300) {
-        subtitle.classList.add("visible");
+      if (t > 900) {
+        subtitle.classList.add('visible');
       }
-      if (t > 1000) {
-        startPhase("streak");
+      if (t > 3500) {
+        startPhase('streak');
       }
       break;
     }
 
-    case "streak": {
+    case 'streak': {
       const t = elapsed();
       streakProgress = Math.min(t / STREAK_DURATION, 1);
       const eased = streakProgress < 0.5
@@ -259,45 +272,45 @@ function tick(now: number): void {
       drawStreakHead(x, y);
 
       if (streakProgress >= 1) {
-        startPhase("streak-fade");
+        startPhase('streak-fade');
       }
       break;
     }
 
-    case "streak-fade": {
+    case 'streak-fade': {
       const hasTrail = fadeOutTrail();
       drawTrail();
       if (!hasTrail) {
-        startPhase("pause");
+        startPhase('pause');
       }
       break;
     }
 
-    case "pause": {
-      if (elapsed() > 500) {
+    case 'pause': {
+      if (elapsed() > 1500) {
         spawnParticlesFromElement(title);
         spawnParticlesFromElement(subtitle);
         spawnParticlesFromTrail();
 
-        title.style.transition = "opacity 0.3s";
-        subtitle.style.transition = "opacity 0.3s";
-        title.style.opacity = "0";
-        subtitle.style.opacity = "0";
+        title.style.transition = 'opacity 0.3s';
+        subtitle.style.transition = 'opacity 0.3s';
+        title.style.opacity = '0';
+        subtitle.style.opacity = '0';
 
-        startPhase("dissolve");
+        startPhase('dissolve');
       }
       break;
     }
 
-    case "dissolve": {
+    case 'dissolve': {
       const alive = updateAndDrawParticles();
       if (!alive) {
-        startPhase("done");
+        startPhase('done');
       }
       break;
     }
 
-    case "done": {
+    case 'done': {
       sarah.splashDone();
       return;
     }
