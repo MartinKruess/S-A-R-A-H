@@ -101,8 +101,13 @@ export class SarahInput extends SarahElement {
   }
 
   validate(): boolean {
-    if (this.input.required && !this.input.value.trim()) {
+    const val = this.input.value.trim();
+    if (this.input.required && !val) {
       this.setError('Dieses Feld ist erforderlich');
+      return false;
+    }
+    if (this.input.required && val.length < 3) {
+      this.setError('Mindestens 3 Zeichen erforderlich');
       return false;
     }
     this.clearError();
