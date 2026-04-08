@@ -8,6 +8,10 @@
 - Delete merged branches locally and on GitHub
 - Conventional Commits: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`
 
+## Workflow
+- Use subagents for implementation tasks without asking — dispatch when needed
+- Use subagent-driven development for plan execution by default
+
 ## Code Standards
 - TypeScript: never use `unknown`, `never`, or `any` unless absolutely unavoidable
 - Use project-global resources (shared types, components, CSS custom properties)
