@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "rootDir": "./src/renderer",
+    "outDir": "./dist/renderer",
+    "module": "ES2022",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "sourceMap": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "declaration": false
+  },
+  "include": ["src/renderer/**/*"],
+  "exclude": ["node_modules", "dist", "src/renderer/dashboard/orb-scene.ts", "src/renderer/dashboard/dialog.ts"]
+}
