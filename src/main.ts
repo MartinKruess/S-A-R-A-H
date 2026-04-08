@@ -180,7 +180,10 @@ app.whenReady().then(async () => {
   const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
   const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
 
-  const resourcesPath = process.resourcesPath;
+  // In development, use project-local resources/ folder
+  const resourcesPath = app.isPackaged
+    ? process.resourcesPath
+    : path.join(__dirname, '..', 'resources');
   const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
   const whisperProvider = new WhisperProvider(resourcesPath);
   const piperProvider = new PiperProvider(resourcesPath);

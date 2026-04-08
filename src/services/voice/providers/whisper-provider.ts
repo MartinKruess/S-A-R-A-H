@@ -13,8 +13,8 @@ export class WhisperProvider implements SttProvider {
    * @param resourcesPath — path to app resources directory (e.g. process.resourcesPath)
    */
   constructor(resourcesPath: string) {
-    this.binaryPath = path.join(resourcesPath, 'whisper', 'whisper.exe');
-    this.modelPath = path.join(resourcesPath, 'whisper', 'models', 'ggml-small.bin');
+    this.binaryPath = path.join(resourcesPath, 'whisper', 'whisper-cli.exe');
+    this.modelPath = path.join(resourcesPath, 'whisper', 'ggml-small.bin');
   }
 
   async init(): Promise<void> {

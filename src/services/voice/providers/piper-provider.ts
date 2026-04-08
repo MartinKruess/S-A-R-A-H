@@ -15,7 +15,7 @@ export class PiperProvider implements TtsProvider {
    */
   constructor(resourcesPath: string) {
     this.binaryPath = path.join(resourcesPath, 'piper', 'piper.exe');
-    this.voicePath = path.join(resourcesPath, 'piper', 'voices', 'de_DE-thorsten-medium.onnx');
+    this.voicePath = path.join(resourcesPath, 'piper', 'de_DE-thorsten-medium.onnx');
   }
 
   async init(): Promise<void> {
