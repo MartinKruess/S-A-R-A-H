@@ -29,4 +29,31 @@ contextBridge.exposeInMainWorld('sarah', {
     ipcRenderer.on('llm:error', handler);
     return () => ipcRenderer.removeListener('llm:error', handler);
   },
+
+  // Voice API
+  voice: {
+    getState: () => ipcRenderer.invoke('voice-get-state') as Promise<string>,
+    onStateChange: (callback: (data: { state: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { state: string }) => callback(data);
+      ipcRenderer.on('voice:state', handler);
+      return () => ipcRenderer.removeListener('voice:state', handler);
+    },
+    onTranscript: (callback: (data: { text: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { text: string }) => callback(data);
+      ipcRenderer.on('voice:transcript', handler);
+      return () => ipcRenderer.removeListener('voice:transcript', handler);
+    },
+    onPlayAudio: (callback: (data: { audio: number[]; sampleRate: number }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { audio: number[]; sampleRate: number }) => callback(data);
+      ipcRenderer.on('voice:play-audio', handler);
+      return () => ipcRenderer.removeListener('voice:play-audio', handler);
+    },
+    playbackDone: () => ipcRenderer.invoke('voice-playback-done'),
+    onError: (callback: (data: { message: string }) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
+      ipcRenderer.on('voice:error', handler);
+      return () => ipcRenderer.removeListener('voice:error', handler);
+    },
+    sendAudioChunk: (chunk: number[]) => ipcRenderer.invoke('voice-audio-chunk', chunk),
+  },
 });

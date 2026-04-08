@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { LlmService } from './services/llm/llm-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
+import { VoiceService } from './services/voice/voice-service.js';
 
 try {
   require('electron-reloader')(module);
@@ -305,6 +306,56 @@ app.whenReady().then(async () => {
   forwardToRenderers('llm:chunk');
   forwardToRenderers('llm:done');
   forwardToRenderers('llm:error');
+
+  // Voice IPC handlers
+  ipcMain.handle('voice-get-state', () => {
+    const voiceService = appContext?.registry.get('voice');
+    if (!voiceService || !(voiceService instanceof VoiceService)) return 'idle';
+    return voiceService.voiceState;
+  });
+
+  ipcMain.handle('voice-playback-done', () => {
+    appContext!.bus.emit('renderer', 'voice:playback-done', {});
+  });
+
+  ipcMain.handle('voice-audio-chunk', (_event, chunk: number[]) => {
+    // Forward audio chunk to AudioManager for recording
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService) {
+      const float32 = new Float32Array(chunk);
+      // AudioManager.feedChunk is called by the voice service internally
+      // For now, emit on bus so VoiceService can route it
+      appContext!.bus.emit('renderer', 'voice:audio-chunk', { chunk: Array.from(float32) });
+    }
+  });
+
+  // Forward voice events to renderers
+  forwardToRenderers('voice:listening');
+  forwardToRenderers('voice:transcript');
+  forwardToRenderers('voice:speaking');
+  forwardToRenderers('voice:done');
+  forwardToRenderers('voice:error');
+  forwardToRenderers('voice:interrupted');
+  forwardToRenderers('voice:wake');
+  forwardToRenderers('voice:play-audio');
+
+  // Map voice state changes for renderer
+  const voiceStateMap: Record<string, string> = {
+    'voice:listening': 'listening',
+    'voice:speaking': 'speaking',
+    'voice:done': 'idle',
+    'voice:error': 'idle',
+    'voice:interrupted': 'listening',
+  };
+  for (const [topic, state] of Object.entries(voiceStateMap)) {
+    appContext!.bus.on(topic, () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('voice:state', { state });
+        }
+      }
+    });
+  }
 
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
     try {
