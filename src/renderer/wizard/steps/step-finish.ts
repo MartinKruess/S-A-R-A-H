@@ -168,33 +168,60 @@ export function createFinishStep(data: WizardData): HTMLElement {
   ]);
 
   // Personalization
-  const colorRow = document.createElement('div');
-  colorRow.className = 'summary-row';
-  const colorLabel = document.createElement('span');
-  colorLabel.className = 'summary-label';
-  colorLabel.textContent = 'Akzentfarbe';
-  const colorValue = document.createElement('span');
-  colorValue.className = 'summary-value';
-  colorValue.textContent = data.personalization.accentColor;
-  const colorDot = document.createElement('span');
-  colorDot.className = 'accent-preview';
-  colorDot.style.backgroundColor = data.personalization.accentColor;
-  colorDot.style.color = data.personalization.accentColor;
-  colorValue.appendChild(colorDot);
+  const fontSizeLabels: Record<string, string> = { small: 'Klein', default: 'Standard', large: 'Groß' };
+  const alignLabels: Record<string, string> = { stacked: 'Untereinander', bubbles: 'Bubbles' };
+  const modeLabels: Record<string, string> = { normal: 'Normal', spontaneous: 'Spontan', thoughtful: 'Nachdenklich' };
+  const quirkLabels: Record<string, string> = {
+    miauz: 'Miauz Genau!', gamertalk: 'Gamertalk', nerd: 'Prof. Dr. Dr.',
+    oldschool: 'Oldschool', altertum: 'Altertum', pirat: 'Pirat',
+  };
 
-  const persSection = document.createElement('div');
-  persSection.className = 'summary-section';
-  const persHeading = document.createElement('div');
-  persHeading.className = 'summary-heading';
-  persHeading.textContent = 'Personalisierung';
-  const persSummary = document.createElement('div');
-  persSummary.className = 'summary';
-  colorRow.appendChild(colorLabel);
-  colorRow.appendChild(colorValue);
-  persSummary.appendChild(colorRow);
-  persSection.appendChild(persHeading);
-  persSection.appendChild(persSummary);
-  finish.appendChild(persSection);
+  const persRows: [string, string][] = [
+    ['Akzentfarbe', data.personalization.accentColor],
+    ['Chat-Schrift', fontSizeLabels[data.personalization.chatFontSize] ?? 'Standard'],
+    ['Chat-Ausrichtung', alignLabels[data.personalization.chatAlignment] ?? 'Untereinander'],
+    ['Smileys', data.personalization.emojisEnabled ? 'An' : 'Aus'],
+    ['Antwortmodus', modeLabels[data.personalization.responseMode] ?? 'Normal'],
+  ];
+  if (data.personalization.characterTraits.length > 0) {
+    persRows.push(['Charakter', data.personalization.characterTraits.join(', ')]);
+  }
+  if (data.personalization.quirk) {
+    const quirkDisplay = quirkLabels[data.personalization.quirk] ?? data.personalization.quirk;
+    persRows.push(['Eigenart', quirkDisplay]);
+  }
+
+  const persSection2 = document.createElement('div');
+  persSection2.className = 'summary-section';
+  const persHeading2 = document.createElement('div');
+  persHeading2.className = 'summary-heading';
+  persHeading2.textContent = 'Personalisierung';
+  persSection2.appendChild(persHeading2);
+
+  const persSummary2 = document.createElement('div');
+  persSummary2.className = 'summary';
+  for (const [label, value] of persRows) {
+    const row = document.createElement('div');
+    row.className = 'summary-row';
+    const l = document.createElement('span');
+    l.className = 'summary-label';
+    l.textContent = label;
+    const v = document.createElement('span');
+    v.className = 'summary-value';
+    v.textContent = value;
+    if (label === 'Akzentfarbe') {
+      const dot = document.createElement('span');
+      dot.className = 'accent-preview';
+      dot.style.backgroundColor = data.personalization.accentColor;
+      dot.style.color = data.personalization.accentColor;
+      v.appendChild(dot);
+    }
+    row.appendChild(l);
+    row.appendChild(v);
+    persSummary2.appendChild(row);
+  }
+  persSection2.appendChild(persSummary2);
+  finish.appendChild(persSection2);
 
   // System
   addSection(finish, 'System', [
