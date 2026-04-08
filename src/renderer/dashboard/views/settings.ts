@@ -3,10 +3,12 @@ import { sarahSelect } from '../../components/sarah-select.js';
 import { sarahToggle } from '../../components/sarah-toggle.js';
 import { sarahButton } from '../../components/sarah-button.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
-import { applyAccentColor } from '../accent.js';
+import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 
-function getSarah(): any {
-  return (window as any).__sarah;
+type Config = Record<string, Record<string, unknown>>;
+
+function getSarah(): Record<string, (...args: unknown[]) => unknown> {
+  return ((window as unknown) as Record<string, unknown>).__sarah as Record<string, (...args: unknown[]) => unknown>;
 }
 
 function showSaved(feedback: HTMLElement): void {
@@ -28,8 +30,14 @@ function createSectionHeader(titleText: string): { header: HTMLElement; feedback
   return { header, feedback };
 }
 
-function createProfileSection(config: Record<string, any>): HTMLElement {
-  const profile = config.profile || {};
+function save(key: string, value: Record<string, unknown>): void {
+  (getSarah().saveConfig as (c: Record<string, unknown>) => Promise<unknown>)({ [key]: value });
+}
+
+// ── Section: Profil ──
+
+function createProfileSection(config: Config): HTMLElement {
+  const profile = (config.profile || {}) as Record<string, string>;
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -42,31 +50,19 @@ function createProfileSection(config: Record<string, any>): HTMLElement {
   grid.appendChild(sarahInput({
     label: 'Anzeigename',
     value: profile.displayName || '',
-    onChange: (val) => {
-      profile.displayName = val;
-      getSarah().saveConfig({ profile });
-      showSaved(feedback);
-    },
+    onChange: (val) => { profile.displayName = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
     label: 'Stadt',
     value: profile.city || '',
-    onChange: (val) => {
-      profile.city = val;
-      getSarah().saveConfig({ profile });
-      showSaved(feedback);
-    },
+    onChange: (val) => { profile.city = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
     label: 'Beruf',
     value: profile.profession || '',
-    onChange: (val) => {
-      profile.profession = val;
-      getSarah().saveConfig({ profile });
-      showSaved(feedback);
-    },
+    onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahSelect({
@@ -77,11 +73,7 @@ function createProfileSection(config: Record<string, any>): HTMLElement {
       { value: 'ausführlich', label: 'Ausführlich' },
     ],
     value: profile.responseStyle || 'mittel',
-    onChange: (val) => {
-      profile.responseStyle = val;
-      getSarah().saveConfig({ profile });
-      showSaved(feedback);
-    },
+    onChange: (val) => { profile.responseStyle = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahSelect({
@@ -92,19 +84,78 @@ function createProfileSection(config: Record<string, any>): HTMLElement {
       { value: 'locker', label: 'Locker' },
     ],
     value: profile.tone || 'freundlich',
-    onChange: (val) => {
-      profile.tone = val;
-      getSarah().saveConfig({ profile });
-      showSaved(feedback);
-    },
+    onChange: (val) => { profile.tone = val; save('profile', profile); showSaved(feedback); },
   }));
 
   section.appendChild(grid);
   return section;
 }
 
-function createResourcesSection(config: Record<string, any>): HTMLElement {
-  const resources = config.resources || {};
+// ── Section: Dateien & Ordner ──
+
+const PDF_CATEGORY_OPTIONS = [
+  { value: 'Gewerblich', label: 'Gewerblich', icon: '🏢' },
+  { value: 'Steuern', label: 'Steuern', icon: '🧾' },
+  { value: 'Präsentationen', label: 'Präsentationen', icon: '📊' },
+  { value: 'Bewerbung', label: 'Bewerbung', icon: '📨' },
+  { value: 'Zertifikate', label: 'Zertifikate', icon: '🏅' },
+  { value: 'Verträge', label: 'Verträge', icon: '📝' },
+  { value: 'Kontoauszüge', label: 'Kontoauszüge', icon: '🏦' },
+];
+
+const PDF_PLACEHOLDERS: Record<string, string> = {
+  'Kontoauszüge': 'Bankname_MM_YY',
+  'Bewerbung': 'Firmenname_Stelle',
+  'Steuern': 'Jahr_Steuerart',
+  'Verträge': 'Anbieter_Vertragsart',
+  'Zertifikate': 'Aussteller_Thema_Jahr',
+  'Gewerblich': 'Firma_Dokumenttyp',
+  'Präsentationen': 'Thema_Datum',
+};
+
+interface PdfCategory {
+  tag: string;
+  folder: string;
+  pattern: string;
+  inferFromExisting: boolean;
+}
+
+function createPdfBlock(cat: PdfCategory, onUpdate: () => void): HTMLElement {
+  const block = document.createElement('div');
+  block.style.cssText = 'padding: var(--sarah-space-md); background: var(--sarah-bg-surface); border: 1px solid var(--sarah-border); border-radius: var(--sarah-radius-md); display: flex; flex-direction: column; gap: var(--sarah-space-sm);';
+  block.dataset.pdfTag = cat.tag;
+
+  const title = document.createElement('div');
+  title.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-accent); font-weight: 500; letter-spacing: 0.03em;';
+  title.textContent = cat.tag;
+  block.appendChild(title);
+
+  block.appendChild(sarahPathPicker({
+    label: 'Ordner',
+    placeholder: 'Ordner auswählen...',
+    value: cat.folder,
+    onChange: (value) => { cat.folder = value; onUpdate(); },
+  }));
+
+  block.appendChild(sarahInput({
+    label: 'Benennungsschema (optional)',
+    placeholder: PDF_PLACEHOLDERS[cat.tag] ?? 'Beschreibung_Datum',
+    value: cat.pattern,
+    onChange: (value) => { cat.pattern = value; onUpdate(); },
+  }));
+
+  block.appendChild(sarahToggle({
+    label: 'An bestehenden Dateien orientieren',
+    checked: cat.inferFromExisting,
+    onChange: (value) => { cat.inferFromExisting = value; onUpdate(); },
+  }));
+
+  return block;
+}
+
+function createFilesSection(config: Config): HTMLElement {
+  const resources = (config.resources || {}) as Record<string, unknown>;
+  const skills = (config.skills || {}) as Record<string, unknown>;
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -115,186 +166,86 @@ function createResourcesSection(config: Record<string, any>): HTMLElement {
   grid.className = 'settings-grid';
 
   grid.appendChild(sarahPathPicker({
-    label: 'PDF-Ordner',
-    placeholder: 'PDF-Ordner...',
-    value: resources.pdfFolder || '',
-    onChange: (val) => {
-      resources.pdfFolder = val;
-      getSarah().saveConfig({ resources });
-      showSaved(feedback);
-    },
-  }));
-
-  grid.appendChild(sarahPathPicker({
     label: 'Bilder-Ordner',
     placeholder: 'Bilder-Ordner...',
-    value: resources.picturesFolder || '',
-    onChange: (val) => {
-      resources.picturesFolder = val;
-      getSarah().saveConfig({ resources });
-      showSaved(feedback);
-    },
+    value: (resources.picturesFolder as string) || '',
+    onChange: (val) => { resources.picturesFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahPathPicker({
     label: 'Installations-Ordner',
     placeholder: 'Installations-Ordner...',
-    value: resources.installFolder || '',
-    onChange: (val) => {
-      resources.installFolder = val;
-      getSarah().saveConfig({ resources });
-      showSaved(feedback);
-    },
+    value: (resources.installFolder as string) || '',
+    onChange: (val) => { resources.installFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahPathPicker({
-    label: 'Wichtige Ordner',
-    placeholder: 'Ordner auswählen...',
-    value: Array.isArray(resources.importantFolders) ? resources.importantFolders[0] || '' : '',
-    onChange: (val) => {
-      resources.importantFolders = [val];
-      getSarah().saveConfig({ resources });
-      showSaved(feedback);
-    },
+    label: 'Games-Ordner',
+    placeholder: 'Games-Ordner...',
+    value: (resources.gamesFolder as string) || '',
+    onChange: (val) => { resources.gamesFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
-  section.appendChild(grid);
-  return section;
-}
-
-function createTrustSection(config: Record<string, any>): HTMLElement {
-  const trust = config.trust || {};
-  const section = document.createElement('div');
-  section.className = 'settings-section';
-
-  const { header, feedback } = createSectionHeader('Vertrauen & Sicherheit');
-  section.appendChild(header);
-
-  section.appendChild(sarahToggle({
-    label: 'Erinnerungen erlauben',
-    description: 'S.A.R.A.H. darf sich Dinge aus Gesprächen merken',
-    checked: trust.memoryAllowed !== false,
-    onChange: (val) => {
-      trust.memoryAllowed = val;
-      getSarah().saveConfig({ trust });
-      showSaved(feedback);
-    },
+  grid.appendChild(sarahPathPicker({
+    label: 'Weitere Programme (Ordner)',
+    placeholder: 'z.B. D:\\Programme...',
+    value: (resources.extraProgramsFolder as string) || '',
+    onChange: (val) => { resources.extraProgramsFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
-  const spacer = document.createElement('div');
-  spacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer);
-
-  section.appendChild(sarahSelect({
-    label: 'Dateizugriff',
-    options: [
-      { value: 'none', label: 'Kein Zugriff' },
-      { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
-      { value: 'full', label: 'Voller Zugriff' },
-    ],
-    value: trust.fileAccess || 'specific-folders',
-    onChange: (val) => {
-      trust.fileAccess = val;
-      getSarah().saveConfig({ trust });
-      showSaved(feedback);
-    },
-  }));
-
-  return section;
-}
-
-const ACCENT_COLORS = [
-  { value: '#00d4ff', label: 'Cyan' },
-  { value: '#4466ff', label: 'Blau' },
-  { value: '#8855ff', label: 'Violett' },
-  { value: '#ff8844', label: 'Orange' },
-  { value: '#44ff88', label: 'Grün' },
-  { value: '#ff4488', label: 'Pink' },
-  { value: '#ffcc00', label: 'Gold' },
-  { value: '#ff5555', label: 'Rot' },
-];
-
-function createPersonalizationSection(config: Record<string, any>): HTMLElement {
-  const personalization = config.personalization || {};
-  const section = document.createElement('div');
-  section.className = 'settings-section';
-
-  const { header, feedback } = createSectionHeader('Personalisierung');
-  section.appendChild(header);
-
-  // Accent color picker
-  const colorLabel = document.createElement('div');
-  colorLabel.className = 'settings-section-title';
-  colorLabel.style.fontSize = 'var(--sarah-font-size-sm)';
-  colorLabel.style.color = 'var(--sarah-text-secondary)';
-  colorLabel.style.marginBottom = 'var(--sarah-space-xs)';
-  colorLabel.textContent = 'Akzentfarbe';
-  section.appendChild(colorLabel);
-
-  const colorGrid = document.createElement('div');
-  colorGrid.style.cssText = 'display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: var(--sarah-space-lg);';
-
-  for (const color of ACCENT_COLORS) {
-    const swatch = document.createElement('div');
-    swatch.style.cssText = `width: 40px; height: 40px; border-radius: var(--sarah-radius-md); border: 2px solid transparent; cursor: pointer; transition: all var(--sarah-transition-fast); background-color: ${color.value};`;
-    if (personalization.accentColor === color.value) {
-      swatch.style.borderColor = 'var(--sarah-text-primary)';
-      swatch.style.boxShadow = `0 0 12px ${color.value}`;
-    }
-    swatch.title = color.label;
-    swatch.addEventListener('click', () => {
-      personalization.accentColor = color.value;
-      applyAccentColor(color.value);
-      colorGrid.querySelectorAll('div').forEach(s => {
-        (s as HTMLElement).style.borderColor = 'transparent';
-        (s as HTMLElement).style.boxShadow = 'none';
-      });
-      swatch.style.borderColor = 'var(--sarah-text-primary)';
-      swatch.style.boxShadow = `0 0 12px ${color.value}`;
-      getSarah().saveConfig({ personalization });
-      showSaved(feedback);
-    });
-    colorGrid.appendChild(swatch);
+  if (skills.programming) {
+    grid.appendChild(sarahPathPicker({
+      label: 'Projekte-Ordner',
+      placeholder: 'Projekte-Ordner...',
+      value: (skills.programmingProjectsFolder as string) || '',
+      onChange: (val) => { skills.programmingProjectsFolder = val; save('skills', skills); showSaved(feedback); },
+    }));
   }
-  section.appendChild(colorGrid);
-
-  const grid = document.createElement('div');
-  grid.className = 'settings-grid';
-
-  grid.appendChild(sarahSelect({
-    label: 'Stimme',
-    options: [
-      { value: 'default-female-de', label: 'Weiblich (Deutsch)' },
-      { value: 'default-male-de', label: 'Männlich (Deutsch)' },
-      { value: 'default-female-en', label: 'Female (English)' },
-      { value: 'default-male-en', label: 'Male (English)' },
-    ],
-    value: personalization.voice || 'default-female-de',
-    onChange: (val) => {
-      personalization.voice = val;
-      getSarah().saveConfig({ personalization });
-      showSaved(feedback);
-    },
-  }));
-
-  grid.appendChild(sarahSelect({
-    label: 'Sprechgeschwindigkeit',
-    options: [
-      { value: '0.8', label: 'Langsam' },
-      { value: '1', label: 'Normal' },
-      { value: '1.2', label: 'Schnell' },
-    ],
-    value: String(personalization.speechRate ?? 1),
-    onChange: (val) => {
-      personalization.speechRate = parseFloat(val);
-      getSarah().saveConfig({ personalization });
-      showSaved(feedback);
-    },
-  }));
 
   section.appendChild(grid);
+
+  // PDF Categories
+  const pdfCats: PdfCategory[] = (resources.pdfCategories as PdfCategory[]) || [];
+  const pdfContainer = document.createElement('div');
+  pdfContainer.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-md); margin-top: var(--sarah-space-md);';
+
+  const onPdfUpdate = () => { resources.pdfCategories = pdfCats; save('resources', resources); showSaved(feedback); };
+
+  for (const cat of pdfCats) {
+    pdfContainer.appendChild(createPdfBlock(cat, onPdfUpdate));
+  }
+
+  section.appendChild(sarahTagSelect({
+    label: 'PDF-Kategorien',
+    options: PDF_CATEGORY_OPTIONS,
+    selected: pdfCats.map(c => c.tag),
+    allowCustom: true,
+    onChange: (values) => {
+      for (const tag of values) {
+        if (!pdfContainer.querySelector(`[data-pdf-tag="${tag}"]`)) {
+          const cat: PdfCategory = { tag, folder: '', pattern: '', inferFromExisting: true };
+          pdfCats.push(cat);
+          pdfContainer.appendChild(createPdfBlock(cat, onPdfUpdate));
+        }
+      }
+      const blocks = pdfContainer.querySelectorAll<HTMLElement>('[data-pdf-tag]');
+      blocks.forEach(block => {
+        const blockTag = block.dataset.pdfTag!;
+        if (!values.includes(blockTag)) {
+          block.remove();
+          const idx = pdfCats.findIndex(c => c.tag === blockTag);
+          if (idx >= 0) pdfCats.splice(idx, 1);
+        }
+      });
+      onPdfUpdate();
+    },
+  }));
+  section.appendChild(pdfContainer);
+
   return section;
 }
+
+// ── Main export ──
 
 export async function createSettingsView(): Promise<HTMLElement> {
   const container = document.createElement('div');
@@ -305,12 +256,10 @@ export async function createSettingsView(): Promise<HTMLElement> {
   pageTitle.textContent = 'Einstellungen';
   container.appendChild(pageTitle);
 
-  const config = await getSarah().getConfig();
+  const config = await (getSarah().getConfig as () => Promise<Config>)() as Config;
 
   container.appendChild(createProfileSection(config));
-  container.appendChild(createResourcesSection(config));
-  container.appendChild(createTrustSection(config));
-  container.appendChild(createPersonalizationSection(config));
+  container.appendChild(createFilesSection(config));
 
   // Wizard re-run button
   const wizardSection = document.createElement('div');
@@ -318,11 +267,10 @@ export async function createSettingsView(): Promise<HTMLElement> {
   wizardSection.appendChild(sarahButton({
     label: 'Einrichtung erneut durchführen',
     variant: 'secondary',
-    onClick: () => {
-      window.location.href = 'wizard.html';
-    },
+    onClick: () => { window.location.href = 'wizard.html'; },
   }));
   container.appendChild(wizardSection);
 
   return container;
 }
+
