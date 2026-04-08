@@ -1,7 +1,9 @@
-import type { WizardData, ProgramEntry, ProgramType } from '../wizard.js';
+import type { WizardData, ProgramEntry, ProgramType, PdfCategory } from '../wizard.js';
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
+import { sarahInput } from '../../components/sarah-input.js';
+import { sarahToggle } from '../../components/sarah-toggle.js';
 
 function getSarah(): any {
   return (window as any).__sarah;
@@ -119,8 +121,109 @@ function buildProgramEntry(name: string): ProgramEntry {
   return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
 }
 
+// --- PDF Category constants ---
+
+const PDF_CATEGORY_OPTIONS = [
+  { value: 'Gewerblich', label: 'Gewerblich', icon: '🏢' },
+  { value: 'Steuern', label: 'Steuern', icon: '🧾' },
+  { value: 'Präsentationen', label: 'Präsentationen', icon: '📊' },
+  { value: 'Bewerbung', label: 'Bewerbung', icon: '📨' },
+  { value: 'Zertifikate', label: 'Zertifikate', icon: '🏅' },
+  { value: 'Verträge', label: 'Verträge', icon: '📝' },
+  { value: 'Kontoauszüge', label: 'Kontoauszüge', icon: '🏦' },
+];
+
+const PDF_PLACEHOLDERS: Record<string, string> = {
+  'Kontoauszüge': 'Bankname_MM_YY',
+  'Bewerbung': 'Firmenname_Stelle',
+  'Steuern': 'Jahr_Steuerart',
+  'Verträge': 'Anbieter_Vertragsart',
+  'Zertifikate': 'Aussteller_Thema_Jahr',
+  'Gewerblich': 'Firma_Dokumenttyp',
+  'Präsentationen': 'Thema_Datum',
+};
+
+const GRID_CSS = `
+  .folder-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: var(--sarah-space-md);
+  }
+
+  @media (min-width: 600px) {
+    .folder-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  .pdf-block {
+    padding: var(--sarah-space-md);
+    background: var(--sarah-bg-surface);
+    border: 1px solid var(--sarah-border);
+    border-radius: var(--sarah-radius-md);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sarah-space-sm);
+  }
+
+  .pdf-block-title {
+    font-size: var(--sarah-font-size-sm);
+    color: var(--sarah-accent);
+    font-weight: 500;
+    letter-spacing: 0.03em;
+  }
+`;
+
+function findCategory(data: WizardData, tag: string): PdfCategory {
+  let cat = data.resources.pdfCategories.find(c => c.tag === tag);
+  if (!cat) {
+    cat = { tag, folder: '', pattern: '', inferFromExisting: true };
+    data.resources.pdfCategories.push(cat);
+  }
+  return cat;
+}
+
+function createPdfBlock(tag: string, data: WizardData): HTMLElement {
+  const cat = findCategory(data, tag);
+
+  const block = document.createElement('div');
+  block.className = 'pdf-block';
+  block.dataset.pdfTag = tag;
+
+  const title = document.createElement('div');
+  title.className = 'pdf-block-title';
+  title.textContent = tag;
+  block.appendChild(title);
+
+  block.appendChild(sarahPathPicker({
+    label: 'Ordner',
+    placeholder: 'Ordner auswählen...',
+    value: cat.folder,
+    onChange: (value) => { cat.folder = value; },
+  }));
+
+  block.appendChild(sarahInput({
+    label: 'Benennungsschema (optional)',
+    placeholder: PDF_PLACEHOLDERS[tag] ?? 'Beschreibung_Datum',
+    value: cat.pattern,
+    onChange: (value) => { cat.pattern = value; },
+  }));
+
+  block.appendChild(sarahToggle({
+    label: 'An bestehenden Dateien orientieren',
+    checked: cat.inferFromExisting,
+    onChange: (value) => { cat.inferFromExisting = value; },
+  }));
+
+  return block;
+}
+
 export function createFilesStep(data: WizardData): HTMLElement {
   const container = document.createElement('div');
+
+  const style = document.createElement('style');
+  style.textContent = GRID_CSS;
+  container.appendChild(style);
 
   const detectedFolders: Record<string, string> = (data.system.folders as unknown as Record<string, string>) || {};
 
@@ -140,8 +243,12 @@ export function createFilesStep(data: WizardData): HTMLElement {
     scanStatus,
   ];
 
+  // --- Folder grid (2-col on desktop) ---
+  const folderGrid = document.createElement('div');
+  folderGrid.className = 'folder-grid';
+
   // Extra programs folder picker
-  children.push(sarahPathPicker({
+  folderGrid.appendChild(sarahPathPicker({
     label: 'Weitere Programme (Ordner scannen)',
     placeholder: 'z.B. E:\\ oder D:\\Programme...',
     value: data.resources.extraProgramsFolder,
@@ -162,7 +269,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
 
   // Games folder picker (only if gaming selected)
   if (showGames) {
-    children.push(sarahPathPicker({
+    folderGrid.appendChild(sarahPathPicker({
       label: 'Games-Ordner (automatisch scannen)',
       placeholder: 'z.B. D:\\Games...',
       value: data.resources.gamesFolder,
@@ -183,31 +290,56 @@ export function createFilesStep(data: WizardData): HTMLElement {
   }
 
   // Standard folder pickers
+  folderGrid.appendChild(sarahPathPicker({
+    label: 'Wo liegen deine Bilder?',
+    placeholder: detectedFolders.pictures || 'Bilder-Ordner...',
+    value: data.resources.picturesFolder || detectedFolders.pictures || '',
+    onChange: (value) => { data.resources.picturesFolder = value; },
+  }));
+
+  folderGrid.appendChild(sarahPathPicker({
+    label: 'Wo installierst du Programme?',
+    placeholder: 'Installations-Ordner...',
+    value: data.resources.installFolder,
+    onChange: (value) => { data.resources.installFolder = value; },
+  }));
+
+  children.push(folderGrid);
+
+  // --- PDF Categories ---
+  const pdfBlocksContainer = document.createElement('div');
+  pdfBlocksContainer.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-md);';
+
+  // Restore existing category blocks
+  for (const cat of data.resources.pdfCategories) {
+    pdfBlocksContainer.appendChild(createPdfBlock(cat.tag, data));
+  }
+
   children.push(
-    sarahPathPicker({
-      label: 'Wichtige Ordner',
-      placeholder: 'Ordner auswählen...',
-      value: data.resources.importantFolders[0] ?? '',
-      onChange: (value) => { data.resources.importantFolders = [value]; },
+    sarahTagSelect({
+      label: 'Welche Arten von PDFs hast du?',
+      options: PDF_CATEGORY_OPTIONS,
+      selected: data.resources.pdfCategories.map(c => c.tag),
+      allowCustom: true,
+      onChange: (values) => {
+        // Add new blocks
+        for (const tag of values) {
+          if (!pdfBlocksContainer.querySelector(`[data-pdf-tag="${tag}"]`)) {
+            pdfBlocksContainer.appendChild(createPdfBlock(tag, data));
+          }
+        }
+        // Remove deselected blocks
+        const blocks = pdfBlocksContainer.querySelectorAll<HTMLElement>('[data-pdf-tag]');
+        blocks.forEach(block => {
+          const blockTag = block.dataset.pdfTag!;
+          if (!values.includes(blockTag)) {
+            block.remove();
+            data.resources.pdfCategories = data.resources.pdfCategories.filter(c => c.tag !== blockTag);
+          }
+        });
+      },
     }),
-    sarahPathPicker({
-      label: 'Wo speicherst du PDFs?',
-      placeholder: 'PDF-Ordner...',
-      value: data.resources.pdfFolder,
-      onChange: (value) => { data.resources.pdfFolder = value; },
-    }),
-    sarahPathPicker({
-      label: 'Wo liegen deine Bilder?',
-      placeholder: detectedFolders.pictures || 'Bilder-Ordner...',
-      value: data.resources.picturesFolder || detectedFolders.pictures || '',
-      onChange: (value) => { data.resources.picturesFolder = value; },
-    }),
-    sarahPathPicker({
-      label: 'Wo installierst du Programme?',
-      placeholder: 'Installations-Ordner...',
-      value: data.resources.installFolder,
-      onChange: (value) => { data.resources.installFolder = value; },
-    }),
+    pdfBlocksContainer,
   );
 
   const form = sarahForm({
