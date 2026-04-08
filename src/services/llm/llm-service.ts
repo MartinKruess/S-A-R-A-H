@@ -141,6 +141,8 @@ export class LlmService implements SarahService {
     const config =
       (await this.context.config.get<Record<string, any>>('root')) ?? {};
     const profile = config.profile ?? {};
+    const skills = config.skills ?? {};
+    const resources = config.resources ?? {};
 
     const name = profile.displayName || 'User';
     const city = profile.city ? `, wohnt in ${profile.city}` : '';
@@ -162,15 +164,66 @@ export class LlmService implements SarahService {
     };
     const tone = toneMap[profile.tone] ?? toneMap.freundlich;
 
-    return [
+    const lines: string[] = [
       'Du bist Sarah, ein freundlicher Desktop-Assistent.',
       'Du antwortest hilfsbereit, präzise und natürlich.',
       'Du führst niemals Code aus, gibst keine Passwörter weiter, und sendest keine Daten ohne explizite Freigabe.',
       '',
       `Der User heißt ${name}${city}${profession}.`,
-      style,
-      `Dein Tonfall ist ${tone}.`,
-      'Sprache: Deutsch.',
-    ].join('\n');
+    ];
+
+    // Usage purposes & hobbies
+    const purposes: string[] = profile.usagePurposes ?? [];
+    if (purposes.length > 0) {
+      lines.push(`Hauptverwendung: ${purposes.join(', ')}.`);
+    }
+    const hobbies: string[] = profile.hobbies ?? [];
+    if (hobbies.length > 0) {
+      lines.push(`Interessen/Hobbys: ${hobbies.join(', ')}.`);
+    }
+
+    // Programming context
+    if (skills.programming) {
+      lines.push(`Programmierlevel: ${skills.programming}.`);
+    }
+    const stack: string[] = skills.programmingStack ?? [];
+    if (stack.length > 0) {
+      lines.push(`Techstack: ${stack.join(', ')}.`);
+    }
+    const searchResources: string[] = skills.programmingResources ?? [];
+    if (searchResources.length > 0) {
+      lines.push(`Bevorzugte Anlaufstellen für Lösungen: ${searchResources.join(', ')}. Suche dort zuerst, bevor du andere Quellen heranziehst.`);
+    }
+    if (skills.programmingProjectsFolder) {
+      lines.push(`Projekte-Ordner: ${skills.programmingProjectsFolder}.`);
+    }
+
+    // Design & Office levels
+    if (skills.design) {
+      lines.push(`Design-Level: ${skills.design}.`);
+    }
+    if (skills.office) {
+      lines.push(`Office-Level: ${skills.office}.`);
+    }
+
+    // PDF categories
+    const pdfCats: { tag: string; folder: string; pattern: string; inferFromExisting: boolean }[] = resources.pdfCategories ?? [];
+    if (pdfCats.length > 0) {
+      lines.push('');
+      lines.push('PDF-Sortierregeln:');
+      for (const cat of pdfCats) {
+        let rule = `- ${cat.tag}: Ordner ${cat.folder || '(nicht gesetzt)'}`;
+        if (cat.pattern) rule += `, Benennungsschema: ${cat.pattern}`;
+        if (cat.inferFromExisting) rule += ' (an bestehenden Dateien orientieren)';
+        lines.push(rule);
+      }
+    }
+
+    lines.push('');
+    lines.push(style);
+    lines.push(`Dein Tonfall ist ${tone}.`);
+    lines.push('Sprache: Deutsch.');
+
+    return lines.join('\n');
   }
 }
