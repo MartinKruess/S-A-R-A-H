@@ -1,0 +1,118 @@
+<h2>S.A.R.A.H. — Architektur-Ansätze</h2>
+<p class="subtitle">Drei Wege, das gleiche Ziel zu erreichen. Meine Empfehlung: Ansatz B.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Monolith — Alles in Electron</h3>
+      <p>Ein einzelner Electron-Prozess für alles: Avatar-Rendering, LLM-Kommunikation, Sprache, Browser, Dateisystem, Plugins.</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>Pros</h4>
+          <ul>
+            <li>Einfachster Start — alles an einem Ort</li>
+            <li>Kein IPC zwischen Services nötig</li>
+            <li>Ein Installer, ein Prozess</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>Cons</h4>
+          <ul>
+            <li>Wird schnell unübersichtlich bei dieser Projektgröße</li>
+            <li>Avatar-Rendering + LLM + Browser im gleichen Prozess = Performance-Probleme</li>
+            <li>Ein Crash killt alles</li>
+            <li>Schwer testbar, schwer erweiterbar</li>
+            <li>Plattformwechsel (Mac/Linux) wird zum Albtraum</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)" style="border-color: rgba(0, 212, 255, 0.4);">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Modularer Kern — Service-Layer Architektur ⭐</h3>
+      <p>Electron als Shell, aber intern aufgeteilt in unabhängige Services die über einen Message-Bus kommunizieren. Jeder Service hat eine klare Aufgabe.</p>
+
+      <div style="margin: 16px 0; padding: 16px; background: rgba(0,212,255,0.05); border-radius: 8px; border: 1px solid rgba(0,212,255,0.15);">
+        <div style="font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(0,212,255,0.7); margin-bottom: 12px;">Architektur-Schema</div>
+        <pre style="color: #a0a0b8; font-size: 0.85em; line-height: 1.6; margin: 0;">
+┌─────────────────────────────────────────────────────┐
+│                  Electron Shell                      │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐  │
+│  │  Avatar   │  │  Chat    │  │  Internal Browser │  │
+│  │  (Three)  │  │  UI      │  │  (Sandbox)        │  │
+│  └────┬─────┘  └────┬─────┘  └────────┬──────────┘  │
+│       └──────────────┼─────────────────┘             │
+│                      │                               │
+│              ┌───────▼────────┐                      │
+│              │  Message Bus    │                      │
+│              └───────┬────────┘                      │
+│   ┌──────┬───────┬───┴───┬────────┬──────────┐      │
+│   ▼      ▼       ▼       ▼        ▼          ▼      │
+│ ┌────┐┌─────┐┌──────┐┌──────┐┌────────┐┌────────┐  │
+│ │LLM ││Voice││Files ││Rules ││Actions ││Plugins │  │
+│ │Svc ││ Svc ││ Svc  ││ Svc  ││  Svc   ││  Svc   │  │
+│ └────┘└─────┘└──────┘└──────┘└────────┘└────────┘  │
+│                      │                               │
+│              ┌───────▼────────┐                      │
+│              │  Storage Layer  │                      │
+│              │  (SQLite/local) │                      │
+│              └────────────────┘                      │
+└─────────────────────────────────────────────────────┘</pre>
+      </div>
+
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>Pros</h4>
+          <ul>
+            <li>Jeder Service ist unabhängig testbar und austauschbar</li>
+            <li>LLM-Backend wechseln? Nur den LLM-Service ändern</li>
+            <li>Plugin-System ist natürlich eingebaut</li>
+            <li>Performance: Services können in Worker-Threads laufen</li>
+            <li>Ein Service crasht → Rest läuft weiter</li>
+            <li>Plattform-Abstraktion pro Service möglich</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>Cons</h4>
+          <ul>
+            <li>Mehr initiale Architektur-Arbeit</li>
+            <li>Message-Bus muss sauber designed werden</li>
+            <li>Etwas komplexer als Monolith am Anfang</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Microservices — Separate Prozesse</h3>
+      <p>Jeder Service ist ein eigener Prozess (eigene Node-Instanz oder sogar eigene Sprache). Kommunikation über HTTP/WebSocket/gRPC.</p>
+      <div class="pros-cons">
+        <div class="pros">
+          <h4>Pros</h4>
+          <ul>
+            <li>Maximale Isolation und Skalierbarkeit</li>
+            <li>Services können in verschiedenen Sprachen sein (Python für LLM, Rust für Performance)</li>
+            <li>Perfekt für Cloud-Deployment später</li>
+          </ul>
+        </div>
+        <div class="cons">
+          <h4>Cons</h4>
+          <ul>
+            <li>Massiver Overhead für eine Desktop-App</li>
+            <li>Installer wird komplex (mehrere Prozesse starten)</li>
+            <li>Netzwerk-Kommunikation auf localhost = unnötige Latenz</li>
+            <li>Debugging wird deutlich schwieriger</li>
+            <li>Overkill für den aktuellen Scope</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
