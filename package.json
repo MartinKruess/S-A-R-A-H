@@ -4,29 +4,17 @@
   "description": "",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.renderer.json && esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022",
-    "start": "npm run build && electron .",
-    "dev": "concurrently \"tsc --watch\" \"tsc -p tsconfig.renderer.json --watch\" \"esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022 --watch\" \"electron .\"",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "build": "tsc",
+    "start": "tsc && electron .",
+    "dev": "tsc && electron ."
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.5.2",
-    "@types/three": "^0.183.1",
-    "concurrently": "^9.2.1",
     "electron": "^41.1.1",
-    "electron-reloader": "^1.2.3",
-    "esbuild": "^0.28.0",
-    "typescript": "^6.0.2",
-    "vitest": "^4.1.2"
-  },
-  "dependencies": {
-    "better-sqlite3": "^12.8.0",
-    "three": "^0.183.2"
+    "typescript": "^6.0.2"
   }
 }

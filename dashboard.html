@@ -1,41 +1,30 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
     <title>S.A.R.A.H.</title>
-    <link rel="stylesheet" href="styles/dashboard.css" />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0a0a1a;
+        color: #e0e0e0;
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+      }
+
+      .placeholder {
+        font-size: 1.2rem;
+        color: #555;
+      }
+    </style>
   </head>
   <body>
-    <div class="app-layout">
-      <nav class="app-sidebar">
-          <button class="nav-item active" data-view="sarah" title="S.A.R.A.H.">
-            <sarah-svg width="22" height="22"></sarah-svg>
-          </button>
-          <button class="nav-item" data-view="dashboard" title="Dashboard">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
-          </button>
-          <button class="nav-item" data-view="settings" title="Einstellungen">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
-      </nav>
-      <div class="app-main" id="sarah-area">
-        <button class="chat-mode-toggle" id="chat-mode-toggle" title="Chat-Modus">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        </button>
-        <div class="sarah-orb-wrapper" id="sarah-orb-wrapper">
-          <div id="sarah-orb-3d" style="width: 100%; height: 100%;"></div>
-        </div>
-        <div class="chat-container" id="chat-container">
-          <div class="chat-messages" id="chat-messages"></div>
-        </div>
-        <div class="chat-input-bar" id="chat-input-bar">
-          <input type="text" class="chat-input" id="chat-input" placeholder="Nachricht an Sarah..." autocomplete="off" />
-        </div>
-      </div>
-    </div>
-
-    <script type="module" src="dist/renderer/dashboard/dashboard.js"></script>
-    <script src="dist/renderer/dashboard/orb-scene.js"></script>
+    <div class="placeholder">Dashboard</div>
   </body>
 </html>

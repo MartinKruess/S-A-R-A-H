@@ -22,16 +22,6 @@
         height: 100vh;
       }
 
-      /* Three.js orb container — full background */
-      #orb {
-        position: absolute;
-        top: 0; left: 0;
-        width: 100%;
-        height: 100%;
-        z-index: 1;
-      }
-
-      /* Text overlay */
       #splash-container {
         position: absolute;
         top: 0; left: 0;
@@ -42,7 +32,6 @@
         justify-content: center;
         align-items: center;
         z-index: 10;
-        pointer-events: none;
       }
 
       #splash-title {
@@ -57,10 +46,9 @@
 
       #splash-subtitle {
         font-family: "Dancing Script", cursive;
-        font-size: 1.5rem;
+        font-size: 1.15rem;
         color: #a0a0b8;
         margin-top: 0.5rem;
-        margin-left: -1.5rem;
         opacity: 0;
         transition: opacity 0.5s ease-in;
       }
@@ -70,7 +58,6 @@
         opacity: 1;
       }
 
-      /* 2D particle/streak overlay */
       #splash-canvas {
         position: absolute;
         top: 0; left: 0;
@@ -82,7 +69,6 @@
     </style>
   </head>
   <body>
-    <div id="orb"></div>
     <div id="splash-container">
       <div id="splash-title">S.A.R.A.H.</div>
       <div id="splash-subtitle">Smart Assistant for Resource and Administration Handling</div>
