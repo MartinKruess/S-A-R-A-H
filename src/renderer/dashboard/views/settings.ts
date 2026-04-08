@@ -302,9 +302,9 @@ function createTrustSection(config: Config): HTMLElement {
     options: [
       { value: 'none', label: 'Kein Zugriff' },
       { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
-      { value: 'all', label: 'Voller Zugriff' },
+      { value: 'all', label: 'Alle Dateien' },
     ],
-    value: (trust.fileAccess as string) || 'specific-folders',
+    value: ((trust.fileAccess as string) === 'full' ? 'all' : (trust.fileAccess as string)) || 'specific-folders',
     onChange: (val) => { trust.fileAccess = val; save('trust', trust); showSaved(feedback); },
   }));
 
