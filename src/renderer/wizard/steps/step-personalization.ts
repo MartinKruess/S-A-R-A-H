@@ -1,6 +1,9 @@
 import type { WizardData } from '../wizard.js';
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahSelect } from '../../components/sarah-select.js';
+import { sarahToggle } from '../../components/sarah-toggle.js';
+import { sarahTagSelect } from '../../components/sarah-tag-select.js';
+import { sarahInput } from '../../components/sarah-input.js';
 
 const PERS_CSS = `
   .color-grid {
@@ -39,6 +42,30 @@ const PERS_CSS = `
     flex-direction: column;
     gap: var(--sarah-space-xs);
   }
+
+  .section-heading {
+    font-size: var(--sarah-font-size-sm);
+    color: var(--sarah-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: var(--sarah-space-lg);
+    margin-bottom: var(--sarah-space-xs);
+  }
+
+  .section-heading:first-of-type {
+    margin-top: 0;
+  }
+
+  .quirk-custom-input {
+    margin-top: var(--sarah-space-sm);
+  }
+
+  .quirk-hint {
+    font-size: var(--sarah-font-size-sm);
+    color: var(--sarah-text-muted);
+    margin-top: var(--sarah-space-xs);
+    line-height: 1.4;
+  }
 `;
 
 const ACCENT_COLORS = [
@@ -52,6 +79,33 @@ const ACCENT_COLORS = [
   { value: '#ff5555', label: 'Rot' },
 ];
 
+const TRAIT_OPTIONS = [
+  { value: 'Humorvoll', label: 'Humorvoll', icon: '😄' },
+  { value: 'Sarkastisch', label: 'Sarkastisch', icon: '😏' },
+  { value: 'Schnippisch', label: 'Schnippisch', icon: '💅' },
+  { value: 'Eifersüchtig', label: 'Eifersüchtig (auf andere KIs)', icon: '😤' },
+  { value: 'Selbstsicher', label: 'Selbstsicher', icon: '💪' },
+  { value: 'Unsicher', label: 'Unsicher/Schüchtern', icon: '🥺' },
+];
+
+const QUIRK_OPTIONS = [
+  { value: '', label: 'Keine Eigenart' },
+  { value: 'miauz', label: 'Miauz Genau!' },
+  { value: 'gamertalk', label: 'Gamertalk' },
+  { value: 'nerd', label: 'Prof. Dr. Dr.' },
+  { value: 'oldschool', label: 'Oldschool' },
+  { value: 'altertum', label: 'Altertum' },
+  { value: 'pirat', label: 'Pirat' },
+  { value: 'custom', label: 'Eigene...' },
+];
+
+function createSectionHeading(text: string): HTMLElement {
+  const heading = document.createElement('div');
+  heading.className = 'section-heading';
+  heading.textContent = text;
+  return heading;
+}
+
 export function createPersonalizationStep(data: WizardData): HTMLElement {
   const container = document.createElement('div');
 
@@ -59,14 +113,15 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
   style.textContent = PERS_CSS;
   container.appendChild(style);
 
-  // Color picker section
+  // === SECTION: Aussehen ===
+  const sectionAussehen = createSectionHeading('Aussehen');
+
+  // Color picker
   const colorSection = document.createElement('div');
   colorSection.className = 'color-section';
-
   const colorLabel = document.createElement('div');
   colorLabel.className = 'color-label';
   colorLabel.textContent = 'Akzentfarbe';
-
   const colorGrid = document.createElement('div');
   colorGrid.className = 'color-grid';
 
@@ -83,8 +138,6 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
       data.personalization.accentColor = color.value;
       colorGrid.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
       swatch.classList.add('selected');
-
-      // Live preview: update CSS variable
       document.documentElement.style.setProperty('--sarah-accent', color.value);
       const rgb = hexToRgb(color.value);
       if (rgb) {
@@ -97,7 +150,6 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
   colorSection.appendChild(colorLabel);
   colorSection.appendChild(colorGrid);
 
-  // Voice + speech rate
   const voiceSelect = sarahSelect({
     label: 'Sarahs Stimme',
     options: [
@@ -109,10 +161,122 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
     onChange: (value) => { data.personalization.voice = value; },
   });
 
+  // === SECTION: Chat ===
+  const sectionChat = createSectionHeading('Chat');
+
+  const fontSizeSelect = sarahSelect({
+    label: 'Schriftgröße',
+    options: [
+      { value: 'small', label: 'Klein' },
+      { value: 'default', label: 'Standard' },
+      { value: 'large', label: 'Groß' },
+    ],
+    value: data.personalization.chatFontSize,
+    onChange: (value) => { data.personalization.chatFontSize = value as 'small' | 'default' | 'large'; },
+  });
+
+  const alignmentSelect = sarahSelect({
+    label: 'Ausrichtung',
+    options: [
+      { value: 'stacked', label: 'Untereinander (wie ChatGPT)' },
+      { value: 'bubbles', label: 'Bubbles (wie WhatsApp)' },
+    ],
+    value: data.personalization.chatAlignment,
+    onChange: (value) => { data.personalization.chatAlignment = value as 'stacked' | 'bubbles'; },
+  });
+
+  const emojisToggle = sarahToggle({
+    label: 'Smileys & Icons',
+    description: 'Sarah darf Emojis in Antworten verwenden',
+    checked: data.personalization.emojisEnabled,
+    onChange: (value) => { data.personalization.emojisEnabled = value; },
+  });
+
+  // === SECTION: Verhalten ===
+  const sectionVerhalten = createSectionHeading('Verhalten');
+
+  const responseModeSelect = sarahSelect({
+    label: 'Antwortmodus',
+    options: [
+      { value: 'normal', label: 'Normal' },
+      { value: 'spontaneous', label: 'Spontan — kurz und direkt' },
+      { value: 'thoughtful', label: 'Nachdenklich — gründlich und ausführlich' },
+    ],
+    value: data.personalization.responseMode,
+    onChange: (value) => { data.personalization.responseMode = value as 'normal' | 'spontaneous' | 'thoughtful'; },
+  });
+
+  const traitsSelect = sarahTagSelect({
+    label: 'Charakter-Eigenschaften (max. 2)',
+    options: TRAIT_OPTIONS,
+    selected: data.personalization.characterTraits,
+    allowCustom: true,
+    onChange: (values) => {
+      if (values.length <= 2) {
+        data.personalization.characterTraits = values;
+      } else {
+        const trimmed = values.slice(-2);
+        data.personalization.characterTraits = trimmed;
+        traitsSelect.setSelected(trimmed);
+      }
+    },
+  });
+
+  // Quirk select + conditional custom input
+  const quirkWrapper = document.createElement('div');
+
+  const quirkSelect = sarahSelect({
+    label: 'Eigenart',
+    options: QUIRK_OPTIONS,
+    value: data.personalization.quirk ?? '',
+    onChange: (value) => {
+      if (value === 'custom') {
+        customQuirkInput.style.display = 'block';
+        quirkHint.style.display = 'block';
+        data.personalization.quirk = 'custom';
+      } else {
+        customQuirkInput.style.display = 'none';
+        quirkHint.style.display = 'none';
+        data.personalization.quirk = value || null;
+      }
+    },
+  });
+
+  const customQuirkInput = sarahInput({
+    label: 'Deine Eigenart',
+    placeholder: 'z.B. Sage ab und zu "Wunderbar!" wenn etwas klappt',
+    value: data.personalization.quirk && !QUIRK_OPTIONS.some(q => q.value === data.personalization.quirk) ? data.personalization.quirk : '',
+    onChange: (value) => { data.personalization.quirk = value || 'custom'; },
+  });
+  customQuirkInput.className = 'quirk-custom-input';
+  customQuirkInput.style.display = data.personalization.quirk === 'custom' || (data.personalization.quirk && !QUIRK_OPTIONS.some(q => q.value === data.personalization.quirk)) ? 'block' : 'none';
+
+  const quirkHint = document.createElement('div');
+  quirkHint.className = 'quirk-hint';
+  quirkHint.textContent = 'Beschreibe Sarahs Eigenart. Sexualisierte oder beleidigende Inhalte werden nicht akzeptiert.';
+  quirkHint.style.display = customQuirkInput.style.display;
+
+  quirkWrapper.appendChild(quirkSelect);
+  quirkWrapper.appendChild(customQuirkInput);
+  quirkWrapper.appendChild(quirkHint);
+
+  // === FORM ===
   const form = sarahForm({
     title: 'Personalisierung',
     description: 'Passe S.A.R.A.H. an deinen Geschmack an. Du kannst alles später in den Einstellungen ändern.',
-    children: [colorSection, voiceSelect],
+    children: [
+      sectionAussehen,
+      colorSection,
+      voiceSelect,
+      sectionChat,
+      fontSizeSelect,
+      alignmentSelect,
+      emojisToggle,
+      sectionVerhalten,
+      responseModeSelect,
+      traitsSelect,
+      quirkWrapper,
+    ],
   });
 
   container.appendChild(form);
