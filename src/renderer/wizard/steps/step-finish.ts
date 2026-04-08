@@ -138,6 +138,9 @@ export function createFinishStep(data: WizardData): HTMLElement {
   // Skills
   const skillRows: [string, string][] = [];
   if (data.skills.programming) skillRows.push(['Programmieren', data.skills.programming]);
+  if (data.skills.programmingStack.length > 0) skillRows.push(['Techstack', data.skills.programmingStack.join(', ')]);
+  if (data.skills.programmingResources.length > 0) skillRows.push(['Anlaufstellen', data.skills.programmingResources.join(', ')]);
+  if (data.skills.programmingProjectsFolder) skillRows.push(['Projekte-Ordner', data.skills.programmingProjectsFolder]);
   if (data.skills.design) skillRows.push(['Design', data.skills.design]);
   if (data.skills.office) skillRows.push(['Office', data.skills.office]);
   if (skillRows.length > 0) addSection(finish, 'Skill-Level', skillRows);
@@ -146,11 +149,16 @@ export function createFinishStep(data: WizardData): HTMLElement {
   if (data.skippedSteps.has('files')) {
     addSkipped(finish, 'Dateien & Programme', 'Übersprungen — kannst du jederzeit in den Einstellungen nachholen');
   } else {
-    addSection(finish, 'Dateien & Programme', [
-      ['Programme', data.files.importantPrograms.map(p => p.name).join(', ') || '—'],
-      ['PDF-Ordner', data.files.pdfFolder || '—'],
-      ['Bilder', data.files.picturesFolder || '—'],
-    ]);
+    const fileRows: [string, string][] = [
+      ['Programme', data.resources.programs.map(p => p.name).join(', ') || '—'],
+      ['Bilder', data.resources.picturesFolder || '—'],
+    ];
+    if (data.resources.extraProgramsFolder) fileRows.push(['Programm-Ordner', data.resources.extraProgramsFolder]);
+    if (data.resources.gamesFolder) fileRows.push(['Games-Ordner', data.resources.gamesFolder]);
+    if (data.resources.pdfCategories.length > 0) {
+      fileRows.push(['PDF-Kategorien', data.resources.pdfCategories.map(c => c.tag).join(', ')]);
+    }
+    addSection(finish, 'Dateien & Programme', fileRows);
   }
 
   // Trust
