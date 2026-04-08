@@ -172,6 +172,32 @@ app.whenReady().then(async () => {
   const ollamaProvider = new OllamaProvider('http://localhost:11434', 'mistral-nemo');
   const llmService = new LlmService(appContext, ollamaProvider);
   appContext.registry.register(llmService);
+
+  // Register Voice service
+  const { AudioManager } = await import('./services/voice/audio-manager.js');
+  const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
+  const { WhisperProvider } = await import('./services/voice/providers/whisper-provider.js');
+  const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
+  const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
+
+  const resourcesPath = process.resourcesPath;
+  const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
+  const whisperProvider = new WhisperProvider(resourcesPath);
+  const piperProvider = new PiperProvider(resourcesPath);
+  const porcupineProvider = new PorcupineProvider(resourcesPath, picovoiceKey);
+  const audioManager = new AudioManager();
+  const hotkeyManager = new HotkeyManager();
+
+  const voiceService = new VoiceService(
+    appContext,
+    whisperProvider,
+    piperProvider,
+    porcupineProvider,
+    audioManager,
+    hotkeyManager,
+  );
+  appContext.registry.register(voiceService);
+
   await appContext.registry.initAll();
 
   ipcMain.on('splash-done', async () => {
