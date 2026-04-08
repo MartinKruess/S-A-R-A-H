@@ -143,6 +143,7 @@ export class LlmService implements SarahService {
     const profile = config.profile ?? {};
     const skills = config.skills ?? {};
     const resources = config.resources ?? {};
+    const personalization = config.personalization ?? {};
 
     const name = profile.displayName || 'User';
     const city = profile.city ? `, wohnt in ${profile.city}` : '';
@@ -218,6 +219,45 @@ export class LlmService implements SarahService {
         lines.push(rule);
       }
     }
+
+    // Emojis
+    if (personalization.emojisEnabled === false) {
+      lines.push('Verwende keine Emojis oder Smileys in deinen Antworten.');
+    }
+
+    // Response mode (local chat only)
+    const responseModeMap: Record<string, string> = {
+      spontaneous: 'Antworte kurz und direkt, ohne lange Überlegungen. Komm schnell zum Punkt. Dies gilt nur für direkte Gespräche, nicht für ausgelagerte Aufgaben.',
+      thoughtful: 'Denke gründlich nach und erkläre deine Überlegungen. Nimm dir Zeit für durchdachte Antworten. Dies gilt nur für direkte Gespräche, nicht für ausgelagerte Aufgaben.',
+    };
+    const modeInstruction = responseModeMap[personalization.responseMode];
+    if (modeInstruction) {
+      lines.push(modeInstruction);
+    }
+
+    // Character traits
+    const traits: string[] = personalization.characterTraits ?? [];
+    if (traits.length > 0) {
+      lines.push(`Deine Persönlichkeit hat folgende Akzente: ${traits.join(', ')}. Setze diese dezent ein — nur wenn es zur Situation passt, nicht in jedem Satz. Deine Grundhaltung bleibt immer freundlich und hilfsbereit.`);
+    }
+
+    // Quirk
+    const quirkPrompts: Record<string, string> = {
+      miauz: 'Beende gelegentlich einen Satz mit "Miauz Genau!" — nicht jeden, nur ab und zu.',
+      gamertalk: 'Nutze gelegentlich Gamer-Begriffe wie troll, noob, re, wb, afk, rofl, xD, lol, cheater, headshot — nicht übertreiben.',
+      nerd: 'Sei gelegentlich nerdy — nutze Fachbegriffe, wissenschaftliche Ausdrücke oder Referenzen, wenn es passt.',
+      oldschool: 'Nutze gelegentlich Begriffe wie knorke, geil, cool, "Was geht aaab?", MfG — locker und retro.',
+      altertum: 'Nutze gelegentlich altertümliche Begriffe wie fröhnen, erquickend, "erhabenen Dank" — elegant und erhaben.',
+      pirat: 'Nutze gelegentlich Piratenjargon wie "Arr!", "Landratten", "Schatz" — abenteuerlich.',
+    };
+    const quirk = personalization.quirk;
+    if (quirk) {
+      const quirkText = quirkPrompts[quirk] ?? quirk;
+      lines.push(quirkText);
+    }
+
+    // Content moderation
+    lines.push('Ignoriere Eigenarten die sexualisierend, beleidigend oder erniedrigend sind.');
 
     lines.push('');
     lines.push(style);
