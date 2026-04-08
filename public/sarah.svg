@@ -1,0 +1,299 @@
+<svg class="sarah-orb" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+
+  <style>
+    /* ══ IDLE STATE ══ */
+
+    .ring {
+      fill: none;
+      stroke: var(--sarah-accent, #6ee7ff);
+      stroke-width: 1.5;
+      opacity: 0.3;
+      transform-origin: center;
+      animation: ringPulse 4s ease-in-out infinite;
+    }
+
+    .halo {
+      fill: none;
+      stroke: var(--sarah-accent, #6ee7ff);
+      stroke-width: 3;
+      opacity: 0.06;
+      filter: url(#glow);
+      transform-origin: center;
+      animation: haloPulse 4.5s ease-in-out infinite;
+    }
+
+    .orb-group {
+      transform-origin: center;
+      animation: orbFloat 6s ease-in-out infinite;
+    }
+
+    .orb-wobble {
+      transform-origin: center;
+      animation: wobble 5s ease-in-out infinite;
+    }
+
+    .shell {
+      fill: url(#shellGrad);
+      stroke: none;
+    }
+
+    .shell-highlight {
+      fill: url(#highlightGrad);
+    }
+
+    .shell-rim {
+      fill: none;
+      stroke: rgba(255,255,255,0.08);
+      stroke-width: 0.8;
+    }
+
+    .core-glow {
+      fill: url(#coreGrad);
+      opacity: 0.4;
+      animation: corePulse 4s ease-in-out infinite;
+    }
+
+    .inner-light {
+      fill: var(--sarah-accent, #6ee7ff);
+      opacity: 0.05;
+      filter: url(#glow);
+      animation: innerPulse 3.5s ease-in-out infinite;
+    }
+
+    .specular {
+      fill: none;
+      stroke: rgba(255,255,255,0.35);
+      stroke-width: 1.5;
+      stroke-linecap: round;
+    }
+
+    .specular-dot {
+      fill: rgba(255,255,255,0.25);
+    }
+
+    /* ── Cracks: invisible at idle ── */
+    .crack {
+      fill: none;
+      stroke: var(--sarah-accent, #6ee7ff);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0;
+      stroke-dasharray: 80;
+      stroke-dashoffset: 80;
+    }
+
+    .crack-glow {
+      fill: none;
+      stroke: var(--sarah-accent, #6ee7ff);
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0;
+      filter: url(#crackGlow);
+      stroke-dasharray: 80;
+      stroke-dashoffset: 80;
+    }
+
+    .crack-a        { stroke-width: 1.8; }
+    .crack-b        { stroke-width: 1.4; }
+    .crack-c        { stroke-width: 1.0; }
+    .crack-glow-a   { stroke-width: 4; }
+    .crack-glow-b   { stroke-width: 3; }
+    .crack-glow-c   { stroke-width: 2.5; }
+
+    /* ══ BREAK EFFECT — dragon egg ══ */
+
+    .sarah-orb.is-breaking .crack {
+      animation: crackDraw 700ms ease-out forwards;
+    }
+    .sarah-orb.is-breaking .crack-glow {
+      animation: crackGlowDraw 700ms ease-out forwards;
+    }
+
+    .sarah-orb.is-breaking .crack-b,
+    .sarah-orb.is-breaking .crack-glow-b {
+      animation-delay: 50ms;
+    }
+    .sarah-orb.is-breaking .crack-c,
+    .sarah-orb.is-breaking .crack-glow-c {
+      animation-delay: 100ms;
+    }
+
+    .sarah-orb.is-breaking .core-glow {
+      animation: coreBurst 700ms ease-out;
+    }
+
+    .sarah-orb.is-breaking .inner-light {
+      animation: innerBurst 700ms ease-out;
+    }
+
+    .sarah-orb.is-breaking .ring {
+      animation: ringBurst 700ms ease-out;
+    }
+
+    .sarah-orb.is-breaking .halo {
+      animation: haloBurst 700ms ease-out;
+    }
+
+    /* ══ ANIMATIONS ══ */
+
+    @keyframes orbFloat {
+      0%, 100% { transform: scale(1) rotate(0deg); }
+      50%      { transform: scale(1.008) rotate(-0.3deg); }
+    }
+
+    @keyframes wobble {
+      0%, 100% { transform: scaleX(1) scaleY(1); }
+      25%      { transform: scaleX(1.006) scaleY(0.995); }
+      50%      { transform: scaleX(0.997) scaleY(1.005); }
+      75%      { transform: scaleX(1.003) scaleY(0.998); }
+    }
+
+    @keyframes corePulse {
+      0%, 100% { opacity: 0.35; transform: scale(1); transform-origin: center; }
+      50%      { opacity: 0.5;  transform: scale(1.02); transform-origin: center; }
+    }
+
+    @keyframes innerPulse {
+      0%, 100% { opacity: 0.04; }
+      50%      { opacity: 0.09; }
+    }
+
+    @keyframes ringPulse {
+      0%, 100% { opacity: 0.25; transform: scale(1); }
+      50%      { opacity: 0.4;  transform: scale(1.008); }
+    }
+
+    @keyframes haloPulse {
+      0%, 100% { opacity: 0.05; transform: scale(1); }
+      50%      { opacity: 0.1;  transform: scale(1.015); }
+    }
+
+    /* Crack draws in like a fracture spreading */
+    @keyframes crackDraw {
+      0%   { opacity: 0;    stroke-dashoffset: 80; }
+      15%  { opacity: 1;    stroke-dashoffset: 0; }
+      40%  { opacity: 0.9;  stroke-dashoffset: 0; }
+      100% { opacity: 0;    stroke-dashoffset: 0; }
+    }
+
+    /* Glow behind crack — light leaking through */
+    @keyframes crackGlowDraw {
+      0%   { opacity: 0;    stroke-dashoffset: 80; }
+      15%  { opacity: 0.7;  stroke-dashoffset: 0; }
+      30%  { opacity: 0.5;  stroke-dashoffset: 0; }
+      100% { opacity: 0;    stroke-dashoffset: 0; }
+    }
+
+    /* Core flares up — the energy inside */
+    @keyframes coreBurst {
+      0%   { opacity: 0.4;  transform: scale(1);    transform-origin: center; }
+      20%  { opacity: 0.85; transform: scale(1.12);  transform-origin: center; }
+      50%  { opacity: 0.6;  transform: scale(1.05);  transform-origin: center; }
+      100% { opacity: 0.4;  transform: scale(1);    transform-origin: center; }
+    }
+
+    @keyframes innerBurst {
+      0%   { opacity: 0.05; }
+      20%  { opacity: 0.35; }
+      50%  { opacity: 0.15; }
+      100% { opacity: 0.05; }
+    }
+
+    @keyframes ringBurst {
+      0%   { opacity: 0.3;  transform: scale(1); }
+      25%  { opacity: 0.7;  transform: scale(1.02); }
+      100% { opacity: 0.3;  transform: scale(1); }
+    }
+
+    @keyframes haloBurst {
+      0%   { opacity: 0.06; transform: scale(1); }
+      25%  { opacity: 0.3;  transform: scale(1.05); }
+      100% { opacity: 0.06; transform: scale(1); }
+    }
+  </style>
+
+  <defs>
+    <!-- 3D sphere gradient — light from top-left -->
+    <radialGradient id="shellGrad" cx="38%" cy="32%" r="65%">
+      <stop offset="0%"   stop-color="rgba(255,255,255,0.18)" />
+      <stop offset="25%"  stop-color="rgba(255,255,255,0.09)" />
+      <stop offset="55%"  stop-color="rgba(255,255,255,0.03)" />
+      <stop offset="85%"  stop-color="rgba(0,0,0,0.15)" />
+      <stop offset="100%" stop-color="rgba(0,0,0,0.25)" />
+    </radialGradient>
+
+    <!-- Strong specular highlight -->
+    <radialGradient id="highlightGrad" cx="36%" cy="28%" r="30%">
+      <stop offset="0%"   stop-color="white" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="white" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Inner core energy -->
+    <radialGradient id="coreGrad" cx="50%" cy="48%" r="55%">
+      <stop offset="0%"   stop-color="white" stop-opacity="0.2" />
+      <stop offset="30%"  stop-color="var(--sarah-accent, #6ee7ff)" stop-opacity="0.18" />
+      <stop offset="70%"  stop-color="var(--sarah-accent, #6ee7ff)" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="var(--sarah-accent, #6ee7ff)" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Soft glow for ring/halo -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.5" />
+    </filter>
+
+    <!-- Wider glow for cracks — light leaking through fractures -->
+    <filter id="crackGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3.5" />
+    </filter>
+
+    <clipPath id="shell-clip">
+      <circle cx="50" cy="50" r="29" />
+    </clipPath>
+  </defs>
+
+  <!-- Outer ring -->
+  <circle class="ring" cx="50" cy="50" r="36" />
+  <circle class="halo" cx="50" cy="50" r="40" />
+
+  <!-- Orb -->
+  <g class="orb-group">
+    <g class="orb-wobble">
+      <!-- Shadow beneath -->
+      <ellipse cx="50" cy="58" rx="22" ry="8" fill="black" opacity="0.15" filter="url(#glow)" />
+
+      <!-- Inner light (visible through cracks when breaking) -->
+      <circle class="inner-light" cx="50" cy="50" r="26" />
+
+      <!-- Sphere shell -->
+      <circle class="shell" cx="50" cy="50" r="29" />
+      <circle class="shell-highlight" cx="50" cy="50" r="29" />
+      <circle class="shell-rim" cx="50" cy="50" r="29" />
+
+      <!-- Core glow -->
+      <circle class="core-glow" cx="50" cy="49" r="18" />
+
+      <!-- Specular highlights — glass reflection -->
+      <path class="specular" d="M37 35 C42 28, 52 26, 58 31" />
+      <circle class="specular-dot" cx="40" cy="33" r="1.5" />
+
+      <!-- Cracks — clipped to sphere -->
+      <g clip-path="url(#shell-clip)">
+        <!-- Glow layer (behind cracks, wider, blurred) -->
+        <path class="crack-glow crack-glow-a" d="M50 22 C51 28, 48 33, 51 38 C54 43, 51 48, 54 55 C56 59, 53 63, 55 68" />
+        <path class="crack-glow crack-glow-b" d="M34 32 C37 36, 40 40, 42 45 C43 48, 41 52, 43 56" />
+        <path class="crack-glow crack-glow-b" d="M66 33 C63 37, 60 42, 58 46 C57 49, 59 53, 57 57" />
+        <path class="crack-glow crack-glow-c" d="M51 38 C46 40, 42 42, 39 45" />
+        <path class="crack-glow crack-glow-c" d="M51 38 C55 40, 58 42, 61 44" />
+        <path class="crack-glow crack-glow-c" d="M40 55 C44 54, 48 55, 52 58 C55 60, 58 59, 62 61" />
+
+        <!-- Sharp crack lines -->
+        <path class="crack crack-a" d="M50 22 C51 28, 48 33, 51 38 C54 43, 51 48, 54 55 C56 59, 53 63, 55 68" />
+        <path class="crack crack-b" d="M34 32 C37 36, 40 40, 42 45 C43 48, 41 52, 43 56" />
+        <path class="crack crack-b" d="M66 33 C63 37, 60 42, 58 46 C57 49, 59 53, 57 57" />
+        <path class="crack crack-c" d="M51 38 C46 40, 42 42, 39 45" />
+        <path class="crack crack-c" d="M51 38 C55 40, 58 42, 61 44" />
+        <path class="crack crack-c" d="M40 55 C44 54, 48 55, 52 58 C55 60, 58 59, 62 61" />
+      </g>
+    </g>
+  </g>
+</svg>
