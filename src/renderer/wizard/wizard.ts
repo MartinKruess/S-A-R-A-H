@@ -81,6 +81,10 @@ export interface WizardData {
   trust: {
     memoryAllowed: boolean;
     fileAccess: string;
+    confirmationLevel: 'minimal' | 'standard' | 'maximal';
+    memoryExclusions: string[];
+    anonymousEnabled: boolean;
+    showContextEnabled: boolean;
   };
   personalization: {
     accentColor: string;
@@ -131,6 +135,10 @@ const wizardData: WizardData = {
   trust: {
     memoryAllowed: true,
     fileAccess: 'specific-folders',
+    confirmationLevel: 'standard',
+    memoryExclusions: [],
+    anonymousEnabled: true,
+    showContextEnabled: true,
   },
   personalization: {
     accentColor: '#00d4ff',
