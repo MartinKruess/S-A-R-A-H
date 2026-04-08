@@ -142,6 +142,7 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
       const rgb = hexToRgb(color.value);
       if (rgb) {
         document.documentElement.style.setProperty('--sarah-accent-rgb', `${rgb.r}, ${rgb.g}, ${rgb.b}`);
+        document.documentElement.style.setProperty('--sarah-accent-hover', lightenHex(rgb.r, rgb.g, rgb.b));
       }
     });
     colorGrid.appendChild(swatch);
@@ -291,4 +292,11 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
     g: parseInt(match[2], 16),
     b: parseInt(match[3], 16),
   };
+}
+
+function lightenHex(r: number, g: number, b: number, amount = 0.2): string {
+  const lr = Math.min(255, Math.round(r + (255 - r) * amount));
+  const lg = Math.min(255, Math.round(g + (255 - g) * amount));
+  const lb = Math.min(255, Math.round(b + (255 - b) * amount));
+  return `#${lr.toString(16).padStart(2, '0')}${lg.toString(16).padStart(2, '0')}${lb.toString(16).padStart(2, '0')}`;
 }
