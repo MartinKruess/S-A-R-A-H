@@ -591,7 +591,6 @@ function createControlsSection(config: Config): HTMLElement {
     label: 'Sprachsteuerung',
     options: [
       { value: 'off', label: 'Aus' },
-      { value: 'keyword', label: 'Keyword-Listening (Hey Sarah)' },
       { value: 'push-to-talk', label: 'Push-to-Talk' },
     ],
     value: (controls.voiceMode as string) || 'off',
