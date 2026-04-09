@@ -18,7 +18,9 @@ declare const sarah: {
     onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
     playbackDone: () => Promise<void>;
     onError: (cb: (data: { message: string }) => void) => () => void;
+    setInteractionMode: (mode: string) => Promise<void>;
     sendAudioChunk: (chunk: number[]) => Promise<void>;
+    onTranscript: (cb: (data: { text: string }) => void) => () => void;
   };
 };
 
@@ -68,6 +70,7 @@ function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElem
 chatModeToggle.addEventListener('click', () => {
   chatMode = !chatMode;
   sarahArea.classList.toggle('chatmode', chatMode);
+  sarah.voice.setInteractionMode(chatMode ? 'chat' : 'voice');
   if (chatMode) {
     chatInput.focus();
   }
@@ -107,8 +110,18 @@ sarah.onChatError((data) => {
   addBubble('error', data.message);
 });
 
+// ── Voice Transcript → Chat Bubble ──
+sarah.voice.onTranscript((data) => {
+  addBubble('user', data.text);
+  currentBubble = addBubble('assistant', '');
+});
+
 // ── Voice Audio Bridge ──
 const audioBridge = new AudioBridge();
 audioBridge.start().catch((err) => {
   console.error('[Dashboard] AudioBridge failed to start:', err);
+});
+
+window.addEventListener('beforeunload', () => {
+  audioBridge.destroy();
 });
