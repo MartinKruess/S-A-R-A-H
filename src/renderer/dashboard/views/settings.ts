@@ -611,20 +611,17 @@ function createControlsSection(config: Config): HTMLElement {
   });
   hotkeyWrapper.style.display = ((controls.voiceMode as string) === 'push-to-talk') ? '' : 'none';
 
-  // Override the inner input for hotkey capture behavior
-  const hotkeyNative = hotkeyWrapper.shadowRoot?.querySelector('input');
-  if (hotkeyNative) {
-    hotkeyNative.readOnly = true;
-    hotkeyNative.style.cursor = 'pointer';
-    hotkeyNative.addEventListener('keydown', (e: KeyboardEvent) => {
-      e.preventDefault();
-      const key = e.key === ' ' ? 'Space' : e.key;
-      hotkeyNative.value = key;
-      hotkeyWrapper.value = key;
-      save('controls', { ...controls, pushToTalkKey: key });
-      showSaved(feedback);
-    });
-  }
+  // Configure hotkey capture via public API
+  hotkeyWrapper.setReadOnly(true);
+  const ALLOWED_KEYS = ['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'];
+  hotkeyWrapper.onKeydown((e: KeyboardEvent) => {
+    e.preventDefault();
+    const key = e.key;
+    if (!ALLOWED_KEYS.includes(key)) return;
+    hotkeyWrapper.value = key;
+    save('controls', { ...controls, pushToTalkKey: key });
+    showSaved(feedback);
+  });
   section.appendChild(hotkeyWrapper);
 
   const spacer = document.createElement('div');
