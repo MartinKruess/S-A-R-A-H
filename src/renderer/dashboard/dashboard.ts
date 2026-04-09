@@ -1,5 +1,6 @@
 import { registerComponents } from '../components/index.js';
 import { applyAccentColor } from './accent.js';
+import { AudioBridge } from '../services/audio-bridge.js';
 
 declare const sarah: {
   version: string;
@@ -11,6 +12,14 @@ declare const sarah: {
   onChatChunk: (cb: (data: { text: string }) => void) => () => void;
   onChatDone: (cb: (data: { fullText: string }) => void) => () => void;
   onChatError: (cb: (data: { message: string }) => void) => () => void;
+  voice: {
+    getState: () => Promise<string>;
+    onStateChange: (cb: (data: { state: string }) => void) => () => void;
+    onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
+    playbackDone: () => Promise<void>;
+    onError: (cb: (data: { message: string }) => void) => () => void;
+    sendAudioChunk: (chunk: number[]) => Promise<void>;
+  };
 };
 
 (window as any).__sarah = sarah;
@@ -102,4 +111,10 @@ sarah.onChatError((data) => {
     currentBubble = null;
   }
   addBubble('error', data.message);
+});
+
+// ── Voice Audio Bridge ──
+const audioBridge = new AudioBridge();
+audioBridge.start().catch((err) => {
+  console.error('[Dashboard] AudioBridge failed to start:', err);
 });
