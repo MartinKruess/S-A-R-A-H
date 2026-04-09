@@ -348,13 +348,9 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('voice-audio-chunk', (_event, chunk: number[]) => {
-    // Forward audio chunk to AudioManager for recording
     const voiceService = appContext?.registry.get('voice');
-    if (voiceService) {
-      const float32 = new Float32Array(chunk);
-      // AudioManager.feedChunk is called by the voice service internally
-      // For now, emit on bus so VoiceService can route it
-      appContext!.bus.emit('renderer', 'voice:audio-chunk', { chunk: Array.from(float32) });
+    if (voiceService && voiceService instanceof VoiceService) {
+      voiceService.feedAudioChunk(new Float32Array(chunk));
     }
   });
 

@@ -94,6 +94,11 @@ export class VoiceService implements SarahService {
     this.status = 'stopped';
   }
 
+  /** Feed an audio chunk from the renderer. Called by IPC handler. */
+  feedAudioChunk(chunk: Float32Array): void {
+    this.audio.feedChunk(chunk);
+  }
+
   onMessage(msg: BusMessage): void {
     if (msg.topic === 'llm:done') {
       const fullText = msg.data.fullText as string;
