@@ -51,6 +51,7 @@ export class AudioBridge {
   }
 
   private handleStateChange(state: string): void {
+    console.log('[AudioBridge] state →', state);
     if (state === 'listening') {
       this.stopPlayback();
       this.startCapture();
@@ -66,9 +67,11 @@ export class AudioBridge {
     this.capturing = true;
 
     try {
+      console.log('[AudioBridge] Starting capture...');
       // Create AudioContext at 16kHz (STT sample rate)
       if (!this.captureCtx) {
         this.captureCtx = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
+        console.log('[AudioBridge] AudioContext created, sampleRate:', this.captureCtx.sampleRate);
       }
       if (this.captureCtx.state === 'suspended') {
         await this.captureCtx.resume();
@@ -102,6 +105,7 @@ export class AudioBridge {
 
       this.sourceNode.connect(this.workletNode);
       this.workletNode.connect(this.captureCtx.destination);
+      console.log('[AudioBridge] Capture active — mic connected to worklet');
     } catch (err) {
       console.error('[AudioBridge] Capture failed:', err);
       this.capturing = false;
