@@ -597,7 +597,7 @@ function createControlsSection(config: Config): HTMLElement {
     value: (controls.voiceMode as string) || 'off',
     onChange: (val) => {
       controls.voiceMode = val;
-      hotkeyRow.style.display = (val === 'push-to-talk') ? '' : 'none';
+      hotkeyWrapper.style.display = (val === 'push-to-talk') ? '' : 'none';
       save('controls', controls);
       showSaved(feedback);
     },
@@ -605,30 +605,28 @@ function createControlsSection(config: Config): HTMLElement {
   section.appendChild(voiceModeSelect);
 
   // Push-to-Talk Taste (only visible in push-to-talk mode)
-  const hotkeyRow = document.createElement('div');
-  hotkeyRow.className = 'sarah-form-group';
-  hotkeyRow.style.display = ((controls.voiceMode as string) === 'push-to-talk') ? '' : 'none';
-
-  const hotkeyLabel = document.createElement('label');
-  hotkeyLabel.textContent = 'Push-to-Talk Taste';
-  hotkeyRow.appendChild(hotkeyLabel);
-
-  const hotkeyInput = document.createElement('input');
-  hotkeyInput.className = 'sarah-input';
-  hotkeyInput.type = 'text';
-  hotkeyInput.readOnly = true;
-  hotkeyInput.value = (controls.pushToTalkKey as string) || 'F9';
-  hotkeyInput.placeholder = 'Taste drücken...';
-  hotkeyInput.style.cursor = 'pointer';
-  hotkeyInput.addEventListener('keydown', (e: KeyboardEvent) => {
-    e.preventDefault();
-    const key = e.key === ' ' ? 'Space' : e.key;
-    hotkeyInput.value = key;
-    save('controls', { ...controls, pushToTalkKey: key });
-    showSaved(feedback);
+  const hotkeyWrapper = sarahInput({
+    label: 'Push-to-Talk Taste',
+    value: (controls.pushToTalkKey as string) || 'F9',
+    placeholder: 'Taste drücken...',
   });
-  hotkeyRow.appendChild(hotkeyInput);
-  section.appendChild(hotkeyRow);
+  hotkeyWrapper.style.display = ((controls.voiceMode as string) === 'push-to-talk') ? '' : 'none';
+
+  // Override the inner input for hotkey capture behavior
+  const hotkeyNative = hotkeyWrapper.shadowRoot?.querySelector('input');
+  if (hotkeyNative) {
+    hotkeyNative.readOnly = true;
+    hotkeyNative.style.cursor = 'pointer';
+    hotkeyNative.addEventListener('keydown', (e: KeyboardEvent) => {
+      e.preventDefault();
+      const key = e.key === ' ' ? 'Space' : e.key;
+      hotkeyNative.value = key;
+      hotkeyWrapper.value = key;
+      save('controls', { ...controls, pushToTalkKey: key });
+      showSaved(feedback);
+    });
+  }
+  section.appendChild(hotkeyWrapper);
 
   const spacer = document.createElement('div');
   spacer.style.height = 'var(--sarah-space-md)';

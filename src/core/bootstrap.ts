@@ -33,8 +33,6 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
   const config = new EncryptedStorage(rawConfig, encryptionKey);
   const db = new EncryptedStorage(rawDb, encryptionKey);
 
-  await registry.initAll();
-
   return {
     bus,
     registry,

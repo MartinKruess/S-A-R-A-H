@@ -69,7 +69,8 @@ export class VoiceService implements SarahService {
 
       this.setupMode();
       this.status = 'running';
-    } catch {
+    } catch (err) {
+      console.error('[VoiceService] init failed:', err);
       this.status = 'error';
     }
   }
