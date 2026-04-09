@@ -79,12 +79,6 @@ chatInput.addEventListener('keydown', (e) => {
     const text = chatInput.value.trim();
     chatInput.value = '';
 
-    // Auto-enter chatmode on first message
-    if (!chatMode) {
-      chatMode = true;
-      sarahArea.classList.add('chatmode');
-    }
-
     addBubble('user', text);
     currentBubble = addBubble('assistant', '');
     sarah.chat(text);
