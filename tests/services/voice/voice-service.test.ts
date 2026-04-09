@@ -134,7 +134,7 @@ describe('VoiceService', () => {
   it('has correct id, initial status, and subscriptions', () => {
     expect(service.id).toBe('voice');
     expect(service.status).toBe('pending');
-    expect(service.subscriptions).toEqual(['llm:done']);
+    expect(service.subscriptions).toEqual(['llm:done', 'llm:error']);
     expect(service.voiceState).toBe('idle');
   });
 
@@ -299,6 +299,46 @@ describe('VoiceService', () => {
     expect(doneListener).toHaveBeenCalledOnce();
   });
 
+  it('does not speak response when interactionMode is chat', async () => {
+    await service.init();
+
+    service.setInteractionMode('chat');
+
+    service.onMessage({
+      source: 'llm',
+      topic: 'llm:done',
+      data: { fullText: 'Hallo! Wie kann ich helfen?' },
+      timestamp: new Date().toISOString(),
+    });
+
+    await flush();
+
+    expect(tts.speak).not.toHaveBeenCalled();
+  });
+
+  it('speaks response when interactionMode is voice', async () => {
+    await service.init();
+
+    // Auto-respond to voice:play-audio with voice:playback-done
+    bus.on('voice:play-audio', () => {
+      setTimeout(() => bus.emit('renderer', 'voice:playback-done', {}), 0);
+    });
+
+    service.setInteractionMode('voice');
+
+    service.onMessage({
+      source: 'llm',
+      topic: 'llm:done',
+      data: { fullText: 'Hallo! Wie kann ich helfen?' },
+      timestamp: new Date().toISOString(),
+    });
+
+    await flush();
+    await flush();
+
+    expect(tts.speak).toHaveBeenCalledWith('Hallo! Wie kann ich helfen?');
+  });
+
   it('does not speak when voice mode is off', async () => {
     context = createMockContext(bus, 'off');
     service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
@@ -388,6 +428,86 @@ describe('VoiceService', () => {
 
     expect(stt.transcribe).not.toHaveBeenCalled();
     expect(service.voiceState).toBe('idle');
+  });
+
+  // --- 12. applyConfig re-reads config and re-registers hotkey ---
+
+  it('applyConfig re-reads config and re-registers hotkey', async () => {
+    // Start with mode=off
+    context = createMockContext(bus, 'off');
+    service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
+    await service.init();
+
+    expect(hotkey.register).not.toHaveBeenCalled();
+
+    // Change mock config to push-to-talk
+    (context.config.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      controls: {
+        voiceMode: 'push-to-talk',
+        pushToTalkKey: 'F10',
+        quietModeDuration: 60,
+        customCommands: [],
+      },
+    });
+
+    await service.applyConfig();
+
+    expect(hotkey.unregister).toHaveBeenCalled();
+    expect(hotkey.register).toHaveBeenCalledWith('F10', expect.any(Function), expect.any(Function));
+    expect(service.voiceState).toBe('idle');
+  });
+
+  // --- 13. llm:error behavior ---
+
+  it('transitions from processing to idle on llm:error', async () => {
+    await service.init();
+
+    const errorListener = vi.fn();
+    bus.on('voice:error', errorListener);
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    // PTT down → listening, PTT up → processing
+    onDown();
+    onUp();
+    await flush();
+
+    // After transcription, state should be processing
+    expect(service.voiceState).toBe('processing');
+
+    // Simulate LLM error
+    service.onMessage({
+      source: 'llm',
+      topic: 'llm:error',
+      data: { message: 'Connection failed' },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(service.voiceState).toBe('idle');
+    expect(errorListener).toHaveBeenCalledOnce();
+    expect(errorListener.mock.calls[0][0].data.message).toBe('Connection failed');
+  });
+
+  it('ignores llm:error when not in processing state', async () => {
+    await service.init();
+
+    const errorListener = vi.fn();
+    bus.on('voice:error', errorListener);
+
+    // State is 'idle'
+    expect(service.voiceState).toBe('idle');
+
+    service.onMessage({
+      source: 'llm',
+      topic: 'llm:error',
+      data: { message: 'Some error' },
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(service.voiceState).toBe('idle');
+    expect(errorListener).not.toHaveBeenCalled();
   });
 
   it('emits voice:transcript with transcription text', async () => {
