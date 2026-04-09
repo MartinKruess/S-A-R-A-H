@@ -56,14 +56,18 @@ export class OllamaProvider implements LlmProvider {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        const parsed = JSON.parse(line) as {
-          message: { content: string };
-          done: boolean;
-        };
-        const chunk = parsed.message.content;
-        if (chunk) {
-          fullText += chunk;
-          onChunk(chunk);
+        try {
+          const parsed = JSON.parse(line) as {
+            message: { content: string };
+            done: boolean;
+          };
+          const chunk = parsed.message.content;
+          if (chunk) {
+            fullText += chunk;
+            onChunk(chunk);
+          }
+        } catch {
+          // Skip malformed JSON chunks from Ollama
         }
       }
     }

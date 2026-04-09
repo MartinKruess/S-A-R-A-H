@@ -50,6 +50,7 @@ export class VoiceService implements SarahService {
 
   private setState(state: VoiceState): void {
     this._voiceState = state;
+    this.context.bus.emit(this.id, 'voice:state', { state });
   }
 
   async init(): Promise<void> {
@@ -58,9 +59,12 @@ export class VoiceService implements SarahService {
       const controls = config?.controls as Record<string, unknown> | undefined;
       this.voiceMode = (controls?.voiceMode as VoiceMode) ?? 'off';
       this.pushToTalkKey = (controls?.pushToTalkKey as string) ?? DEFAULT_PTT_KEY;
+      process.stderr.write(`\n=== VOICE INIT: mode=${this.voiceMode}, pttKey=${this.pushToTalkKey} ===\n`);
 
       await this.stt.init();
+      console.log('[VoiceService] STT initialized');
       await this.tts.init();
+      console.log('[VoiceService] TTS initialized');
 
       // Only init wake-word provider when keyword mode is active
       if (this.voiceMode === 'keyword') {
@@ -130,6 +134,7 @@ export class VoiceService implements SarahService {
   // --- PTT handlers ---
 
   onPttDown(): void {
+    process.stderr.write(`\n=== PTT DOWN (state=${this._voiceState}) ===\n`);
     if (this._voiceState === 'speaking') {
       this.interrupt();
     }
@@ -137,6 +142,7 @@ export class VoiceService implements SarahService {
   }
 
   onPttUp(): void {
+    process.stderr.write(`\n=== PTT UP ===\n`);
     this.stopListeningAndProcess().catch(() => {
       this.context.bus.emit(this.id, 'voice:error', { message: 'Processing failed' });
     });
@@ -224,13 +230,16 @@ export class VoiceService implements SarahService {
 
       // Wait for playback to finish (renderer signals via IPC → bus)
       await new Promise<void>((resolve) => {
-        const unsub = this.context.bus.on('voice:playback-done', () => {
+        let resolved = false;
+        const done = () => {
+          if (resolved) return;
+          resolved = true;
           unsub();
           resolve();
-        });
-        // Fallback timeout based on audio duration
+        };
+        const unsub = this.context.bus.on('voice:playback-done', done);
         const durationMs = (audioData.length / 22_050) * 1000 + 500;
-        setTimeout(() => { unsub(); resolve(); }, durationMs);
+        setTimeout(done, durationMs);
       });
 
       this.audio.setPlaying(false);
@@ -310,6 +319,8 @@ export class VoiceService implements SarahService {
   }
 
   private handleEmptyTranscript(): void {
+    this.clearSilenceTimer();
+    this.clearConversationTimer();
     this.setState('idle');
   }
 

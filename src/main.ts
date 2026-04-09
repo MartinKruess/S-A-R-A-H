@@ -355,6 +355,7 @@ app.whenReady().then(async () => {
   });
 
   // Forward voice events to renderers
+  forwardToRenderers('voice:state');
   forwardToRenderers('voice:listening');
   forwardToRenderers('voice:transcript');
   forwardToRenderers('voice:speaking');
@@ -363,24 +364,6 @@ app.whenReady().then(async () => {
   forwardToRenderers('voice:interrupted');
   forwardToRenderers('voice:wake');
   forwardToRenderers('voice:play-audio');
-
-  // Map voice state changes for renderer
-  const voiceStateMap: Record<string, string> = {
-    'voice:listening': 'listening',
-    'voice:speaking': 'speaking',
-    'voice:done': 'idle',
-    'voice:error': 'idle',
-    'voice:interrupted': 'listening',
-  };
-  for (const [topic, state] of Object.entries(voiceStateMap)) {
-    appContext!.bus.on(topic, () => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) {
-          win.webContents.send('voice:state', { state });
-        }
-      }
-    });
-  }
 
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
     try {
