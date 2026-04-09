@@ -10,11 +10,12 @@ The Voice Service follows the existing Provider pattern (like LLM Service). A si
 
 ## Voice Modes
 
-Three mutually exclusive modes, configured in `controls.voiceMode`:
+Two modes, configured in `controls.voiceMode`:
 
 - **off** — No microphone access, no voice features
-- **keyword** — Wake-Word listener runs passively. On detection, Sarah listens for speech, processes it, and responds via TTS. Conversation window stays open for 60s after last interaction.
-- **push-to-talk** — Global hotkey (default: F9, configurable). Hold to speak, release to process. No wake-word, no conversation window.
+- **push-to-talk** — Global hotkey (default: F9, configurable via F1-F12). Hold to speak, release to process.
+
+> **Note:** Keyword/Wake-Word mode (`keyword`) was planned but is currently non-functional. The VoiceService treats `keyword` config values as `off`. The Settings UI only offers `off` and `push-to-talk`.
 
 ## State Machine
 
@@ -121,14 +122,31 @@ interface WakeWordProvider {
 
 Provider interfaces ensure swapping is a single-file change.
 
-## AudioManager
+## Audio Architecture
 
-Central class for microphone and speaker access in the Main Process:
+Audio capture runs in the **Renderer Process** via Web Audio API:
 
-- Uses `node-record-lpcm16` for PCM stream from system microphone
-- Delivers `Float32Array` chunks to VoiceService
-- Handles audio output (PCM from Piper → speaker via Electron)
-- Single instance, shared between wake-word listener and active listening
+1. **AudioWorklet** (`audio-worklet-processor.ts`) — Captures PCM samples in 2048-sample buffers
+2. **AudioBridge** (`audio-bridge.ts`) — Manages mic capture and TTS playback in the renderer
+   - Capture: `getUserMedia` → `AudioWorkletNode` → IPC → Main Process
+   - Playback: Main Process → IPC → `AudioBufferSourceNode` → speakers
+   - Separate AudioContexts: capture at 16kHz (STT), playback at 22050Hz (TTS)
+   - Cleanup: `beforeunload` handler calls `destroy()`, closing both AudioContexts
+3. **AudioManager** (`audio-manager.ts`) — Collects chunks in Main Process, returns combined buffer on stop
+
+### Audio Pipeline (Capture)
+
+```
+Renderer: getUserMedia → AudioWorklet → AudioBridge → IPC (voice-audio-chunk)
+Main:     IPC handler → VoiceService.feedAudioChunk → AudioManager.feedChunk
+```
+
+### Audio Pipeline (Playback)
+
+```
+Main:     VoiceService → voice:play-audio event → IPC → Renderer
+Renderer: AudioBridge → AudioBufferSourceNode → speakers → voice:playback-done → IPC → Main
+```
 
 ## LLM & Chat Integration
 
@@ -153,44 +171,51 @@ All messages go to the database regardless of mode. The LLM Service already pers
 
 Piper receives the response sentence by sentence. While the first sentence is being spoken, the next is already generating. This makes responses feel fast.
 
+## Interaction Mode
+
+A synchronized `interactionMode` ('chat' | 'voice') prevents TTS from firing during text chat:
+
+- Default: `'voice'`
+- Dashboard sends mode change via IPC when chat mode is toggled
+- VoiceService suppresses TTS when `interactionMode === 'chat'`
+- IPC channel: `voice-set-interaction-mode`
+
 ## Global Hotkey (Push-to-Talk)
 
-- `globalShortcut.register()` from Electron
-- Default: `F9`, configurable in settings
+- Uses `uiohook-napi` for real keydown/keyup detection (Electron's `globalShortcut` cannot detect keyup)
+- Default: `F9`, configurable in settings (F1-F12 only)
 - KeyDown → start listening
 - KeyUp → stop listening, trigger transcription
-- Settings UI: key input field where user presses desired key to set hotkey
+- Settings UI: key input field restricted to F1-F12 function keys
 
 ## Config Extension
 
 ```typescript
-// controls namespace (extends existing)
 controls: {
-  voiceMode: 'keyword' | 'push-to-talk' | 'off';  // exists
-  pushToTalkKey: string;                            // NEW, default: 'F9'
-  quietModeDuration: number;                        // exists
-  customCommands: CustomCommand[];                  // exists
+  voiceMode: 'push-to-talk' | 'off';    // keyword treated as off
+  pushToTalkKey: string;                  // default: 'F9', restricted to F1-F12
+  quietModeDuration: number;
+  customCommands: CustomCommand[];
 }
 ```
 
-No new config namespace needed. Only `pushToTalkKey` is added.
+Settings changes are applied live — `save-config` triggers `VoiceService.applyConfig()` automatically.
 
-## Preload API (New IPC Channels)
+## Preload API (IPC Channels)
 
 ```typescript
 sarah.voice: {
-  getState(): Promise<'idle' | 'listening' | 'processing' | 'speaking'>;
-  onStateChange(cb: (state: string) => void): void;
-  onTranscript(cb: (text: string) => void): void;
-  onError(cb: (error: string) => void): void;
+  getState(): Promise<string>;
+  onStateChange(cb: (data: { state: string }) => void): () => void;
+  onTranscript(cb: (data: { text: string }) => void): () => void;
+  onPlayAudio(cb: (data: { audio: number[]; sampleRate: number }) => void): () => void;
+  playbackDone(): Promise<void>;
+  onError(cb: (data: { message: string }) => void): () => void;
+  sendAudioChunk(chunk: number[]): Promise<void>;
+  setInteractionMode(mode: string): Promise<void>;
+  configChanged(): Promise<void>;
 }
 ```
-
-Minimal API — renderer only needs state for visual feedback (mic icon pulsing, orb animation during speech). All logic stays in Main Process.
-
-### Settings UI Update
-
-- Hotkey input field under "Sprachsteuerung" when push-to-talk is selected (press key to set)
 
 ## Message Bus Topics
 
@@ -201,6 +226,9 @@ Minimal API — renderer only needs state for visual feedback (mic icon pulsing,
 - `voice:done` — TTS finished
 - `voice:error` — Error occurred
 - `voice:interrupted` — User interrupted Sarah
+- `voice:state` — State machine change (idle, listening, processing, speaking)
+- `voice:play-audio` — Audio buffer ready for playback in renderer
+- `voice:playback-done` — Renderer finished playing audio
 
 ## Binary Distribution
 
