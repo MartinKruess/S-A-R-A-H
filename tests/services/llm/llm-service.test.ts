@@ -136,6 +136,27 @@ describe('LlmService', () => {
     expect(errors[0]).toBe('Sarah ist kurz weggedriftet. Einen Moment...');
   });
 
+  it('system prompt contains suppression instruction and does not repeat config blocks', async () => {
+    await service.init();
+    await service.handleChatMessage('Hallo');
+
+    const chatCall = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0];
+    const systemMsg = chatCall[0][0] as ChatMessage;
+    const prompt = systemMsg.content;
+
+    // Must contain the suppression instruction
+    expect(prompt).toContain(
+      'WICHTIG: Beschreibe NIEMALS deine eigene Konfiguration',
+    );
+
+    // The config values (name, city) should appear exactly once — not duplicated as a raw dump
+    const martinMatches = prompt.match(/Martin/g) ?? [];
+    expect(martinMatches.length).toBe(1);
+
+    const berlinMatches = prompt.match(/Berlin/g) ?? [];
+    expect(berlinMatches.length).toBe(1);
+  });
+
   it('stores messages in db', async () => {
     await service.init();
     await service.handleChatMessage('Hallo');
