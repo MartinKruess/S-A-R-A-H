@@ -24,10 +24,11 @@ const SAMPLE_RATE = 16_000;
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
-  readonly subscriptions = ['llm:done'];
+  readonly subscriptions = ['llm:done', 'llm:error'];
   status: ServiceStatus = 'pending';
 
   private voiceMode: VoiceMode = 'off';
+  private interactionMode: 'chat' | 'voice' = 'voice';
   private _voiceState: VoiceState = 'idle';
   private pushToTalkKey = DEFAULT_PTT_KEY;
 
@@ -48,6 +49,10 @@ export class VoiceService implements SarahService {
     return this._voiceState;
   }
 
+  setInteractionMode(mode: 'chat' | 'voice'): void {
+    this.interactionMode = mode;
+  }
+
   private setState(state: VoiceState): void {
     this._voiceState = state;
     this.context.bus.emit(this.id, 'voice:state', { state });
@@ -57,19 +62,13 @@ export class VoiceService implements SarahService {
     try {
       const config = await this.context.config.get<Record<string, Record<string, unknown>>>('root');
       const controls = config?.controls as Record<string, unknown> | undefined;
-      this.voiceMode = (controls?.voiceMode as VoiceMode) ?? 'off';
+      const rawMode = (controls?.voiceMode as VoiceMode) ?? 'off';
+      // keyword mode is non-functional — treat as off
+      this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
       this.pushToTalkKey = (controls?.pushToTalkKey as string) ?? DEFAULT_PTT_KEY;
-      process.stderr.write(`\n=== VOICE INIT: mode=${this.voiceMode}, pttKey=${this.pushToTalkKey} ===\n`);
 
       await this.stt.init();
-      console.log('[VoiceService] STT initialized');
       await this.tts.init();
-      console.log('[VoiceService] TTS initialized');
-
-      // Only init wake-word provider when keyword mode is active
-      if (this.voiceMode === 'keyword') {
-        await this.wakeWord.init();
-      }
 
       this.setupMode();
       this.status = 'running';
@@ -107,12 +106,42 @@ export class VoiceService implements SarahService {
   onMessage(msg: BusMessage): void {
     if (msg.topic === 'llm:done') {
       const fullText = msg.data.fullText as string;
-      if (this.voiceMode !== 'off' && fullText) {
+      if (this.voiceMode !== 'off' && this.interactionMode !== 'chat' && fullText) {
         this.speakResponse(fullText).catch(() => {
           this.context.bus.emit(this.id, 'voice:error', { message: 'TTS failed' });
         });
       }
+    } else if (msg.topic === 'llm:error') {
+      if (this._voiceState === 'processing') {
+        this.setState('idle');
+        this.context.bus.emit(this.id, 'voice:error', {
+          message: (msg.data.message as string) ?? 'LLM request failed',
+        });
+      }
     }
+  }
+
+  async applyConfig(): Promise<void> {
+    // Tear down current mode
+    this.hotkey.unregister();
+    this.wakeWord.stop();
+    if (this.audio.isRecording) {
+      this.audio.stopRecording();
+    }
+    this.clearSilenceTimer();
+    this.clearConversationTimer();
+    this.conversationActive = false;
+    this.setState('idle');
+
+    // Re-read config
+    const config = await this.context.config.get<Record<string, Record<string, unknown>>>('root');
+    const controls = config?.controls as Record<string, unknown> | undefined;
+    const rawMode = (controls?.voiceMode as VoiceMode) ?? 'off';
+    this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
+    this.pushToTalkKey = (controls?.pushToTalkKey as string) ?? DEFAULT_PTT_KEY;
+
+    // Set up new mode
+    this.setupMode();
   }
 
   private setupMode(): void {
@@ -134,7 +163,6 @@ export class VoiceService implements SarahService {
   // --- PTT handlers ---
 
   onPttDown(): void {
-    process.stderr.write(`\n=== PTT DOWN (state=${this._voiceState}) ===\n`);
     if (this._voiceState === 'speaking') {
       this.interrupt();
     }
@@ -142,7 +170,6 @@ export class VoiceService implements SarahService {
   }
 
   onPttUp(): void {
-    process.stderr.write(`\n=== PTT UP ===\n`);
     this.stopListeningAndProcess().catch(() => {
       this.context.bus.emit(this.id, 'voice:error', { message: 'Processing failed' });
     });

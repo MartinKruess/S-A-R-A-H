@@ -262,6 +262,15 @@ app.whenReady().then(async () => {
         (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
       const merged = { ...existing, ...config };
       await appContext!.config.set('root', merged);
+
+      // Apply voice config changes live when controls section is saved
+      if ('controls' in config) {
+        const voiceService = appContext!.registry.get('voice');
+        if (voiceService && voiceService instanceof VoiceService) {
+          await voiceService.applyConfig();
+        }
+      }
+
       return merged;
     },
   );
@@ -351,6 +360,20 @@ app.whenReady().then(async () => {
     const voiceService = appContext?.registry.get('voice');
     if (voiceService && voiceService instanceof VoiceService) {
       voiceService.feedAudioChunk(new Float32Array(chunk));
+    }
+  });
+
+  ipcMain.handle('voice-set-interaction-mode', (_event, mode: string) => {
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService && voiceService instanceof VoiceService) {
+      voiceService.setInteractionMode(mode as 'chat' | 'voice');
+    }
+  });
+
+  ipcMain.handle('voice-config-changed', async () => {
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService && voiceService instanceof VoiceService) {
+      await voiceService.applyConfig();
     }
   });
 
