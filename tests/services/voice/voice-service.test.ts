@@ -166,15 +166,16 @@ describe('VoiceService', () => {
     expect(hotkey.register).toHaveBeenCalledWith('F9', expect.any(Function), expect.any(Function));
   });
 
-  // --- 4. Starts wake-word in keyword mode ---
+  // --- 4. Keyword mode falls back to off ---
 
-  it('starts wake-word listening in keyword mode', async () => {
+  it('treats keyword mode as off (non-functional)', async () => {
     context = createMockContext(bus, 'keyword');
     service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
 
     await service.init();
 
-    expect(wakeWord.start).toHaveBeenCalledOnce();
+    expect(wakeWord.init).not.toHaveBeenCalled();
+    expect(wakeWord.start).not.toHaveBeenCalled();
     expect(hotkey.register).not.toHaveBeenCalled();
   });
 
@@ -508,6 +509,39 @@ describe('VoiceService', () => {
 
     expect(service.voiceState).toBe('idle');
     expect(errorListener).not.toHaveBeenCalled();
+  });
+
+  // --- 14. State transition guard ---
+
+  it('ignores onPttDown during active transition', async () => {
+    // Make STT slow so the transition stays active
+    let resolveTranscribe: (value: string) => void;
+    (stt.transcribe as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<string>((resolve) => { resolveTranscribe = resolve; }),
+    );
+
+    await service.init();
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    // PTT down -> listening, PTT up -> starts async stopListeningAndProcess (transition active)
+    onDown();
+    onUp();
+
+    // Reset the startRecording call count after the initial onDown
+    (audio.startRecording as ReturnType<typeof vi.fn>).mockClear();
+
+    // PTT down again while transition is still active (STT hasn't resolved)
+    onDown();
+
+    // startListening should NOT have been called again
+    expect(audio.startRecording).not.toHaveBeenCalled();
+
+    // Resolve the pending transcription to clean up
+    resolveTranscribe!('test');
+    await flush();
   });
 
   it('emits voice:transcript with transcription text', async () => {

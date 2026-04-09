@@ -32,6 +32,7 @@ export class VoiceService implements SarahService {
   private _voiceState: VoiceState = 'idle';
   private pushToTalkKey = DEFAULT_PTT_KEY;
 
+  private transitioning = false;
   private conversationActive = false;
   private conversationTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -58,6 +59,16 @@ export class VoiceService implements SarahService {
     this.context.bus.emit(this.id, 'voice:state', { state });
   }
 
+  private async transition(fn: () => Promise<void>): Promise<void> {
+    if (this.transitioning) return;
+    this.transitioning = true;
+    try {
+      await fn();
+    } finally {
+      this.transitioning = false;
+    }
+  }
+
   async init(): Promise<void> {
     try {
       const config = await this.context.config.get<Record<string, Record<string, unknown>>>('root');
@@ -79,6 +90,7 @@ export class VoiceService implements SarahService {
   }
 
   async destroy(): Promise<void> {
+    this.transitioning = false;
     this.clearConversationTimer();
     this.clearSilenceTimer();
     this.hotkey.unregister();
@@ -107,7 +119,7 @@ export class VoiceService implements SarahService {
     if (msg.topic === 'llm:done') {
       const fullText = msg.data.fullText as string;
       if (this.voiceMode !== 'off' && this.interactionMode !== 'chat' && fullText) {
-        this.speakResponse(fullText).catch(() => {
+        this.transition(() => this.speakResponse(fullText)).catch(() => {
           this.context.bus.emit(this.id, 'voice:error', { message: 'TTS failed' });
         });
       }
@@ -122,6 +134,7 @@ export class VoiceService implements SarahService {
   }
 
   async applyConfig(): Promise<void> {
+    this.transitioning = false;
     // Tear down current mode
     this.hotkey.unregister();
     this.wakeWord.stop();
@@ -165,12 +178,16 @@ export class VoiceService implements SarahService {
   onPttDown(): void {
     if (this._voiceState === 'speaking') {
       this.interrupt();
+      this.transitioning = false;
+      this.startListening();
+      return;
     }
+    if (this.transitioning) return;
     this.startListening();
   }
 
   onPttUp(): void {
-    this.stopListeningAndProcess().catch(() => {
+    this.transition(() => this.stopListeningAndProcess()).catch(() => {
       this.context.bus.emit(this.id, 'voice:error', { message: 'Processing failed' });
     });
   }
