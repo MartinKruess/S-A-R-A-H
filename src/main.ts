@@ -6,6 +6,9 @@ import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { LlmService } from './services/llm/llm-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
+import { DEFAULT_LLM_CONFIG } from './services/llm/llm-types.js';
+import type { LlmConfig } from './services/llm/llm-types.js';
+import { VoiceService } from './services/voice/voice-service.js';
 
 try {
   require('electron-reloader')(module);
@@ -168,9 +171,45 @@ app.whenReady().then(async () => {
   appContext = await bootstrap(app.getPath('userData'));
 
   // Register LLM service
-  const ollamaProvider = new OllamaProvider('http://localhost:11434', 'mistral-nemo');
+  const rootConfig = (await appContext.config.get<Record<string, unknown>>('root')) ?? {};
+  const llmRaw = rootConfig.llm as Partial<LlmConfig> | undefined;
+  const llmConfig: LlmConfig = {
+    baseUrl: llmRaw?.baseUrl ?? DEFAULT_LLM_CONFIG.baseUrl,
+    model: llmRaw?.model ?? DEFAULT_LLM_CONFIG.model,
+    options: llmRaw?.options ?? DEFAULT_LLM_CONFIG.options,
+  };
+  const ollamaProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.options);
   const llmService = new LlmService(appContext, ollamaProvider);
   appContext.registry.register(llmService);
+
+  // Register Voice service
+  const { AudioManager } = await import('./services/voice/audio-manager.js');
+  const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
+  const { WhisperProvider } = await import('./services/voice/providers/whisper-provider.js');
+  const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
+  const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
+
+  // In development, use project-local resources/ folder
+  const resourcesPath = app.isPackaged
+    ? process.resourcesPath
+    : path.join(__dirname, '..', 'resources');
+  const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
+  const whisperProvider = new WhisperProvider(resourcesPath);
+  const piperProvider = new PiperProvider(resourcesPath);
+  const porcupineProvider = new PorcupineProvider(resourcesPath, picovoiceKey);
+  const audioManager = new AudioManager();
+  const hotkeyManager = new HotkeyManager();
+
+  const voiceService = new VoiceService(
+    appContext,
+    whisperProvider,
+    piperProvider,
+    porcupineProvider,
+    audioManager,
+    hotkeyManager,
+  );
+  appContext.registry.register(voiceService);
+
   await appContext.registry.initAll();
 
   ipcMain.on('splash-done', async () => {
@@ -232,6 +271,15 @@ app.whenReady().then(async () => {
         (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
       const merged = { ...existing, ...config };
       await appContext!.config.set('root', merged);
+
+      // Apply voice config changes live when controls section is saved
+      if ('controls' in config) {
+        const voiceService = appContext!.registry.get('voice');
+        if (voiceService && voiceService instanceof VoiceService) {
+          await voiceService.applyConfig();
+        }
+      }
+
       return merged;
     },
   );
@@ -288,6 +336,10 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('chat-message', async (_event, text: string) => {
+    const voiceService = appContext!.registry.get('voice') as VoiceService | undefined;
+    if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
+      voiceService.setInteractionMode('chatspeak');
+    }
     appContext!.bus.emit('renderer', 'chat:message', { text });
   });
 
@@ -305,6 +357,49 @@ app.whenReady().then(async () => {
   forwardToRenderers('llm:chunk');
   forwardToRenderers('llm:done');
   forwardToRenderers('llm:error');
+
+  // Voice IPC handlers
+  ipcMain.handle('voice-get-state', () => {
+    const voiceService = appContext?.registry.get('voice');
+    if (!voiceService || !(voiceService instanceof VoiceService)) return 'idle';
+    return voiceService.voiceState;
+  });
+
+  ipcMain.handle('voice-playback-done', () => {
+    appContext!.bus.emit('renderer', 'voice:playback-done', {});
+  });
+
+  ipcMain.handle('voice-audio-chunk', (_event, chunk: number[]) => {
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService && voiceService instanceof VoiceService) {
+      voiceService.feedAudioChunk(new Float32Array(chunk));
+    }
+  });
+
+  ipcMain.handle('voice-set-interaction-mode', (_event, mode: string) => {
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService && voiceService instanceof VoiceService) {
+      voiceService.setInteractionMode(mode as 'chat' | 'voice');
+    }
+  });
+
+  ipcMain.handle('voice-config-changed', async () => {
+    const voiceService = appContext?.registry.get('voice');
+    if (voiceService && voiceService instanceof VoiceService) {
+      await voiceService.applyConfig();
+    }
+  });
+
+  // Forward voice events to renderers
+  forwardToRenderers('voice:state');
+  forwardToRenderers('voice:listening');
+  forwardToRenderers('voice:transcript');
+  forwardToRenderers('voice:speaking');
+  forwardToRenderers('voice:done');
+  forwardToRenderers('voice:error');
+  forwardToRenderers('voice:interrupted');
+  forwardToRenderers('voice:wake');
+  forwardToRenderers('voice:play-audio');
 
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
     try {

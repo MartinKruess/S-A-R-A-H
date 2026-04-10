@@ -83,4 +83,79 @@ describe('OllamaProvider', () => {
     ).rejects.toThrow('Ollama error: 500 Internal Server Error');
     vi.restoreAllMocks();
   });
+
+  it('chat always sends think: false in request body', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(JSON.stringify({ message: { content: 'ok' }, done: true }) + '\n'),
+        );
+        controller.close();
+      },
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: stream,
+    } as Response);
+
+    await provider.chat([{ role: 'user', content: 'Hi' }], () => {});
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.think).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it('chat includes options in request body when provided', async () => {
+    const providerWithOptions = new OllamaProvider('http://localhost:11434', 'mistral-nemo', {
+      temperature: 0.7,
+      num_predict: 512,
+      num_ctx: 4096,
+    });
+
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(JSON.stringify({ message: { content: 'ok' }, done: true }) + '\n'),
+        );
+        controller.close();
+      },
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: stream,
+    } as Response);
+
+    await providerWithOptions.chat([{ role: 'user', content: 'Hi' }], () => {});
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.options).toEqual({ temperature: 0.7, num_predict: 512, num_ctx: 4096 });
+    vi.restoreAllMocks();
+  });
+
+  it('chat omits options from request body when not provided', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(JSON.stringify({ message: { content: 'ok' }, done: true }) + '\n'),
+        );
+        controller.close();
+      },
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: stream,
+    } as Response);
+
+    await provider.chat([{ role: 'user', content: 'Hi' }], () => {});
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.options).toBeUndefined();
+    vi.restoreAllMocks();
+  });
 });

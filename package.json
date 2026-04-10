@@ -4,10 +4,14 @@
   "description": "",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.renderer.json && esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022",
+    "rebuild:node-sqlite": "npm rebuild better-sqlite3",
+    "rebuild:electron-sqlite": "npx electron-rebuild -f -w better-sqlite3 --version 41.1.1",
+    "build": "tsc && tsc -p tsconfig.renderer.json && esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts src/renderer/services/audio-worklet-processor.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022",
     "start": "npm run build && electron .",
-    "dev": "concurrently \"tsc --watch\" \"tsc -p tsconfig.renderer.json --watch\" \"esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022 --watch\" \"electron .\"",
+    "start:electron": "npm run rebuild:electron-sqlite && npm run build && electron .",
+    "dev": "concurrently \"tsc --watch\" \"tsc -p tsconfig.renderer.json --watch\" \"esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts src/renderer/services/audio-worklet-processor.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022 --watch\" \"electron .\"",
     "test": "vitest run",
+    "test:sqlite": "npm run rebuild:node-sqlite && vitest run",
     "test:watch": "vitest"
   },
   "keywords": [],
@@ -26,7 +30,9 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "@picovoice/porcupine-node": "^4.0.2",
     "better-sqlite3": "^12.8.0",
-    "three": "^0.183.2"
+    "three": "^0.183.2",
+    "uiohook-napi": "^1.5.5"
   }
 }

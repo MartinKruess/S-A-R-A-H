@@ -12,7 +12,19 @@
       "Bash(npm test:*)",
       "Bash(npm start:*)",
       "Bash(ollama:*)",
-      "Bash(npx vitest:*)"
+      "Bash(npx vitest:*)",
+      "Bash(where gh:*)",
+      "Bash(ls /g/projects/S-A-R-A-H/src/renderer/dashboard/*.html)",
+      "Bash(ls /g/projects/S-A-R-A-H/src/renderer/*.html)",
+      "Bash(ls:*)",
+      "Bash(git:*)",
+      "Bash(grep:*)",
+      "Bash(npx eslint:*)",
+      "Bash(npx electron:*)",
+      "Bash(npx electron-rebuild:*)",
+      "Bash(npm ls:*)",
+      "Bash(curl -s http://localhost:11434/api/tags)",
+      "Bash(python -m json.tool)"
     ]
   }
 }
