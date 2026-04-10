@@ -1,4 +1,5 @@
 import type { ChatMessage, LlmProvider } from '../llm-provider.interface.js';
+import type { OllamaOptions } from '../llm-types.js';
 
 export class OllamaProvider implements LlmProvider {
   readonly id = 'ollama';
@@ -6,6 +7,7 @@ export class OllamaProvider implements LlmProvider {
   constructor(
     private baseUrl: string,
     private model: string,
+    private options?: OllamaOptions,
   ) {}
 
   async isAvailable(): Promise<boolean> {
@@ -30,6 +32,8 @@ export class OllamaProvider implements LlmProvider {
         model: this.model,
         messages,
         stream: true,
+        think: false,
+        ...(this.options && { options: this.options }),
       }),
     });
 
@@ -56,14 +60,18 @@ export class OllamaProvider implements LlmProvider {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        const parsed = JSON.parse(line) as {
-          message: { content: string };
-          done: boolean;
-        };
-        const chunk = parsed.message.content;
-        if (chunk) {
-          fullText += chunk;
-          onChunk(chunk);
+        try {
+          const parsed = JSON.parse(line) as {
+            message: { content: string };
+            done: boolean;
+          };
+          const chunk = parsed.message.content;
+          if (chunk) {
+            fullText += chunk;
+            onChunk(chunk);
+          }
+        } catch {
+          // Skip malformed JSON chunks from Ollama
         }
       }
     }

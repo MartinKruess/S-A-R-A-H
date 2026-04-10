@@ -15,5 +15,5 @@
     "declaration": false
   },
   "include": ["src/renderer/**/*"],
-  "exclude": ["node_modules", "dist", "src/renderer/dashboard/orb-scene.ts", "src/renderer/dashboard/dialog.ts"]
+  "exclude": ["node_modules", "dist", "src/renderer/dashboard/orb-scene.ts", "src/renderer/dashboard/dialog.ts", "src/renderer/services/audio-worklet-processor.ts"]
 }

@@ -104,6 +104,7 @@ export interface WizardData {
   };
   controls: {
     voiceMode: 'keyword' | 'push-to-talk' | 'off';
+    pushToTalkKey: string;
     quietModeDuration: number;
     customCommands: CustomCommand[];
   };
@@ -163,6 +164,7 @@ const wizardData: WizardData = {
   },
   controls: {
     voiceMode: 'off',
+    pushToTalkKey: 'F9',
     quietModeDuration: 60,
     customCommands: [],
   },
