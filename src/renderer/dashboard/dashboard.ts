@@ -1,5 +1,6 @@
 import { registerComponents } from '../components/index.js';
 import { applyAccentColor } from './accent.js';
+import { AudioBridge } from '../services/audio-bridge.js';
 
 declare const sarah: {
   version: string;
@@ -11,6 +12,16 @@ declare const sarah: {
   onChatChunk: (cb: (data: { text: string }) => void) => () => void;
   onChatDone: (cb: (data: { fullText: string }) => void) => () => void;
   onChatError: (cb: (data: { message: string }) => void) => () => void;
+  voice: {
+    getState: () => Promise<string>;
+    onStateChange: (cb: (data: { state: string }) => void) => () => void;
+    onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
+    playbackDone: () => Promise<void>;
+    onError: (cb: (data: { message: string }) => void) => () => void;
+    setInteractionMode: (mode: string) => Promise<void>;
+    sendAudioChunk: (chunk: number[]) => Promise<void>;
+    onTranscript: (cb: (data: { text: string }) => void) => () => void;
+  };
 };
 
 (window as any).__sarah = sarah;
@@ -59,6 +70,7 @@ function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElem
 chatModeToggle.addEventListener('click', () => {
   chatMode = !chatMode;
   sarahArea.classList.toggle('chatmode', chatMode);
+  sarah.voice.setInteractionMode(chatMode ? 'chat' : 'voice');
   if (chatMode) {
     chatInput.focus();
   }
@@ -69,12 +81,6 @@ chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && chatInput.value.trim()) {
     const text = chatInput.value.trim();
     chatInput.value = '';
-
-    // Auto-enter chatmode on first message
-    if (!chatMode) {
-      chatMode = true;
-      sarahArea.classList.add('chatmode');
-    }
 
     addBubble('user', text);
     currentBubble = addBubble('assistant', '');
@@ -102,4 +108,20 @@ sarah.onChatError((data) => {
     currentBubble = null;
   }
   addBubble('error', data.message);
+});
+
+// ── Voice Transcript → Chat Bubble ──
+sarah.voice.onTranscript((data) => {
+  addBubble('user', data.text);
+  currentBubble = addBubble('assistant', '');
+});
+
+// ── Voice Audio Bridge ──
+const audioBridge = new AudioBridge();
+audioBridge.start().catch((err) => {
+  console.error('[Dashboard] AudioBridge failed to start:', err);
+});
+
+window.addEventListener('beforeunload', () => {
+  audioBridge.destroy();
 });

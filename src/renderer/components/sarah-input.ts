@@ -100,6 +100,19 @@ export class SarahInput extends SarahElement {
     this.errorEl.textContent = '';
   }
 
+  setReadOnly(readOnly: boolean): void {
+    if (this.input) {
+      this.input.readOnly = readOnly;
+      this.input.style.cursor = readOnly ? 'pointer' : '';
+    }
+  }
+
+  onKeydown(handler: (e: KeyboardEvent) => void): void {
+    if (this.input) {
+      this.input.addEventListener('keydown', handler);
+    }
+  }
+
   validate(): boolean {
     const val = this.input.value.trim();
     if (this.input.required && !val) {

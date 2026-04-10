@@ -587,16 +587,42 @@ function createControlsSection(config: Config): HTMLElement {
   section.appendChild(header);
 
   // Voice mode
-  section.appendChild(sarahSelect({
+  const voiceModeSelect = sarahSelect({
     label: 'Sprachsteuerung',
     options: [
       { value: 'off', label: 'Aus' },
-      { value: 'keyword', label: 'Keyword-Listening (Hey Sarah)' },
       { value: 'push-to-talk', label: 'Push-to-Talk' },
     ],
     value: (controls.voiceMode as string) || 'off',
-    onChange: (val) => { controls.voiceMode = val; save('controls', controls); showSaved(feedback); },
-  }));
+    onChange: (val) => {
+      controls.voiceMode = val;
+      hotkeyWrapper.style.display = (val === 'push-to-talk') ? '' : 'none';
+      save('controls', controls);
+      showSaved(feedback);
+    },
+  });
+  section.appendChild(voiceModeSelect);
+
+  // Push-to-Talk Taste (only visible in push-to-talk mode)
+  const hotkeyWrapper = sarahInput({
+    label: 'Push-to-Talk Taste',
+    value: (controls.pushToTalkKey as string) || 'F9',
+    placeholder: 'Taste drücken...',
+  });
+  hotkeyWrapper.style.display = ((controls.voiceMode as string) === 'push-to-talk') ? '' : 'none';
+
+  // Configure hotkey capture via public API
+  hotkeyWrapper.setReadOnly(true);
+  const ALLOWED_KEYS = ['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'];
+  hotkeyWrapper.onKeydown((e: KeyboardEvent) => {
+    e.preventDefault();
+    const key = e.key;
+    if (!ALLOWED_KEYS.includes(key)) return;
+    hotkeyWrapper.value = key;
+    save('controls', { ...controls, pushToTalkKey: key });
+    showSaved(feedback);
+  });
+  section.appendChild(hotkeyWrapper);
 
   const spacer = document.createElement('div');
   spacer.style.height = 'var(--sarah-space-md)';
