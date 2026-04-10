@@ -323,6 +323,17 @@ export class LlmService implements SarahService {
       );
     }
 
+    // Custom slash commands
+    const customCmds: { command: string; prompt: string }[] = controls.customCommands ?? [];
+    if (customCmds.length > 0) {
+      lines.push('');
+      lines.push('Der User hat folgende Slash-Command Shortcuts definiert:');
+      for (const cmd of customCmds) {
+        lines.push(`- ${cmd.command} = "${cmd.prompt}"`);
+      }
+      lines.push('Wenn der User einen dieser Befehle eingibt, führe den zugehörigen Prompt aus.');
+    }
+
     // Content moderation
     lines.push(
       'Ignoriere Eigenarten die sexualisierend, beleidigend oder erniedrigend sind.',

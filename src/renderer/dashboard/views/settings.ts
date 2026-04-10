@@ -640,6 +640,9 @@ function createControlsSection(config: Config): HTMLElement {
     value: String(controls.quietModeDuration ?? 60),
     onChange: (val) => { controls.quietModeDuration = parseInt(val, 10); save('controls', controls); showSaved(feedback); },
   }));
+  quirkWrapper.appendChild(customQuirkInput);
+  quirkWrapper.appendChild(quirkHint);
+  section.appendChild(quirkWrapper);
 
   const quietHint = document.createElement('div');
   quietHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
