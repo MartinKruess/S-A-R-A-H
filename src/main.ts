@@ -6,6 +6,8 @@ import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { LlmService } from './services/llm/llm-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
+import { DEFAULT_LLM_CONFIG } from './services/llm/llm-types.js';
+import type { LlmConfig } from './services/llm/llm-types.js';
 import { VoiceService } from './services/voice/voice-service.js';
 
 try {
@@ -169,7 +171,14 @@ app.whenReady().then(async () => {
   appContext = await bootstrap(app.getPath('userData'));
 
   // Register LLM service
-  const ollamaProvider = new OllamaProvider('http://localhost:11434', 'mistral-nemo');
+  const rootConfig = (await appContext.config.get<Record<string, unknown>>('root')) ?? {};
+  const llmRaw = rootConfig.llm as Partial<LlmConfig> | undefined;
+  const llmConfig: LlmConfig = {
+    baseUrl: llmRaw?.baseUrl ?? DEFAULT_LLM_CONFIG.baseUrl,
+    model: llmRaw?.model ?? DEFAULT_LLM_CONFIG.model,
+    options: llmRaw?.options ?? DEFAULT_LLM_CONFIG.options,
+  };
+  const ollamaProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.options);
   const llmService = new LlmService(appContext, ollamaProvider);
   appContext.registry.register(llmService);
 

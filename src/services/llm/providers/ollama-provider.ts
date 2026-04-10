@@ -1,4 +1,5 @@
 import type { ChatMessage, LlmProvider } from '../llm-provider.interface.js';
+import type { OllamaOptions } from '../llm-types.js';
 
 export class OllamaProvider implements LlmProvider {
   readonly id = 'ollama';
@@ -6,6 +7,7 @@ export class OllamaProvider implements LlmProvider {
   constructor(
     private baseUrl: string,
     private model: string,
+    private options?: OllamaOptions,
   ) {}
 
   async isAvailable(): Promise<boolean> {
@@ -30,6 +32,7 @@ export class OllamaProvider implements LlmProvider {
         model: this.model,
         messages,
         stream: true,
+        ...(this.options && { options: this.options }),
       }),
     });
 
