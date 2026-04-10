@@ -6,6 +6,9 @@ export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
 /** Voice control modes — mutually exclusive */
 export type VoiceMode = 'off' | 'keyword' | 'push-to-talk';
 
+/** Interaction mode — determines whether TTS speaks responses */
+export type InteractionMode = 'chat' | 'voice' | 'chatspeak';
+
 /** Silence duration before end-of-speech in keyword mode (ms) */
 export const SILENCE_TIMEOUT_MS = 2_000;
 

@@ -7,9 +7,12 @@ import type { TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
 import type { AudioManager } from './audio-manager.js';
 import type { HotkeyManager } from './hotkey-manager.js';
+import { SentenceBuffer } from './sentence-buffer.js';
+import { TtsQueue } from './tts-queue.js';
 import {
   type VoiceState,
   type VoiceMode,
+  type InteractionMode,
   SILENCE_TIMEOUT_MS,
   CONVERSATION_WINDOW_MS,
   DEFAULT_PTT_KEY,
@@ -24,11 +27,11 @@ const SAMPLE_RATE = 16_000;
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
-  readonly subscriptions = ['llm:done', 'llm:error'];
+  readonly subscriptions = ['llm:chunk', 'llm:done', 'llm:error'];
   status: ServiceStatus = 'pending';
 
   private voiceMode: VoiceMode = 'off';
-  private interactionMode: 'chat' | 'voice' = 'voice';
+  private interactionMode: InteractionMode = 'voice';
   private _voiceState: VoiceState = 'idle';
   private pushToTalkKey = DEFAULT_PTT_KEY;
 
@@ -36,6 +39,11 @@ export class VoiceService implements SarahService {
   private conversationActive = false;
   private conversationTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private sentenceBuffer = new SentenceBuffer();
+  private ttsQueue: TtsQueue | null = null;
+  private llmStreaming = false;
+  private playbackUnsub: (() => void) | null = null;
 
   constructor(
     private context: AppContext,
@@ -50,7 +58,7 @@ export class VoiceService implements SarahService {
     return this._voiceState;
   }
 
-  setInteractionMode(mode: 'chat' | 'voice'): void {
+  setInteractionMode(mode: InteractionMode): void {
     this.interactionMode = mode;
   }
 
@@ -82,6 +90,28 @@ export class VoiceService implements SarahService {
       await this.tts.init();
 
       this.setupMode();
+
+      this.ttsQueue = new TtsQueue(
+        this.tts,
+        (audio, sampleRate) => {
+          this.audio.setPlaying(true);
+          this.context.bus.emit(this.id, 'voice:play-audio', {
+            audio: Array.from(audio),
+            sampleRate,
+          });
+        },
+        () => { this.onTtsQueueEmpty(); },
+        (err) => {
+          console.error('[VoiceService] TTS error:', err);
+          this.context.bus.emit(this.id, 'voice:error', { message: err.message });
+        },
+      );
+
+      this.playbackUnsub = this.context.bus.on('voice:playback-done', () => {
+        this.audio.setPlaying(false);
+        this.ttsQueue?.playbackDone();
+      });
+
       this.status = 'running';
     } catch (err) {
       console.error('[VoiceService] init failed:', err);
@@ -90,6 +120,13 @@ export class VoiceService implements SarahService {
   }
 
   async destroy(): Promise<void> {
+    this.playbackUnsub?.();
+    this.playbackUnsub = null;
+    this.ttsQueue?.stop();
+    this.ttsQueue = null;
+    this.sentenceBuffer.reset();
+    this.llmStreaming = false;
+
     this.transitioning = false;
     this.clearConversationTimer();
     this.clearSilenceTimer();
@@ -116,20 +153,70 @@ export class VoiceService implements SarahService {
   }
 
   onMessage(msg: BusMessage): void {
-    if (msg.topic === 'llm:done') {
-      const fullText = msg.data.fullText as string;
-      if (this.voiceMode !== 'off' && this.interactionMode !== 'chat' && fullText) {
-        this.transition(() => this.speakResponse(fullText)).catch(() => {
-          this.context.bus.emit(this.id, 'voice:error', { message: 'TTS failed' });
-        });
+    const shouldSpeak = this.voiceMode !== 'off' && this.interactionMode !== 'chat';
+
+    if (msg.topic === 'llm:chunk') {
+      if (!shouldSpeak) return;
+      const text = msg.data.text as string;
+      if (!text) return;
+
+      const sentences = this.sentenceBuffer.push(text);
+      for (const sentence of sentences) {
+        if (this._voiceState === 'processing') {
+          this.setState('speaking');
+          this.context.bus.emit(this.id, 'voice:speaking', { text: sentence });
+          this.llmStreaming = true;
+        }
+        this.ttsQueue?.enqueue(sentence);
+      }
+    } else if (msg.topic === 'llm:done') {
+      if (!shouldSpeak) return;
+      const remainder = this.sentenceBuffer.flush();
+      if (remainder) {
+        if (this._voiceState === 'processing') {
+          this.setState('speaking');
+          this.context.bus.emit(this.id, 'voice:speaking', { text: remainder });
+        }
+        this.ttsQueue?.enqueue(remainder);
+      }
+      this.llmStreaming = false;
+      // If queue is already empty (e.g., very short response already played), trigger completion
+      if (!this.ttsQueue?.isActive && this._voiceState === 'speaking') {
+        this.onTtsQueueEmpty();
       }
     } else if (msg.topic === 'llm:error') {
-      if (this._voiceState === 'processing') {
+      if (this.llmStreaming) {
+        // Already speaking — flush what we have and let queue finish
+        const remainder = this.sentenceBuffer.flush();
+        if (remainder) {
+          this.ttsQueue?.enqueue(remainder);
+        }
+        this.llmStreaming = false;
+      } else if (this._voiceState === 'processing') {
         this.setState('idle');
         this.context.bus.emit(this.id, 'voice:error', {
           message: (msg.data.message as string) ?? 'LLM request failed',
         });
       }
+    }
+  }
+
+  private onTtsQueueEmpty(): void {
+    if (this.llmStreaming) {
+      // LLM still producing — stay in speaking state, queue will resume
+      return;
+    }
+    // All done
+    this.context.bus.emit(this.id, 'voice:done', {});
+
+    if (this.interactionMode === 'chatspeak') {
+      this.interactionMode = 'voice';
+    }
+
+    if (this.voiceMode === 'keyword' && this.conversationActive) {
+      this.startListening();
+    } else {
+      this.setState('idle');
     }
   }
 
@@ -254,55 +341,15 @@ export class VoiceService implements SarahService {
     }
 
     // Emit chat message for LLM processing
+    console.log('[Voice] transcript to LLM:', JSON.stringify(transcript));
+    console.log('[Voice] hex:', Buffer.from(transcript).toString('hex'));
     this.context.bus.emit(this.id, 'chat:message', { text: transcript });
   }
 
-  private async speakResponse(text: string): Promise<void> {
-    this.setState('speaking');
-    this.context.bus.emit(this.id, 'voice:speaking', { text });
-
-    try {
-      const audioData = await this.tts.speak(text);
-      this.audio.setPlaying(true);
-
-      // Send audio to renderer for playback via IPC
-      // The renderer plays it via Web Audio API and sends 'voice:playback-done' when finished
-      this.context.bus.emit(this.id, 'voice:play-audio', {
-        audio: Array.from(audioData),
-        sampleRate: 22_050,
-      });
-
-      // Wait for playback to finish (renderer signals via IPC → bus)
-      await new Promise<void>((resolve) => {
-        let resolved = false;
-        const done = () => {
-          if (resolved) return;
-          resolved = true;
-          unsub();
-          resolve();
-        };
-        const unsub = this.context.bus.on('voice:playback-done', done);
-        const durationMs = (audioData.length / 22_050) * 1000 + 500;
-        setTimeout(done, durationMs);
-      });
-
-      this.audio.setPlaying(false);
-      this.context.bus.emit(this.id, 'voice:done', {});
-
-      // After speaking, decide next state
-      if (this.voiceMode === 'keyword' && this.conversationActive) {
-        this.startListening();
-      } else {
-        this.setState('idle');
-      }
-    } catch {
-      this.audio.setPlaying(false);
-      this.setState('idle');
-      this.context.bus.emit(this.id, 'voice:error', { message: 'Speech failed' });
-    }
-  }
-
   private interrupt(): void {
+    this.ttsQueue?.stop();
+    this.sentenceBuffer.reset();
+    this.llmStreaming = false;
     this.tts.stop();
     this.audio.setPlaying(false);
     this.context.bus.emit(this.id, 'voice:interrupted', {});

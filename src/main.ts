@@ -336,6 +336,10 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle('chat-message', async (_event, text: string) => {
+    const voiceService = appContext!.registry.get('voice') as VoiceService | undefined;
+    if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
+      voiceService.setInteractionMode('chatspeak');
+    }
     appContext!.bus.emit('renderer', 'chat:message', { text });
   });
 
