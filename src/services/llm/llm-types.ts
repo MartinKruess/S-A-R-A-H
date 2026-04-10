@@ -12,7 +12,7 @@ export interface LlmConfig {
 
 export const DEFAULT_LLM_CONFIG: LlmConfig = {
   baseUrl: 'http://localhost:11434',
-  model: 'qwen3.5:latest',
+  model: 'qwen3.5:4b',
   options: {
     temperature: 0.7,
     num_predict: 2048,

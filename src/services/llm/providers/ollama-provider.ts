@@ -32,6 +32,7 @@ export class OllamaProvider implements LlmProvider {
         model: this.model,
         messages,
         stream: true,
+        think: false,
         ...(this.options && { options: this.options }),
       }),
     });
