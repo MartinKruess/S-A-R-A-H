@@ -6,7 +6,7 @@ import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 
 const MAX_CONTEXT_TOKENS = 120_000;
 const CHARS_PER_TOKEN = 4;
-const STREAM_TIMEOUT_MS = 45_000;
+const STREAM_TIMEOUT_MS = 120_000;
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',

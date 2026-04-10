@@ -54,6 +54,8 @@ contextBridge.exposeInMainWorld('sarah', {
       ipcRenderer.on('voice:error', handler);
       return () => ipcRenderer.removeListener('voice:error', handler);
     },
+    setInteractionMode: (mode: string) => ipcRenderer.invoke('voice-set-interaction-mode', mode),
     sendAudioChunk: (chunk: number[]) => ipcRenderer.invoke('voice-audio-chunk', chunk),
+    configChanged: () => ipcRenderer.invoke('voice-config-changed'),
   },
 });
