@@ -1,7 +1,6 @@
 import type { WizardData } from '../wizard.js';
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahInput } from '../../components/sarah-input.js';
-import { sarahSelect } from '../../components/sarah-select.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 
 const HOBBY_OPTIONS = [
@@ -52,26 +51,6 @@ export function createPersonalStep(data: WizardData): HTMLElement {
         placeholder: 'z.B. Rechnungen, Planung',
         value: data.profile.activities,
         onChange: (value) => { data.profile.activities = value; },
-      }),
-      sarahSelect({
-        label: 'Wie soll ich antworten?',
-        options: [
-          { value: 'kurz', label: 'Kurz & knapp' },
-          { value: 'mittel', label: 'Normal' },
-          { value: 'ausführlich', label: 'Ausführlich' },
-        ],
-        value: data.profile.responseStyle,
-        onChange: (value) => { data.profile.responseStyle = value as typeof data.profile.responseStyle; },
-      }),
-      sarahSelect({
-        label: 'Wie soll ich klingen?',
-        options: [
-          { value: 'direkt', label: 'Direkt' },
-          { value: 'freundlich', label: 'Freundlich' },
-          { value: 'professionell', label: 'Professionell' },
-        ],
-        value: data.profile.tone,
-        onChange: (value) => { data.profile.tone = value as typeof data.profile.tone; },
       }),
     ],
   });
