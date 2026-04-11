@@ -14,8 +14,6 @@ export const ProfileSchema = z.object({
   activities: z.string().default(''),
   usagePurposes: z.array(z.string()).default([]),
   hobbies: z.array(z.string()).default([]),
-  responseStyle: z.enum(['kurz', 'mittel', 'ausführlich']).default('mittel'),
-  tone: z.enum(['freundlich', 'professionell', 'locker', 'direkt']).default('freundlich'),
 });
 
 export const SkillsSchema = z.object({
@@ -81,6 +79,9 @@ export const PersonalizationSchema = z.object({
   chatAlignment: z.enum(['stacked', 'bubbles']).default('stacked'),
   emojisEnabled: z.boolean().default(true),
   responseMode: z.enum(['normal', 'spontaneous', 'thoughtful']).default('normal'),
+  responseLanguage: z.enum(['de', 'en']).default('de'),
+  responseStyle: z.enum(['kurz', 'mittel', 'ausführlich']).default('mittel'),
+  tone: z.enum(['freundlich', 'professionell', 'locker', 'direkt']).default('freundlich'),
   characterTraits: z.array(z.string()).default([]),
   quirk: z.string().nullable().default(null),
 });
@@ -124,7 +125,23 @@ export const SystemSchema = z.object({
 
 // ── Root Schema ──
 
-export const SarahConfigSchema = z.object({
+export const SarahConfigSchema = z.preprocess((raw) => {
+  const obj = (raw ?? {}) as Record<string, Record<string, unknown>>;
+  // Migrate responseStyle/tone from profile to personalization
+  if (obj.profile && obj.personalization) {
+    const p = obj.profile;
+    const pers = obj.personalization;
+    if (p.responseStyle && !pers.responseStyle) {
+      pers.responseStyle = p.responseStyle;
+      delete p.responseStyle;
+    }
+    if (p.tone && !pers.tone) {
+      pers.tone = p.tone;
+      delete p.tone;
+    }
+  }
+  return obj;
+}, z.object({
   onboarding: pre(z.object({ setupComplete: z.boolean().default(false) })),
   system: pre(SystemSchema),
   profile: pre(ProfileSchema),
@@ -137,7 +154,7 @@ export const SarahConfigSchema = z.object({
   integrations: pre(z.object({
     context7: z.boolean().default(false),
   })),
-});
+}));
 
 // ── Inferred Types ──
 
