@@ -78,6 +78,6 @@ describe('SarahConfigSchema', () => {
     expect(result.profile.displayName).toBe('Martin');
     expect(result.resources.programs[0].name).toBe('VS Code');
     expect(result.controls.pushToTalkKey).toBe('F10');
-    expect(result.llm.model).toBe('qwen3.5:4b');
+    expect(result.llm.routerModel).toBe('qwen3.5:4b');
   });
 });

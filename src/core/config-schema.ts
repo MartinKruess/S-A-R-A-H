@@ -95,7 +95,12 @@ export const ControlsSchema = z.object({
 
 export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
-  model: z.string().default('qwen3.5:4b'),
+  routerModel: z.string().default('qwen3.5:2b'),
+  workerModel: z.string().default('qwen3.5:9b'),
+  workerOptions: z.object({
+    num_ctx: z.number().default(8192),
+    num_gpu: z.number().default(24),
+  }).default({ num_ctx: 8192, num_gpu: 24 }),
   options: z.object({
     temperature: z.number().optional(),
     num_predict: z.number().optional(),
@@ -139,6 +144,11 @@ export const SarahConfigSchema = z.preprocess((raw) => {
       pers.tone = p.tone;
       delete p.tone;
     }
+  }
+  // Migrate llm.model → llm.routerModel
+  if (obj.llm && 'model' in obj.llm && !obj.llm.routerModel) {
+    obj.llm.routerModel = obj.llm.model;
+    delete obj.llm.model;
   }
   return obj;
 }, z.object({
