@@ -15,7 +15,13 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
   model: 'qwen3.5:4b',
   options: {
     temperature: 0.7,
-    num_predict: 2048,
+    num_predict: 1600,
     num_ctx: 32768,
   },
+};
+
+export const NUM_PREDICT_MAP: Record<string, number> = {
+  kurz: 512,
+  mittel: 1600,
+  'ausführlich': 3000,
 };

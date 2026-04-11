@@ -1,4 +1,4 @@
-import type { ChatMessage, LlmProvider } from '../llm-provider.interface.js';
+import type { ChatMessage, ChatOptions, LlmProvider } from '../llm-provider.interface.js';
 import type { OllamaOptions } from '../llm-types.js';
 
 export class OllamaProvider implements LlmProvider {
@@ -24,7 +24,13 @@ export class OllamaProvider implements LlmProvider {
   async chat(
     messages: ChatMessage[],
     onChunk: (text: string) => void,
+    options?: ChatOptions,
   ): Promise<string> {
+    const mergedOptions = {
+      ...this.options,
+      ...(options?.num_predict != null && { num_predict: options.num_predict }),
+    };
+
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -33,7 +39,7 @@ export class OllamaProvider implements LlmProvider {
         messages,
         stream: true,
         think: false,
-        ...(this.options && { options: this.options }),
+        ...(Object.keys(mergedOptions).length > 0 && { options: mergedOptions }),
       }),
     });
 
