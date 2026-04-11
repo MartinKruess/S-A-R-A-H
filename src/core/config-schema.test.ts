@@ -7,7 +7,7 @@ describe('SarahConfigSchema', () => {
 
     expect(result.onboarding.setupComplete).toBe(false);
     expect(result.profile.displayName).toBe('');
-    expect(result.profile.responseStyle).toBe('mittel');
+    expect(result.personalization.responseStyle).toBe('mittel');
     expect(result.controls.voiceMode).toBe('off');
     expect(result.controls.pushToTalkKey).toBe('F9');
     expect(result.personalization.accentColor).toBe('#00d4ff');
@@ -24,7 +24,7 @@ describe('SarahConfigSchema', () => {
     expect(result.profile.displayName).toBe('Martin');
     expect(result.profile.city).toBe('Berlin');
     expect(result.controls.voiceMode).toBe('push-to-talk');
-    expect(result.profile.responseStyle).toBe('mittel');
+    expect(result.personalization.responseStyle).toBe('mittel');
   });
 
   it('migrates legacy fileAccess "full" to "all"', () => {
