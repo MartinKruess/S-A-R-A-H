@@ -9,6 +9,7 @@ import {
   buildCoreTrust,
   buildCoreResponse,
   buildChatContext,
+  buildVoiceContext,
 } from '../../../src/services/llm/prompt-layers';
 import type { SarahConfig } from '../../../src/core/config-schema';
 
@@ -31,18 +32,29 @@ function fullPersonalization(): SarahConfig['personalization'] {
 }
 
 describe('buildCoreIdentity', () => {
-  it('returns identity block', () => {
+  it('returns identity with Sarah name', () => {
     const result = buildCoreIdentity();
-    expect(result).toContain('## IDENTITY');
     expect(result).toContain('Sarah');
+    expect(result).toContain('assistant');
+  });
+
+  it('includes no-markdown rule', () => {
+    const result = buildCoreIdentity();
+    expect(result).toContain('Do NOT use markdown');
+  });
+
+  it('includes no-name-repetition rule', () => {
+    const result = buildCoreIdentity();
+    expect(result).toContain('Do NOT repeat');
+    expect(result).toContain('name');
   });
 });
 
 describe('buildCoreSafety', () => {
   it('returns safety rules', () => {
     const result = buildCoreSafety();
-    expect(result).toContain('## SAFETY');
-    expect(result).toContain('NEVER');
+    expect(result).toContain('Never');
+    expect(result).toContain('instructions');
   });
 });
 
@@ -59,7 +71,6 @@ describe('buildCoreUser', () => {
       hobbies: ['Gaming', 'Musik'],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('## USER');
     expect(result).toContain('Martin');
     expect(result).toContain('Berlin');
     expect(result).toContain('Developer');
@@ -80,10 +91,8 @@ describe('buildCoreUser', () => {
     };
     const result = buildCoreUser(profile);
     expect(result).toContain('Martin');
-    expect(result).not.toContain('city');
-    expect(result).not.toContain('profession');
-    expect(result).not.toContain('purposes');
-    expect(result).not.toContain('hobbies');
+    expect(result).not.toContain('Berlin');
+    expect(result).not.toContain('Developer');
   });
 
   it('uses "User" when displayName is empty', () => {
@@ -98,7 +107,22 @@ describe('buildCoreUser', () => {
       hobbies: [],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('name: User');
+    expect(result).toContain('User');
+  });
+
+  it('tells model not to bring up hobbies/job unprompted', () => {
+    const profile: SarahConfig['profile'] = {
+      displayName: 'Martin',
+      lastName: '',
+      city: '',
+      address: '',
+      profession: 'Developer',
+      activities: '',
+      usagePurposes: [],
+      hobbies: ['Gaming'],
+    };
+    const result = buildCoreUser(profile);
+    expect(result).toContain('Do NOT bring up');
   });
 });
 
@@ -113,12 +137,10 @@ describe('buildCoreSkills', () => {
       office: null,
     };
     const result = buildCoreSkills(skills);
-    expect(result).toContain('## SKILLS');
     expect(result).toContain('fortgeschritten');
     expect(result).toContain('TypeScript');
     expect(result).toContain('C:/dev');
     expect(result).toContain('grundlagen');
-    expect(result).not.toContain('office');
   });
 
   it('returns empty string when no skills set', () => {
@@ -133,25 +155,28 @@ describe('buildCoreSkills', () => {
     const result = buildCoreSkills(skills);
     expect(result).toBe('');
   });
+
+  it('tells model to only mention skills when asked', () => {
+    const skills: SarahConfig['skills'] = {
+      programming: 'fortgeschritten',
+      programmingStack: [],
+      programmingResources: [],
+      programmingProjectsFolder: '',
+      design: null,
+      office: null,
+    };
+    const result = buildCoreSkills(skills);
+    expect(result).toContain('Only mention');
+  });
 });
 
 describe('buildCorePersonality', () => {
   it('includes traits and quirk', () => {
     const pers = fullPersonalization();
     const result = buildCorePersonality(pers);
-    expect(result).toContain('## PERSONALITY');
     expect(result).toContain('Humorvoll');
     expect(result).toContain('Sarkastisch');
-    expect(result).toContain('pirat');
-  });
-
-  it('omits traits when empty', () => {
-    const pers = fullPersonalization();
-    pers.characterTraits = [];
-    pers.quirk = null;
-    const result = buildCorePersonality(pers);
-    expect(result).not.toContain('traits');
-    expect(result).not.toContain('quirk');
+    expect(result).toContain('pirate');
   });
 
   it('returns empty string when no traits and no quirk', () => {
@@ -162,7 +187,7 @@ describe('buildCorePersonality', () => {
     expect(result).toBe('');
   });
 
-  it('uses language-specific quirk examples for de', () => {
+  it('uses language-specific quirk for de', () => {
     const pers = fullPersonalization();
     pers.quirk = 'pirat';
     pers.responseLanguage = 'de';
@@ -170,7 +195,7 @@ describe('buildCorePersonality', () => {
     expect(result).toContain('Landratten');
   });
 
-  it('uses language-specific quirk examples for en', () => {
+  it('uses language-specific quirk for en', () => {
     const pers = fullPersonalization();
     pers.quirk = 'pirat';
     pers.responseLanguage = 'en';
@@ -182,12 +207,18 @@ describe('buildCorePersonality', () => {
     const pers = fullPersonalization();
     pers.quirk = 'Sage immer Wunderbar!';
     const result = buildCorePersonality(pers);
-    expect(result).toContain('quirk: Sage immer Wunderbar!');
+    expect(result).toContain('Sage immer Wunderbar!');
+  });
+
+  it('tells model to show traits subtly', () => {
+    const pers = fullPersonalization();
+    const result = buildCorePersonality(pers);
+    expect(result).toContain('subtly');
   });
 });
 
 describe('buildCoreTrust', () => {
-  it('includes confirmation level and exclusions', () => {
+  it('includes confirmation instruction', () => {
     const trust: SarahConfig['trust'] = {
       memoryAllowed: true,
       fileAccess: 'specific-folders',
@@ -197,12 +228,11 @@ describe('buildCoreTrust', () => {
       showContextEnabled: false,
     };
     const result = buildCoreTrust(trust);
-    expect(result).toContain('## TRUST');
-    expect(result).toContain('standard');
+    expect(result).toContain('Ask before');
     expect(result).toContain('Finanzen');
   });
 
-  it('omits blocked_topics when no exclusions', () => {
+  it('omits exclusions when empty', () => {
     const trust: SarahConfig['trust'] = {
       memoryAllowed: true,
       fileAccess: 'specific-folders',
@@ -212,69 +242,84 @@ describe('buildCoreTrust', () => {
       showContextEnabled: false,
     };
     const result = buildCoreTrust(trust);
-    expect(result).not.toContain('blocked_topics');
+    expect(result).not.toContain('Never store');
   });
 });
 
 describe('buildCoreResponse', () => {
-  it('includes response settings', () => {
+  it('includes German language instruction for de', () => {
     const pers = fullPersonalization();
     const result = buildCoreResponse(pers);
-    expect(result).toContain('## RESPONSE');
-    expect(result).toContain('response_language: de');
-    expect(result).toContain('tone: friendly');
-  });
-
-  it('maps tone to english', () => {
-    const pers = fullPersonalization();
-    pers.tone = 'professionell';
-    const result = buildCoreResponse(pers);
-    expect(result).toContain('tone: professional');
-  });
-
-  it('includes mode instruction for spontaneous', () => {
-    const pers = fullPersonalization();
-    pers.responseMode = 'spontaneous';
-    const result = buildCoreResponse(pers);
-    expect(result).toContain('Get straight to the point');
-  });
-
-  it('omits mode instruction for normal', () => {
-    const pers = fullPersonalization();
-    pers.responseMode = 'normal';
-    const result = buildCoreResponse(pers);
-    expect(result).not.toContain('mode:');
-  });
-
-  it('includes style instruction for kurz', () => {
-    const pers = fullPersonalization();
-    pers.responseStyle = 'kurz';
-    const result = buildCoreResponse(pers);
-    expect(result).toContain('Be brief and concise');
+    expect(result).toContain('German');
+    expect(result).toContain('IMPORTANT');
   });
 
   it('includes English language instruction for en', () => {
     const pers = fullPersonalization();
     pers.responseLanguage = 'en';
     const result = buildCoreResponse(pers);
-    expect(result).toContain('response_language: en');
-    expect(result).toContain('always respond in English');
+    expect(result).toContain('English');
+    expect(result).toContain('IMPORTANT');
+  });
+
+  it('maps tone to english', () => {
+    const pers = fullPersonalization();
+    pers.tone = 'professionell';
+    const result = buildCoreResponse(pers);
+    expect(result).toContain('professional');
+  });
+
+  it('includes mode instruction for spontaneous', () => {
+    const pers = fullPersonalization();
+    pers.responseMode = 'spontaneous';
+    const result = buildCoreResponse(pers);
+    expect(result).toContain('straight to the point');
+  });
+
+  it('omits mode instruction for normal', () => {
+    const pers = fullPersonalization();
+    pers.responseMode = 'normal';
+    const result = buildCoreResponse(pers);
+    expect(result).not.toContain('straight to the point');
+    expect(result).not.toContain('step by step');
+  });
+
+  it('includes style instruction for kurz', () => {
+    const pers = fullPersonalization();
+    pers.responseStyle = 'kurz';
+    const result = buildCoreResponse(pers);
+    expect(result).toContain('short');
+    expect(result).toContain('1-3 sentences');
+  });
+
+  it('tells model to be a natural conversation partner', () => {
+    const pers = fullPersonalization();
+    const result = buildCoreResponse(pers);
+    expect(result).toContain('natural conversation');
   });
 });
 
 describe('buildChatContext', () => {
-  it('returns emoji allowed when emojis enabled', () => {
+  it('allows limited emojis when enabled', () => {
     const pers = fullPersonalization();
     pers.emojisEnabled = true;
     const result = buildChatContext(pers);
-    expect(result).toContain('allowed: true');
-    expect(result).toContain('sparingly');
+    expect(result).toContain('1-2 emojis');
   });
 
-  it('returns emoji disallowed when emojis disabled', () => {
+  it('forbids emojis when disabled', () => {
     const pers = fullPersonalization();
     pers.emojisEnabled = false;
     const result = buildChatContext(pers);
-    expect(result).toContain('allowed: false');
+    expect(result).toContain('Do NOT use any emojis');
+  });
+});
+
+describe('buildVoiceContext', () => {
+  it('forbids emojis and formatting for voice', () => {
+    const result = buildVoiceContext();
+    expect(result).toContain('Do NOT use any emojis');
+    expect(result).toContain('Do NOT use asterisks');
+    expect(result).toContain('voice conversation');
   });
 });

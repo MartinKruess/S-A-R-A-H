@@ -9,6 +9,7 @@ import {
   buildCoreTrust,
   buildCoreResponse,
   buildChatContext,
+  buildVoiceContext,
 } from './prompt-layers.js';
 
 export function buildSystemPrompt(
@@ -27,12 +28,11 @@ export function buildSystemPrompt(
     buildCoreResponse(personalization),
   ];
 
-  // Context layer: emoji handling
-  if (mode === 'chat') {
-    sections.push(buildChatContext(personalization));
+  // Context layer: mode-specific rules
+  if (mode === 'voice') {
+    sections.push(buildVoiceContext());
   } else {
-    // Voice mode: emojis always off
-    sections.push('emojis: {allowed: false}');
+    sections.push(buildChatContext(personalization));
   }
 
   return sections.filter(Boolean).join('\n\n');

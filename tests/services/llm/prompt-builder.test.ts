@@ -34,39 +34,40 @@ function createFullConfig(): SarahConfig {
 }
 
 describe('buildSystemPrompt', () => {
-  it('assembles all core sections in chat mode', () => {
+  it('assembles all sections in chat mode', () => {
     const config = createFullConfig();
     const prompt = buildSystemPrompt(config, 'chat');
 
-    expect(prompt).toContain('## IDENTITY');
-    expect(prompt).toContain('## SAFETY');
-    expect(prompt).toContain('## USER');
-    expect(prompt).toContain('## SKILLS');
-    expect(prompt).toContain('## PERSONALITY');
-    expect(prompt).toContain('## TRUST');
-    expect(prompt).toContain('## RESPONSE');
+    expect(prompt).toContain('Sarah');
+    expect(prompt).toContain('Martin');
+    expect(prompt).toContain('Berlin');
+    expect(prompt).toContain('fortgeschritten');
+    expect(prompt).toContain('Humorvoll');
+    expect(prompt).toContain('German');
+    expect(prompt).toContain('friendly');
   });
 
-  it('includes emoji context in chat mode when enabled', () => {
+  it('allows emojis in chat mode when enabled', () => {
     const config = createFullConfig();
     config.personalization.emojisEnabled = true;
     const prompt = buildSystemPrompt(config, 'chat');
-    expect(prompt).toContain('allowed: true');
-    expect(prompt).toContain('sparingly');
+    expect(prompt).toContain('1-2 emojis');
   });
 
-  it('disables emoji in chat mode when disabled', () => {
+  it('forbids emojis in chat mode when disabled', () => {
     const config = createFullConfig();
     config.personalization.emojisEnabled = false;
     const prompt = buildSystemPrompt(config, 'chat');
-    expect(prompt).toContain('allowed: false');
+    expect(prompt).toContain('Do NOT use any emojis');
   });
 
-  it('always disables emoji in voice mode', () => {
+  it('always forbids emojis and formatting in voice mode', () => {
     const config = createFullConfig();
     config.personalization.emojisEnabled = true;
     const prompt = buildSystemPrompt(config, 'voice');
-    expect(prompt).toContain('allowed: false');
+    expect(prompt).toContain('Do NOT use any emojis');
+    expect(prompt).toContain('Do NOT use asterisks');
+    expect(prompt).toContain('voice conversation');
   });
 
   it('never contains null values', () => {
@@ -82,9 +83,9 @@ describe('buildSystemPrompt', () => {
     const config = SarahConfigSchema.parse({});
     const prompt = buildSystemPrompt(config, 'chat');
     // Skills section should be omitted with default empty config
-    expect(prompt).not.toContain('## SKILLS');
+    expect(prompt).not.toContain('programming level');
     // Personality section should be omitted (no traits, no quirk)
-    expect(prompt).not.toContain('## PERSONALITY');
+    expect(prompt).not.toContain('personality traits');
   });
 
   it('is written in English', () => {
