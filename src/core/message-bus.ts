@@ -24,17 +24,17 @@ export class MessageBus {
 
   /** Emit a message to all subscribers of the topic and wildcard listeners. */
   emit<T extends BusTopic>(source: string, topic: T, data: BusEvents[T]): void {
-    const msg: TypedBusMessage<T> = {
+    const msg = {
       source,
       topic,
       data,
       timestamp: new Date().toISOString(),
-    };
+    } as TypedBusMessage<T>;
 
     const topicListeners = this.listeners.get(topic as string);
     topicListeners?.forEach((h) => (h as MessageHandler<T>)(msg));
 
-    if (topic !== '*') {
+    if ((topic as string) !== '*') {
       const wildcardListeners = this.listeners.get('*');
       wildcardListeners?.forEach((h) => (h as MessageHandler<T>)(msg));
     }

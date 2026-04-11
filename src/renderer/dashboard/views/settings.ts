@@ -74,7 +74,7 @@ function createProfileSection(config: SarahConfig): HTMLElement {
       { value: 'ausführlich', label: 'Ausführlich' },
     ],
     value: profile.responseStyle || 'mittel',
-    onChange: (val) => { profile.responseStyle = val; save('profile', profile); showSaved(feedback); },
+    onChange: (val) => { profile.responseStyle = val as typeof profile.responseStyle; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahSelect({
@@ -85,7 +85,7 @@ function createProfileSection(config: SarahConfig): HTMLElement {
       { value: 'locker', label: 'Locker' },
     ],
     value: profile.tone || 'freundlich',
-    onChange: (val) => { profile.tone = val; save('profile', profile); showSaved(feedback); },
+    onChange: (val) => { profile.tone = val as typeof profile.tone; save('profile', profile); showSaved(feedback); },
   }));
 
   section.appendChild(grid);
@@ -297,8 +297,8 @@ function createTrustSection(config: SarahConfig): HTMLElement {
       { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
       { value: 'all', label: 'Alle Dateien' },
     ],
-    value: (trust.fileAccess === 'full' ? 'all' : trust.fileAccess) || 'specific-folders',
-    onChange: (val) => { trust.fileAccess = val; save('trust', trust); showSaved(feedback); },
+    value: trust.fileAccess || 'specific-folders',
+    onChange: (val) => { trust.fileAccess = val as typeof trust.fileAccess; save('trust', trust); showSaved(feedback); },
   }));
 
   const spacer2 = document.createElement('div');
@@ -313,7 +313,7 @@ function createTrustSection(config: SarahConfig): HTMLElement {
       { value: 'maximal', label: 'Maximal — bei jeder verändernden Aktion' },
     ],
     value: trust.confirmationLevel || 'standard',
-    onChange: (val) => { trust.confirmationLevel = val; save('trust', trust); showSaved(feedback); },
+    onChange: (val) => { trust.confirmationLevel = val as typeof trust.confirmationLevel; save('trust', trust); showSaved(feedback); },
   }));
 
   return section;
@@ -426,7 +426,7 @@ function createPersonalizationSection(config: SarahConfig): HTMLElement {
       { value: 'large', label: 'Groß' },
     ],
     value: pers.chatFontSize || 'default',
-    onChange: (val) => { pers.chatFontSize = val; save('personalization', pers); showSaved(feedback); },
+    onChange: (val) => { pers.chatFontSize = val as typeof pers.chatFontSize; save('personalization', pers); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahSelect({
@@ -436,7 +436,7 @@ function createPersonalizationSection(config: SarahConfig): HTMLElement {
       { value: 'bubbles', label: 'Bubbles (wie WhatsApp)' },
     ],
     value: pers.chatAlignment || 'stacked',
-    onChange: (val) => { pers.chatAlignment = val; save('personalization', pers); showSaved(feedback); },
+    onChange: (val) => { pers.chatAlignment = val as typeof pers.chatAlignment; save('personalization', pers); showSaved(feedback); },
   }));
 
   section.appendChild(grid);
@@ -460,7 +460,7 @@ function createPersonalizationSection(config: SarahConfig): HTMLElement {
       { value: 'thoughtful', label: 'Nachdenklich — gründlich und ausführlich' },
     ],
     value: pers.responseMode || 'normal',
-    onChange: (val) => { pers.responseMode = val; save('personalization', pers); showSaved(feedback); },
+    onChange: (val) => { pers.responseMode = val as typeof pers.responseMode; save('personalization', pers); showSaved(feedback); },
   }));
 
   const spacer2 = document.createElement('div');
@@ -583,7 +583,7 @@ function createControlsSection(config: SarahConfig): HTMLElement {
     ],
     value: controls.voiceMode || 'off',
     onChange: (val) => {
-      controls.voiceMode = val;
+      controls.voiceMode = val as typeof controls.voiceMode;
       hotkeyWrapper.style.display = (val === 'push-to-talk') ? '' : 'none';
       save('controls', controls);
       showSaved(feedback);
@@ -628,10 +628,6 @@ function createControlsSection(config: SarahConfig): HTMLElement {
     value: String(controls.quietModeDuration ?? 60),
     onChange: (val) => { controls.quietModeDuration = parseInt(val, 10); save('controls', controls); showSaved(feedback); },
   }));
-  quirkWrapper.appendChild(customQuirkInput);
-  quirkWrapper.appendChild(quirkHint);
-  section.appendChild(quirkWrapper);
-
   const quietHint = document.createElement('div');
   quietHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
   quietHint.textContent = 'Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.';

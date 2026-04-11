@@ -156,7 +156,7 @@ export class VoiceService implements SarahService {
 
     if (msg.topic === 'llm:chunk') {
       if (!shouldSpeak) return;
-      const { text } = msg.data as { text: string };
+      const { text } = msg.data;
       if (!text) return;
 
       const sentences = this.sentenceBuffer.push(text);
@@ -194,7 +194,7 @@ export class VoiceService implements SarahService {
       } else if (this._voiceState === 'processing') {
         this.setState('idle');
         this.context.bus.emit(this.id, 'voice:error', {
-          message: (msg.data as { message: string }).message ?? 'LLM request failed',
+          message: msg.data.message ?? 'LLM request failed',
         });
       }
     }

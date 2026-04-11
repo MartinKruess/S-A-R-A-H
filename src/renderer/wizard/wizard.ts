@@ -14,6 +14,7 @@ import { createFinishStep } from './steps/step-finish.js';
 import type { SarahApi } from '../../core/sarah-api.js';
 export type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
 import type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
+export type ProgramType = ProgramEntry['type'];
 
 declare const sarah: SarahApi;
 
@@ -21,68 +22,21 @@ declare const sarah: SarahApi;
 
 registerComponents();
 
+import type { SarahConfig } from '../../core/config-schema.js';
+
 export interface WizardData {
-  system: Record<string, string>;
-  profile: {
-    displayName: string;
-    city: string;
-    usagePurposes: string[];
-    lastName: string;
-    address: string;
-    hobbies: string[];
-    profession: string;
-    activities: string;
-    responseStyle: string;
-    tone: string;
-  };
-  skills: {
-    programming: string | null;
-    programmingStack: string[];
-    programmingResources: string[];
-    programmingProjectsFolder: string;
-    design: string | null;
-    office: string | null;
-  };
-  resources: {
-    emails: string[];
-    programs: ProgramEntry[];
-    favoriteLinks: string[];
-    pdfCategories: PdfCategory[];
-    picturesFolder: string;
-    installFolder: string;
-    gamesFolder: string;
-    extraProgramsFolder: string;
-  };
-  trust: {
-    memoryAllowed: boolean;
-    fileAccess: string;
-    confirmationLevel: 'minimal' | 'standard' | 'maximal';
-    memoryExclusions: string[];
-    anonymousEnabled: boolean;
-    showContextEnabled: boolean;
-  };
-  personalization: {
-    accentColor: string;
-    voice: string;
-    speechRate: number;
-    chatFontSize: 'small' | 'default' | 'large';
-    chatAlignment: 'stacked' | 'bubbles';
-    emojisEnabled: boolean;
-    responseMode: 'normal' | 'spontaneous' | 'thoughtful';
-    characterTraits: string[];
-    quirk: string | null;
-  };
-  controls: {
-    voiceMode: 'keyword' | 'push-to-talk' | 'off';
-    pushToTalkKey: string;
-    quietModeDuration: number;
-    customCommands: CustomCommand[];
-  };
+  system: SarahConfig['system'];
+  profile: SarahConfig['profile'];
+  skills: SarahConfig['skills'];
+  resources: SarahConfig['resources'];
+  trust: SarahConfig['trust'];
+  personalization: SarahConfig['personalization'];
+  controls: SarahConfig['controls'];
   skippedSteps: Set<string>;
 }
 
 const wizardData: WizardData = {
-  system: {},
+  system: { os: '', platform: '', arch: '', cpu: '', cpuCores: '', totalMemory: '', freeMemory: '', hostname: '', shell: '', language: '', timezone: '', folders: { documents: '', downloads: '', pictures: '', desktop: '' } },
   profile: {
     displayName: '',
     city: '',
@@ -112,6 +66,7 @@ const wizardData: WizardData = {
     installFolder: '',
     gamesFolder: '',
     extraProgramsFolder: '',
+    importantFolders: [],
   },
   trust: {
     memoryAllowed: true,

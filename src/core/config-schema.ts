@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+const pre = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((v) => v ?? {}, schema);
+
 // ── Sub-Schemas (individually exported for wizard/settings reuse) ──
 
 export const ProfileSchema = z.object({
@@ -111,18 +114,15 @@ export const SystemSchema = z.object({
   shell: z.string().default(''),
   language: z.string().default(''),
   timezone: z.string().default(''),
-  folders: z.object({
+  folders: pre(z.object({
     documents: z.string().default(''),
     downloads: z.string().default(''),
     pictures: z.string().default(''),
     desktop: z.string().default(''),
-  }).default({}),
+  })),
 });
 
 // ── Root Schema ──
-
-const pre = <T extends z.ZodTypeAny>(schema: T) =>
-  z.preprocess((v) => v ?? {}, schema);
 
 export const SarahConfigSchema = z.object({
   onboarding: pre(z.object({ setupComplete: z.boolean().default(false) })),
