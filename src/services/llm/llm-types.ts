@@ -2,6 +2,7 @@ export interface OllamaOptions {
   temperature?: number;
   num_predict?: number;
   num_ctx?: number;
+  num_gpu?: number;
 }
 
 export interface WorkerOptions {
