@@ -110,7 +110,7 @@ describe('buildCoreUser', () => {
     expect(result).toContain('User');
   });
 
-  it('tells model to only use info when relevant', () => {
+  it('marks user info as background only', () => {
     const profile: SarahConfig['profile'] = {
       displayName: 'Martin',
       lastName: '',
@@ -122,7 +122,8 @@ describe('buildCoreUser', () => {
       hobbies: ['Gaming'],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('only when relevant');
+    expect(result).toContain('background info');
+    expect(result).toContain('Do NOT bring it up');
   });
 });
 
@@ -156,7 +157,7 @@ describe('buildCoreSkills', () => {
     expect(result).toBe('');
   });
 
-  it('tells model to only mention skills when asked', () => {
+  it('marks skills as background info', () => {
     const skills: SarahConfig['skills'] = {
       programming: 'fortgeschritten',
       programmingStack: [],
@@ -166,7 +167,8 @@ describe('buildCoreSkills', () => {
       office: null,
     };
     const result = buildCoreSkills(skills);
-    expect(result).toContain('Only mention');
+    expect(result).toContain('background info');
+    expect(result).toContain('Do NOT talk about programming');
   });
 });
 
@@ -210,10 +212,10 @@ describe('buildCorePersonality', () => {
     expect(result).toContain('Sage immer Wunderbar!');
   });
 
-  it('tells model to show traits subtly', () => {
+  it('tells model to be subtle with traits', () => {
     const pers = fullPersonalization();
     const result = buildCorePersonality(pers);
-    expect(result).toContain('subtly');
+    expect(result).toContain('subtle');
   });
 });
 
@@ -299,13 +301,15 @@ describe('buildChatContext', () => {
     pers.emojisEnabled = true;
     const result = buildChatContext(pers);
     expect(result).toContain('1-2 emojis');
+    expect(result).toContain('No more than 2');
   });
 
-  it('forbids emojis when disabled', () => {
+  it('forbids emojis strongly when disabled', () => {
     const pers = fullPersonalization();
     pers.emojisEnabled = false;
     const result = buildChatContext(pers);
     expect(result).toContain('Do NOT use any emojis');
+    expect(result).toContain('Zero emojis');
   });
 });
 

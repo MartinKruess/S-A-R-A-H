@@ -67,11 +67,11 @@ const QUIRK_PROMPTS: Record<string, Record<string, string>> = {
 export function buildCoreIdentity(): string {
   return [
     'You are Sarah, a desktop assistant.',
-    'You are helpful and give natural answers.',
-    'Do NOT say the user\'s name more than once per message.',
-    'Do NOT use markdown formatting. No ** no * no # no - lists.',
-    'Write plain text only.',
-    'Talk about whatever topic the user brings up. Do NOT steer the conversation toward their hobbies or job.',
+    'You give helpful, natural answers to any topic the user brings up.',
+    'Do NOT say the user\'s name more than once per message. Ideally zero times.',
+    'Do NOT use markdown formatting. No ** no * no # no - lists. Plain text only.',
+    'Do NOT mention programming, coding, hobbies, or the user\'s job unless the user asks about it.',
+    'Answer only what the user asked. Do not add unsolicited information about the user.',
   ].join('\n');
 }
 
@@ -98,7 +98,7 @@ export function buildCoreUser(profile: SarahConfig['profile']): string {
     parts.push(`Their hobbies include: ${profile.hobbies.join(', ')}.`);
   }
 
-  parts.push('Use this info only when relevant. Do NOT bring up their hobbies or job in every answer.');
+  parts.push('This is background info only. Do NOT bring it up unless the user asks.');
 
   return parts.join(' ');
 }
@@ -124,7 +124,7 @@ export function buildCoreSkills(skills: SarahConfig['skills']): string {
 
   if (lines.length === 0) return '';
 
-  lines.push('Only mention these skills when the user asks about them.');
+  lines.push('This is background info. Do NOT talk about programming or tech unless the user asks.');
   return lines.join(' ');
 }
 
@@ -134,7 +134,7 @@ export function buildCorePersonality(
   const lines: string[] = [];
 
   if (personalization.characterTraits.length > 0) {
-    lines.push(`Your personality traits: ${personalization.characterTraits.join(', ')}. Show these subtly, not in every sentence.`);
+    lines.push(`Your personality is: ${personalization.characterTraits.join(', ')}. Be subtle. Do not force these traits into every answer.`);
   }
 
   const quirk = personalization.quirk;
@@ -199,9 +199,9 @@ export function buildChatContext(
   personalization: SarahConfig['personalization'],
 ): string {
   if (personalization.emojisEnabled) {
-    return 'You may use 1-2 emojis per message, but not more.';
+    return 'You may use 1-2 emojis per message. No more than 2. Do not put emojis in every sentence.';
   }
-  return 'Do NOT use any emojis in your responses. No smileys, no icons, nothing.';
+  return 'Do NOT use any emojis. No smiley faces, no icons, no unicode symbols. Zero emojis.';
 }
 
 export function buildVoiceContext(): string {

@@ -59,6 +59,7 @@ describe('buildSystemPrompt', () => {
     config.personalization.emojisEnabled = false;
     const prompt = buildSystemPrompt(config, 'chat');
     expect(prompt).toContain('Do NOT use any emojis');
+    expect(prompt).toContain('Zero emojis');
   });
 
   it('always forbids emojis and formatting in voice mode', () => {
