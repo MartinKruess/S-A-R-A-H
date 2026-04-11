@@ -21,6 +21,29 @@ function createMockProvider(): LlmProvider {
 
 function createMockContext(): { context: AppContext; bus: MessageBus } {
   const bus = new MessageBus();
+  const parsedConfig = {
+    onboarding: { setupComplete: true },
+    system: { os: '', platform: '', arch: '', cpu: '', cpuCores: '', totalMemory: '', freeMemory: '', hostname: '', shell: '', language: '', timezone: '', folders: { documents: '', downloads: '', pictures: '', desktop: '' } },
+    profile: {
+      displayName: 'Martin',
+      lastName: '',
+      city: 'Berlin',
+      address: '',
+      profession: 'Developer',
+      activities: '',
+      usagePurposes: [],
+      hobbies: [],
+      responseStyle: 'mittel' as const,
+      tone: 'freundlich' as const,
+    },
+    skills: { programming: null, programmingStack: [], programmingResources: [], programmingProjectsFolder: '', design: null, office: null },
+    resources: { emails: [], programs: [], favoriteLinks: [], pdfCategories: [], picturesFolder: '', installFolder: '', gamesFolder: '', extraProgramsFolder: '', importantFolders: [] },
+    trust: { memoryAllowed: true, fileAccess: 'specific-folders' as const, confirmationLevel: 'standard' as const, memoryExclusions: [], anonymousEnabled: false, showContextEnabled: false },
+    personalization: { accentColor: '#00d4ff', voice: 'default-female-de', speechRate: 1, chatFontSize: 'default' as const, chatAlignment: 'stacked' as const, emojisEnabled: true, responseMode: 'normal' as const, characterTraits: [], quirk: null },
+    controls: { voiceMode: 'off' as const, pushToTalkKey: 'F9', quietModeDuration: 30, customCommands: [] },
+    llm: { baseUrl: 'http://localhost:11434', model: 'qwen3.5:4b', options: {} },
+    integrations: { context7: false },
+  };
   return {
     bus,
     context: {
@@ -28,13 +51,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
       registry: {} as any,
       config: {
         get: vi.fn().mockResolvedValue({
-          profile: {
-            displayName: 'Martin',
-            city: 'Berlin',
-            profession: 'Developer',
-            responseStyle: 'mittel',
-            tone: 'freundlich',
-          },
+          profile: parsedConfig.profile,
         }),
         set: vi.fn(),
         query: vi.fn(),
@@ -52,6 +69,8 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
         delete: vi.fn(),
         close: vi.fn(),
       },
+      parsedConfig,
+      configErrors: null,
       shutdown: vi.fn(),
     } as unknown as AppContext,
   };

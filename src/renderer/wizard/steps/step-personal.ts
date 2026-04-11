@@ -61,7 +61,7 @@ export function createPersonalStep(data: WizardData): HTMLElement {
           { value: 'ausführlich', label: 'Ausführlich' },
         ],
         value: data.profile.responseStyle,
-        onChange: (value) => { data.profile.responseStyle = value; },
+        onChange: (value) => { data.profile.responseStyle = value as typeof data.profile.responseStyle; },
       }),
       sarahSelect({
         label: 'Wie soll ich klingen?',
@@ -71,7 +71,7 @@ export function createPersonalStep(data: WizardData): HTMLElement {
           { value: 'professionell', label: 'Professionell' },
         ],
         value: data.profile.tone,
-        onChange: (value) => { data.profile.tone = value; },
+        onChange: (value) => { data.profile.tone = value as typeof data.profile.tone; },
       }),
     ],
   });

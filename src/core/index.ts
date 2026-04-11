@@ -1,5 +1,5 @@
 // Types
-export type { BusMessage, ServiceStatus } from './types.js';
+export type { TypedBusMessage, ServiceStatus } from './types.js';
 
 // Message Bus
 export { MessageBus } from './message-bus.js';

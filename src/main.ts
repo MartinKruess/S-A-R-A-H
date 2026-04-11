@@ -6,8 +6,7 @@ import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { LlmService } from './services/llm/llm-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
-import { DEFAULT_LLM_CONFIG } from './services/llm/llm-types.js';
-import type { LlmConfig } from './services/llm/llm-types.js';
+import type { SarahConfig } from './core/config-schema.js';
 import { VoiceService } from './services/voice/voice-service.js';
 
 try {
@@ -170,14 +169,26 @@ app.whenReady().then(async () => {
   createWindow();
   appContext = await bootstrap(app.getPath('userData'));
 
+  // Show dialog if config validation failed
+  if (appContext.configErrors) {
+    const issues = appContext.configErrors.map((e) => `• ${e}`).join('\n');
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Konfigurationsfehler',
+      message: 'Die Konfigurationsdatei enthält ungültige Werte:',
+      detail: `${issues}\n\nMit Standard-Werten fortfahren?`,
+      buttons: ['Mit Defaults fortfahren', 'Beenden'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 1) {
+      app.quit();
+      return;
+    }
+  }
+
   // Register LLM service
-  const rootConfig = (await appContext.config.get<Record<string, unknown>>('root')) ?? {};
-  const llmRaw = rootConfig.llm as Partial<LlmConfig> | undefined;
-  const llmConfig: LlmConfig = {
-    baseUrl: llmRaw?.baseUrl ?? DEFAULT_LLM_CONFIG.baseUrl,
-    model: llmRaw?.model ?? DEFAULT_LLM_CONFIG.model,
-    options: llmRaw?.options ?? DEFAULT_LLM_CONFIG.options,
-  };
+  const { llm: llmConfig } = appContext.parsedConfig;
   const ollamaProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.options);
   const llmService = new LlmService(appContext, ollamaProvider);
   appContext.registry.register(llmService);
@@ -214,9 +225,7 @@ app.whenReady().then(async () => {
 
   ipcMain.on('splash-done', async () => {
     if (mainWindow) {
-      const config =
-        (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
-      if ((config as any).onboarding?.setupComplete) {
+      if (appContext!.parsedConfig.onboarding.setupComplete) {
         // Dashboard: compact window (25vh x 30vh), both relative to screen height
         const { height: screenH } =
           require('electron').screen.getPrimaryDisplay().workAreaSize;
@@ -258,19 +267,20 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('get-config', async () => {
-    return (
-      (await appContext!.config.get<Record<string, unknown>>('root')) ?? {}
-    );
+  ipcMain.handle('get-config', () => {
+    return appContext!.parsedConfig;
   });
 
   ipcMain.handle(
     'save-config',
-    async (_event, config: Record<string, unknown>) => {
-      const existing =
-        (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
+    async (_event, config: Partial<SarahConfig>) => {
+      const existing = (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
       const merged = { ...existing, ...config };
       await appContext!.config.set('root', merged);
+
+      // Re-parse merged config
+      const { SarahConfigSchema } = await import('./core/config-schema.js');
+      appContext!.parsedConfig = SarahConfigSchema.parse(merged);
 
       // Apply voice config changes live when controls section is saved
       if ('controls' in config) {
@@ -280,14 +290,12 @@ app.whenReady().then(async () => {
         }
       }
 
-      return merged;
+      return appContext!.parsedConfig;
     },
   );
 
-  ipcMain.handle('is-first-run', async () => {
-    const config =
-      (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
-    return !(config as any).onboarding?.setupComplete;
+  ipcMain.handle('is-first-run', () => {
+    return !appContext!.parsedConfig.onboarding.setupComplete;
   });
 
   ipcMain.handle('select-folder', async (event, title?: string) => {
@@ -344,7 +352,7 @@ app.whenReady().then(async () => {
   });
 
   // Forward LLM events to all renderer windows
-  const forwardToRenderers = (topic: string) => {
+  const forwardToRenderers = <T extends import('./core/bus-events.js').BusTopic>(topic: T) => {
     appContext!.bus.on(topic, (msg) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {

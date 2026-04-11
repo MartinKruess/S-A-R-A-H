@@ -65,17 +65,18 @@ function createMockHotkey(): HotkeyManager {
 }
 
 function createMockContext(bus: MessageBus, voiceMode: string = 'push-to-talk'): AppContext {
+  const controlsConfig = {
+    voiceMode,
+    pushToTalkKey: 'F9',
+    quietModeDuration: 60,
+    customCommands: [],
+  };
   return {
     bus,
     registry: {} as AppContext['registry'],
     config: {
       get: vi.fn().mockResolvedValue({
-        controls: {
-          voiceMode,
-          pushToTalkKey: 'F9',
-          quietModeDuration: 60,
-          customCommands: [],
-        },
+        controls: controlsConfig,
       }),
       set: vi.fn(),
       query: vi.fn(),
@@ -93,6 +94,10 @@ function createMockContext(bus: MessageBus, voiceMode: string = 'push-to-talk'):
       delete: vi.fn(),
       close: vi.fn(),
     } as AppContext['db'],
+    parsedConfig: {
+      controls: controlsConfig,
+    } as AppContext['parsedConfig'],
+    configErrors: null,
     shutdown: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   };
 }

@@ -1,15 +1,15 @@
 import { sarahCard } from '../../components/sarah-card.js';
+import type { SarahApi } from '../../../core/sarah-api.js';
 
-function getSarah(): any {
-  return (window as any).__sarah;
+function getSarah(): SarahApi {
+  return (window as any).__sarah as SarahApi;
 }
 
 export async function createHomeView(): Promise<HTMLElement> {
   const container = document.createElement('div');
 
   const config = await getSarah().getConfig();
-  const profile = config.profile || {};
-  const resources = config.resources || {};
+  const { profile, resources } = config;
 
   // Greeting
   const greeting = document.createElement('div');

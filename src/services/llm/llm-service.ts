@@ -1,6 +1,6 @@
 // src/services/llm/llm-service.ts
 import type { SarahService } from '../../core/service.interface.js';
-import type { BusMessage, ServiceStatus } from '../../core/types.js';
+import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 
@@ -16,7 +16,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export class LlmService implements SarahService {
   readonly id = 'llm';
-  readonly subscriptions = ['chat:message'];
+  readonly subscriptions = ['chat:message'] as const;
   status: ServiceStatus = 'pending';
 
   private history: ChatMessage[] = [];
@@ -33,7 +33,7 @@ export class LlmService implements SarahService {
       this.status = 'error';
       return;
     }
-    this.systemPrompt = await this.buildSystemPrompt();
+    this.systemPrompt = this.buildSystemPrompt();
     this.status = 'running';
   }
 
@@ -42,9 +42,9 @@ export class LlmService implements SarahService {
     this.status = 'stopped';
   }
 
-  onMessage(msg: BusMessage): void {
+  onMessage(msg: TypedBusMessage): void {
     if (msg.topic === 'chat:message') {
-      const text = msg.data.text as string;
+      const { text } = msg.data;
       this.handleChatMessage(text).catch(() => {
         this.context.bus.emit(this.id, 'llm:error', {
           message: ERROR_MESSAGES.connection,
@@ -142,15 +142,9 @@ export class LlmService implements SarahService {
     return Math.ceil(text.length / CHARS_PER_TOKEN);
   }
 
-  private async buildSystemPrompt(): Promise<string> {
-    const config =
-      (await this.context.config.get<Record<string, any>>('root')) ?? {};
-    const profile = config.profile ?? {};
-    const skills = config.skills ?? {};
-    const resources = config.resources ?? {};
-    const personalization = config.personalization ?? {};
-    const trust = config.trust ?? {};
-    const controls = config.controls ?? {};
+  private buildSystemPrompt(): string {
+    const config = this.context.parsedConfig;
+    const { profile, skills, resources, personalization, trust, controls } = config;
 
     const name = profile.displayName || 'User';
     const city = profile.city ? `, wohnt in ${profile.city}` : '';
@@ -321,17 +315,6 @@ export class LlmService implements SarahService {
       lines.push(
         'Wenn der User einen dieser Befehle eingibt, führe den zugehörigen Prompt aus.',
       );
-    }
-
-    // Custom slash commands
-    const customCmds: { command: string; prompt: string }[] = controls.customCommands ?? [];
-    if (customCmds.length > 0) {
-      lines.push('');
-      lines.push('Der User hat folgende Slash-Command Shortcuts definiert:');
-      for (const cmd of customCmds) {
-        lines.push(`- ${cmd.command} = "${cmd.prompt}"`);
-      }
-      lines.push('Wenn der User einen dieser Befehle eingibt, führe den zugehörigen Prompt aus.');
     }
 
     // Content moderation
