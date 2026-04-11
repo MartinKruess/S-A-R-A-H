@@ -1,15 +1,8 @@
 // src/renderer/services/audio-bridge.ts
 
-declare const sarah: {
-  voice: {
-    getState: () => Promise<string>;
-    onStateChange: (cb: (data: { state: string }) => void) => () => void;
-    onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
-    playbackDone: () => Promise<void>;
-    onError: (cb: (data: { message: string }) => void) => () => void;
-    sendAudioChunk: (chunk: number[]) => Promise<void>;
-  };
-};
+import type { SarahApi } from '../../core/sarah-api.js';
+
+declare const sarah: SarahApi;
 
 const CAPTURE_SAMPLE_RATE = 16_000;
 

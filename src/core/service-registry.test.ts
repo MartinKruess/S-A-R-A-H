@@ -2,15 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ServiceRegistry } from './service-registry.js';
 import { MessageBus } from './message-bus.js';
 import type { SarahService } from './service.interface.js';
-import type { BusMessage, ServiceStatus } from './types.js';
+import type { BusTopic } from './bus-events.js';
+import type { TypedBusMessage, ServiceStatus } from './types.js';
 
-function createMockService(id: string, subs: string[] = []): SarahService {
+function createMockService(id: string, subs: BusTopic[] = []): SarahService {
   return {
     id,
     status: 'pending' as ServiceStatus,
     subscriptions: subs,
-    init: vi.fn(async function (this: any) { this.status = 'running'; }),
-    destroy: vi.fn(async function (this: any) { this.status = 'stopped'; }),
+    init: vi.fn(async function (this: { status: ServiceStatus }) { this.status = 'running'; }),
+    destroy: vi.fn(async function (this: { status: ServiceStatus }) { this.status = 'stopped'; }),
     onMessage: vi.fn(),
   };
 }

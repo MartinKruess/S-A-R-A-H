@@ -3,19 +3,16 @@ import { applyAccentColor } from './accent.js';
 import { createHomeView } from './views/home.js';
 import { createSettingsView } from './views/settings.js';
 
-declare const sarah: {
-  version: string;
-  getConfig: () => Promise<Record<string, unknown>>;
-  saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  selectFolder: (title?: string) => Promise<string | null>;
-};
+import type { SarahApi } from '../../core/sarah-api.js';
+
+declare const sarah: SarahApi;
 
 (window as any).__sarah = sarah;
 
 registerComponents();
 
 // Apply saved accent color
-sarah.getConfig().then((config: any) => {
+sarah.getConfig().then((config) => {
   const color = config.personalization?.accentColor;
   if (color && color !== '#00d4ff') {
     applyAccentColor(color);

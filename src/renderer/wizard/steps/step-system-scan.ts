@@ -1,9 +1,10 @@
 import type { WizardData } from '../wizard.js';
+import type { SarahApi } from '../../../core/sarah-api.js';
 import { sarahCard } from '../../components/sarah-card.js';
 import { sarahProgress } from '../../components/sarah-progress.js';
 
-function getSarah(): { getSystemInfo: () => Promise<Record<string, string>> } {
-  return (window as any).__sarah;
+function getSarah(): SarahApi {
+  return (window as any).__sarah as SarahApi;
 }
 
 const SCAN_CSS = `

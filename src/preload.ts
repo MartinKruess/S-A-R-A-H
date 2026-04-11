@@ -1,30 +1,31 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { SarahApi } from './core/sarah-api.js';
 
-contextBridge.exposeInMainWorld('sarah', {
+const api: SarahApi = {
   version: process.versions.electron,
   splashDone: () => ipcRenderer.send('splash-done'),
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
   getConfig: () => ipcRenderer.invoke('get-config'),
-  saveConfig: (config: unknown) => ipcRenderer.invoke('save-config', config),
+  saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   isFirstRun: () => ipcRenderer.invoke('is-first-run'),
-  selectFolder: (title?: string) => ipcRenderer.invoke('select-folder', title),
+  selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
-  scanFolderExes: (folderPath: string) => ipcRenderer.invoke('scan-folder-exes', folderPath),
-  openDialog: (view: string) => ipcRenderer.invoke('open-dialog', view),
+  scanFolderExes: (folderPath) => ipcRenderer.invoke('scan-folder-exes', folderPath),
+  openDialog: (view) => ipcRenderer.invoke('open-dialog', view),
 
   // Chat API
-  chat: (message: string) => ipcRenderer.invoke('chat-message', message),
-  onChatChunk: (callback: (data: { text: string }) => void) => {
+  chat: (message) => ipcRenderer.invoke('chat-message', message),
+  onChatChunk: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { text: string }) => callback(data);
     ipcRenderer.on('llm:chunk', handler);
     return () => ipcRenderer.removeListener('llm:chunk', handler);
   },
-  onChatDone: (callback: (data: { fullText: string }) => void) => {
+  onChatDone: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { fullText: string }) => callback(data);
     ipcRenderer.on('llm:done', handler);
     return () => ipcRenderer.removeListener('llm:done', handler);
   },
-  onChatError: (callback: (data: { message: string }) => void) => {
+  onChatError: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
     ipcRenderer.on('llm:error', handler);
     return () => ipcRenderer.removeListener('llm:error', handler);
@@ -32,30 +33,32 @@ contextBridge.exposeInMainWorld('sarah', {
 
   // Voice API
   voice: {
-    getState: () => ipcRenderer.invoke('voice-get-state') as Promise<string>,
-    onStateChange: (callback: (data: { state: string }) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: { state: string }) => callback(data);
+    getState: () => ipcRenderer.invoke('voice-get-state'),
+    onStateChange: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { state: string }) => callback(data as any);
       ipcRenderer.on('voice:state', handler);
       return () => ipcRenderer.removeListener('voice:state', handler);
     },
-    onTranscript: (callback: (data: { text: string }) => void) => {
+    onTranscript: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { text: string }) => callback(data);
       ipcRenderer.on('voice:transcript', handler);
       return () => ipcRenderer.removeListener('voice:transcript', handler);
     },
-    onPlayAudio: (callback: (data: { audio: number[]; sampleRate: number }) => void) => {
+    onPlayAudio: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { audio: number[]; sampleRate: number }) => callback(data);
       ipcRenderer.on('voice:play-audio', handler);
       return () => ipcRenderer.removeListener('voice:play-audio', handler);
     },
     playbackDone: () => ipcRenderer.invoke('voice-playback-done'),
-    onError: (callback: (data: { message: string }) => void) => {
+    onError: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
       ipcRenderer.on('voice:error', handler);
       return () => ipcRenderer.removeListener('voice:error', handler);
     },
-    setInteractionMode: (mode: string) => ipcRenderer.invoke('voice-set-interaction-mode', mode),
-    sendAudioChunk: (chunk: number[]) => ipcRenderer.invoke('voice-audio-chunk', chunk),
+    setInteractionMode: (mode) => ipcRenderer.invoke('voice-set-interaction-mode', mode),
+    sendAudioChunk: (chunk) => ipcRenderer.invoke('voice-audio-chunk', chunk),
     configChanged: () => ipcRenderer.invoke('voice-config-changed'),
   },
-});
+};
+
+contextBridge.exposeInMainWorld('sarah', api);
