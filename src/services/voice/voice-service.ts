@@ -323,7 +323,8 @@ export class VoiceService implements SarahService {
 
     this.setState('processing');
 
-    const transcript = await this.stt.transcribe(audioData, SAMPLE_RATE);
+    const sttLanguage = this.context.parsedConfig.personalization.responseLanguage ?? 'de';
+    const transcript = await this.stt.transcribe(audioData, SAMPLE_RATE, sttLanguage);
 
     if (!transcript || transcript.trim().length === 0) {
       this.handleEmptyTranscript();

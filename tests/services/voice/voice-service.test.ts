@@ -256,7 +256,7 @@ describe('VoiceService', () => {
     await flush();
 
     expect(audio.stopRecording).toHaveBeenCalled();
-    expect(stt.transcribe).toHaveBeenCalledWith(expect.any(Float32Array), 16_000);
+    expect(stt.transcribe).toHaveBeenCalledWith(expect.any(Float32Array), 16_000, 'de');
     expect(transcriptListener).toHaveBeenCalledOnce();
     expect(transcriptListener.mock.calls[0][0].data.text).toBe('Hallo Sarah');
     expect(chatListener).toHaveBeenCalledOnce();

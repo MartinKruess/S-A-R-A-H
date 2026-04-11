@@ -13,9 +13,9 @@ const TONE_MAP: Record<string, string> = {
 // ── Style instructions ──
 
 const STYLE_MAP: Record<string, string> = {
-  kurz: 'Keep answers short. Use 1-3 sentences maximum.',
-  mittel: 'Give balanced answers. Use a few sentences, not more than needed.',
-  'ausführlich': 'Give detailed answers when useful. Explain thoroughly.',
+  kurz: 'IMPORTANT: Your answer must be 1-3 sentences. No more. Be very short.',
+  mittel: 'Keep your answer to about 3-6 sentences. Do not write long paragraphs.',
+  'ausführlich': 'You may give detailed answers. Explain thoroughly when helpful.',
 };
 
 // ── Mode instructions ──
@@ -68,9 +68,10 @@ export function buildCoreIdentity(): string {
   return [
     'You are Sarah, a desktop assistant.',
     'You are helpful and give natural answers.',
-    'Do NOT repeat the user\'s name in every sentence.',
-    'Do NOT use markdown formatting. No bold (**), no italic (*), no headers (#), no bullet lists.',
+    'Do NOT say the user\'s name more than once per message.',
+    'Do NOT use markdown formatting. No ** no * no # no - lists.',
     'Write plain text only.',
+    'Talk about whatever topic the user brings up. Do NOT steer the conversation toward their hobbies or job.',
   ].join('\n');
 }
 
@@ -178,20 +179,18 @@ export function buildCoreResponse(
   const lines: string[] = [];
 
   if (lang === 'de') {
-    lines.push('IMPORTANT: Always respond in German, no matter what language the user writes in.');
+    lines.push('IMPORTANT: You MUST write your answer in German. Even if the user writes in English, you answer in German.');
   } else {
-    lines.push('IMPORTANT: Always respond in English, no matter what language the user writes in.');
+    lines.push('IMPORTANT: You MUST write your answer in English. Even if the user writes in German, you answer in English.');
   }
 
   lines.push(style);
-  lines.push(`Your tone should be ${tone}.`);
+  lines.push(`Your tone is ${tone}.`);
 
   const modeInstruction = MODE_MAP[personalization.responseMode];
   if (modeInstruction) {
     lines.push(modeInstruction);
   }
-
-  lines.push('Be a natural conversation partner. Talk about whatever the user wants to talk about.');
 
   return lines.join('\n');
 }

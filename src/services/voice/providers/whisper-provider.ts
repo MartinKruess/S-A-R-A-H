@@ -26,14 +26,14 @@ export class WhisperProvider implements SttProvider {
     }
   }
 
-  async transcribe(audio: Float32Array, sampleRate: number): Promise<string> {
+  async transcribe(audio: Float32Array, sampleRate: number, language = 'de'): Promise<string> {
     const tmpDir = process.env.TEMP ?? process.env.TMP ?? '/tmp';
     const tmpPath = path.join(tmpDir, `sarah-stt-${Date.now()}.wav`);
     const wavBuffer = this.encodeWav(audio, sampleRate);
     fs.writeFileSync(tmpPath, wavBuffer);
 
     try {
-      const result = await this.runWhisper(tmpPath);
+      const result = await this.runWhisper(tmpPath, language);
       return result.trim();
     } finally {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
@@ -80,12 +80,12 @@ export class WhisperProvider implements SttProvider {
     return buf;
   }
 
-  private runWhisper(audioPath: string): Promise<string> {
+  private runWhisper(audioPath: string, language: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const args = [
         '--model', this.modelPath,
         '--file', audioPath,
-        '--language', 'de',
+        '--language', language,
         '--no-timestamps',
         '--threads', '4',
       ];

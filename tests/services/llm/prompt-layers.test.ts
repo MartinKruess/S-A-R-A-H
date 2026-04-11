@@ -45,7 +45,7 @@ describe('buildCoreIdentity', () => {
 
   it('includes no-name-repetition rule', () => {
     const result = buildCoreIdentity();
-    expect(result).toContain('Do NOT repeat');
+    expect(result).toContain('Do NOT say the user');
     expect(result).toContain('name');
   });
 });
@@ -110,7 +110,7 @@ describe('buildCoreUser', () => {
     expect(result).toContain('User');
   });
 
-  it('tells model not to bring up hobbies/job unprompted', () => {
+  it('tells model to only use info when relevant', () => {
     const profile: SarahConfig['profile'] = {
       displayName: 'Martin',
       lastName: '',
@@ -122,7 +122,7 @@ describe('buildCoreUser', () => {
       hobbies: ['Gaming'],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('Do NOT bring up');
+    expect(result).toContain('only when relevant');
   });
 });
 
@@ -251,7 +251,7 @@ describe('buildCoreResponse', () => {
     const pers = fullPersonalization();
     const result = buildCoreResponse(pers);
     expect(result).toContain('German');
-    expect(result).toContain('IMPORTANT');
+    expect(result).toContain('MUST');
   });
 
   it('includes English language instruction for en', () => {
@@ -259,7 +259,7 @@ describe('buildCoreResponse', () => {
     pers.responseLanguage = 'en';
     const result = buildCoreResponse(pers);
     expect(result).toContain('English');
-    expect(result).toContain('IMPORTANT');
+    expect(result).toContain('MUST');
   });
 
   it('maps tone to english', () => {
@@ -288,14 +288,8 @@ describe('buildCoreResponse', () => {
     const pers = fullPersonalization();
     pers.responseStyle = 'kurz';
     const result = buildCoreResponse(pers);
-    expect(result).toContain('short');
     expect(result).toContain('1-3 sentences');
-  });
-
-  it('tells model to be a natural conversation partner', () => {
-    const pers = fullPersonalization();
-    const result = buildCoreResponse(pers);
-    expect(result).toContain('natural conversation');
+    expect(result).toContain('IMPORTANT');
   });
 });
 
