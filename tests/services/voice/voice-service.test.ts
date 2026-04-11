@@ -96,6 +96,11 @@ function createMockContext(bus: MessageBus, voiceMode: string = 'push-to-talk'):
     } as AppContext['db'],
     parsedConfig: {
       controls: controlsConfig,
+      personalization: {
+        responseLanguage: 'de' as const,
+        responseStyle: 'mittel' as const,
+        tone: 'freundlich' as const,
+      },
     } as AppContext['parsedConfig'],
     configErrors: null,
     shutdown: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
