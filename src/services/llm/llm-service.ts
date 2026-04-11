@@ -44,8 +44,8 @@ export class LlmService implements SarahService {
 
   onMessage(msg: TypedBusMessage): void {
     if (msg.topic === 'chat:message') {
-      const { text } = msg.data;
-      this.handleChatMessage(text).catch(() => {
+      const { text, mode } = msg.data;
+      this.handleChatMessage(text, mode).catch(() => {
         this.context.bus.emit(this.id, 'llm:error', {
           message: ERROR_MESSAGES.connection,
         });

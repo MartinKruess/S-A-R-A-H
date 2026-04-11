@@ -345,7 +345,7 @@ export class VoiceService implements SarahService {
     // Emit chat message for LLM processing
     console.log('[Voice] transcript to LLM:', JSON.stringify(transcript));
     console.log('[Voice] hex:', Buffer.from(transcript).toString('hex'));
-    this.context.bus.emit(this.id, 'chat:message', { text: transcript });
+    this.context.bus.emit(this.id, 'chat:message', { text: transcript, mode: 'voice' });
   }
 
   private interrupt(): void {

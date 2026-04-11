@@ -348,7 +348,7 @@ app.whenReady().then(async () => {
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
       voiceService.setInteractionMode('chatspeak');
     }
-    appContext!.bus.emit('renderer', 'chat:message', { text });
+    appContext!.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
   });
 
   // Forward LLM events to all renderer windows

@@ -5,7 +5,7 @@ import type { VoiceState } from '../services/voice/voice-types.js';
  * Adding a new event? Add it here and TypeScript enforces the payload everywhere.
  */
 export type BusEvents = {
-  'chat:message':        { text: string };
+  'chat:message':        { text: string; mode: 'chat' | 'voice' };
   'llm:chunk':           { text: string };
   'llm:done':            { fullText: string };
   'llm:error':           { message: string };
