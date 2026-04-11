@@ -66,28 +66,6 @@ function createProfileSection(config: SarahConfig): HTMLElement {
     onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
 
-  grid.appendChild(sarahSelect({
-    label: 'Antwort-Stil',
-    options: [
-      { value: 'kurz', label: 'Kurz & knapp' },
-      { value: 'mittel', label: 'Ausgewogen' },
-      { value: 'ausführlich', label: 'Ausführlich' },
-    ],
-    value: profile.responseStyle || 'mittel',
-    onChange: (val) => { profile.responseStyle = val as typeof profile.responseStyle; save('profile', profile); showSaved(feedback); },
-  }));
-
-  grid.appendChild(sarahSelect({
-    label: 'Tonfall',
-    options: [
-      { value: 'freundlich', label: 'Freundlich' },
-      { value: 'professionell', label: 'Professionell' },
-      { value: 'locker', label: 'Locker' },
-    ],
-    value: profile.tone || 'freundlich',
-    onChange: (val) => { profile.tone = val as typeof profile.tone; save('profile', profile); showSaved(feedback); },
-  }));
-
   section.appendChild(grid);
   return section;
 }
@@ -440,6 +418,48 @@ function createPersonalizationSection(config: SarahConfig): HTMLElement {
   }));
 
   section.appendChild(grid);
+
+  // ── Response settings group ──
+  const responseGrid = document.createElement('div');
+  responseGrid.className = 'settings-grid';
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortsprache',
+    options: [
+      { value: 'de', label: 'Deutsch' },
+      { value: 'en', label: 'English' },
+    ],
+    value: pers.responseLanguage || 'de',
+    onChange: (val) => { pers.responseLanguage = val as typeof pers.responseLanguage; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortstil',
+    options: [
+      { value: 'kurz', label: 'Kurz & knapp' },
+      { value: 'mittel', label: 'Ausgewogen' },
+      { value: 'ausführlich', label: 'Ausführlich' },
+    ],
+    value: pers.responseStyle || 'mittel',
+    onChange: (val) => { pers.responseStyle = val as typeof pers.responseStyle; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Tonfall',
+    options: [
+      { value: 'freundlich', label: 'Freundlich' },
+      { value: 'professionell', label: 'Professionell' },
+      { value: 'locker', label: 'Locker' },
+    ],
+    value: pers.tone || 'freundlich',
+    onChange: (val) => { pers.tone = val as typeof pers.tone; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  section.appendChild(responseGrid);
+
+  const responseSpacer = document.createElement('div');
+  responseSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(responseSpacer);
 
   section.appendChild(sarahToggle({
     label: 'Smileys & Icons',
