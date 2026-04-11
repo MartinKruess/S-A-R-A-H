@@ -1,11 +1,13 @@
-/** A message sent through the message bus between services. */
-export interface BusMessage {
+import type { BusEvents, BusTopic } from './bus-events.js';
+
+/** A typed message sent through the message bus between services. */
+export interface TypedBusMessage<T extends BusTopic = BusTopic> {
   /** Source service ID, e.g. 'voice', 'actions'. Set by the bus. */
   source: string;
-  /** Event topic, e.g. 'voice:transcript', 'actions:executed'. */
-  topic: string;
-  /** Arbitrary payload. */
-  data: Record<string, unknown>;
+  /** Event topic — constrained to known BusEvents keys. */
+  topic: T;
+  /** Typed payload matching the topic. */
+  data: BusEvents[T];
   /** ISO timestamp, set by the bus. */
   timestamp: string;
 }
