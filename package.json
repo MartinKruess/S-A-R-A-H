@@ -10,6 +10,7 @@
     "start": "npm run build && electron .",
     "start:electron": "npm run rebuild:electron-sqlite && npm run build && electron .",
     "dev": "concurrently \"tsc --watch\" \"tsc -p tsconfig.renderer.json --watch\" \"esbuild src/splash.ts src/renderer/dashboard/orb-scene.ts src/renderer/dashboard/dialog.ts src/renderer/services/audio-worklet-processor.ts --bundle --outdir=dist --platform=browser --format=iife --target=es2022 --watch\" \"electron .\"",
+    "pretest": "npm run rebuild:node-sqlite",
     "test": "vitest run",
     "test:sqlite": "npm run rebuild:node-sqlite && vitest run",
     "test:watch": "vitest"
