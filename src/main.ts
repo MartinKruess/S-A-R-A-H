@@ -190,7 +190,7 @@ app.whenReady().then(async () => {
 
   // Register Router service (replaces LlmService — dual-LLM routing)
   const { llm: llmConfig } = appContext.parsedConfig;
-  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, llmConfig.options);
+  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, { ...llmConfig.options, num_ctx: 2048 });
   const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
   const workerOptions = {
     ...llmConfig.options,
