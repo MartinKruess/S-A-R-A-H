@@ -97,10 +97,10 @@ export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
   routerModel: z.string().default('qwen3.5:2b'),
   workerModel: z.string().default('qwen3.5:9b'),
+  performanceProfile: z.enum(['leistung', 'schnell', 'normal', 'sparsam']).default('normal'),
   workerOptions: z.object({
     num_ctx: z.number().default(8192),
-    num_gpu: z.number().default(24),
-  }).default({ num_ctx: 8192, num_gpu: 24 }),
+  }).default({ num_ctx: 8192 }),
   options: z.object({
     temperature: z.number().optional(),
     num_predict: z.number().optional(),

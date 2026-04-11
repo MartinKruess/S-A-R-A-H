@@ -52,7 +52,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
       quirk: null,
     },
     controls: { voiceMode: 'off' as const, pushToTalkKey: 'F9', quietModeDuration: 30, customCommands: [] },
-    llm: { baseUrl: 'http://localhost:11434', routerModel: 'qwen3.5:2b', workerModel: 'qwen3.5:9b', workerOptions: { num_ctx: 8192, num_gpu: 24 }, options: {} },
+    llm: { baseUrl: 'http://localhost:11434', routerModel: 'qwen3.5:2b', workerModel: 'qwen3.5:9b', performanceProfile: 'normal' as const, workerOptions: { num_ctx: 8192 }, options: {} },
     integrations: { context7: false },
   };
   return {

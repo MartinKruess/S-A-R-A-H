@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
+import { PERFORMANCE_PROFILE_MAP } from './services/llm/llm-types.js';
 import type { SarahConfig } from './core/config-schema.js';
 import { VoiceService } from './services/voice/voice-service.js';
 
@@ -190,10 +191,11 @@ app.whenReady().then(async () => {
   // Register Router service (replaces LlmService — dual-LLM routing)
   const { llm: llmConfig } = appContext.parsedConfig;
   const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, llmConfig.options);
+  const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
   const workerOptions = {
     ...llmConfig.options,
     num_ctx: llmConfig.workerOptions.num_ctx,
-    num_gpu: llmConfig.workerOptions.num_gpu,
+    num_gpu: numGpu,
   };
   const workerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.workerModel, workerOptions);
   const routerService = new RouterService(appContext, routerProvider, workerProvider);

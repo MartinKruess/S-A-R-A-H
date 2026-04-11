@@ -653,6 +653,32 @@ function createControlsSection(config: SarahConfig): HTMLElement {
   quietHint.textContent = 'Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.';
   section.appendChild(quietHint);
 
+  // Performance profile
+  const llm = { ...config.llm };
+  const perfSpacer = document.createElement('div');
+  perfSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(perfSpacer);
+
+  section.appendChild(sarahSelect({
+    label: 'GPU-Leistungsprofil',
+    options: [
+      { value: 'leistung', label: 'Leistung — Maximale GPU-Nutzung' },
+      { value: 'schnell', label: 'Schnell — Hohe GPU-Nutzung' },
+      { value: 'normal', label: 'Normal — Ausgewogen' },
+      { value: 'sparsam', label: 'Sparsam — Weniger GPU, mehr CPU' },
+    ],
+    value: llm.performanceProfile || 'normal',
+    onChange: (val) => {
+      llm.performanceProfile = val as typeof llm.performanceProfile;
+      save('llm', llm);
+      showSaved(feedback);
+    },
+  }));
+  const perfHint = document.createElement('div');
+  perfHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
+  perfHint.textContent = 'Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.';
+  section.appendChild(perfHint);
+
   const spacer2 = document.createElement('div');
   spacer2.style.height = 'var(--sarah-space-lg)';
   section.appendChild(spacer2);

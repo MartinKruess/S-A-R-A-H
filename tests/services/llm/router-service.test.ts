@@ -29,7 +29,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
     trust: { memoryAllowed: true, fileAccess: 'specific-folders' as const, confirmationLevel: 'standard' as const, memoryExclusions: [], anonymousEnabled: false, showContextEnabled: false },
     personalization: { accentColor: '#00d4ff', voice: 'default-female-de', speechRate: 1, chatFontSize: 'default' as const, chatAlignment: 'stacked' as const, emojisEnabled: true, responseMode: 'normal' as const, responseLanguage: 'de' as const, responseStyle: 'mittel' as const, tone: 'freundlich' as const, characterTraits: [], quirk: null },
     controls: { voiceMode: 'off' as const, pushToTalkKey: 'F9', quietModeDuration: 30, customCommands: [] },
-    llm: { baseUrl: 'http://localhost:11434', routerModel: 'qwen3.5:2b', workerModel: 'qwen3.5:9b', workerOptions: { num_ctx: 8192, num_gpu: 24 }, options: {} },
+    llm: { baseUrl: 'http://localhost:11434', routerModel: 'qwen3.5:2b', workerModel: 'qwen3.5:9b', performanceProfile: 'normal' as const, workerOptions: { num_ctx: 8192 }, options: {} },
     integrations: { context7: false },
   };
   return {
