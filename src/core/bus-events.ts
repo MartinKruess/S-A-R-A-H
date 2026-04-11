@@ -9,6 +9,8 @@ export type BusEvents = {
   'llm:chunk':           { text: string };
   'llm:done':            { fullText: string };
   'llm:error':           { message: string };
+  'llm:routing':         { from: '2b' | '9b'; to: 'self' | '9b' | 'backend' | 'extern'; feedback: string };
+  'llm:model-swap':      { loading: string; unloading: string };
   'voice:state':         { state: VoiceState };
   'voice:listening':     Record<string, never>;
   'voice:transcript':    { text: string };
