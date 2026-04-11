@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
-import { LlmService } from './services/llm/llm-service.js';
+import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
 import type { SarahConfig } from './core/config-schema.js';
 import { VoiceService } from './services/voice/voice-service.js';
@@ -187,11 +187,17 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Register LLM service
+  // Register Router service (replaces LlmService — dual-LLM routing)
   const { llm: llmConfig } = appContext.parsedConfig;
-  const ollamaProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.options);
-  const llmService = new LlmService(appContext, ollamaProvider);
-  appContext.registry.register(llmService);
+  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, llmConfig.options);
+  const workerOptions = {
+    ...llmConfig.options,
+    num_ctx: llmConfig.workerOptions.num_ctx,
+    num_gpu: llmConfig.workerOptions.num_gpu,
+  };
+  const workerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.workerModel, workerOptions);
+  const routerService = new RouterService(appContext, routerProvider, workerProvider);
+  appContext.registry.register(routerService);
 
   // Register Voice service
   const { AudioManager } = await import('./services/voice/audio-manager.js');
