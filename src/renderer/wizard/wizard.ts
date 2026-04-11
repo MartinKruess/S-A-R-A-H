@@ -11,41 +11,11 @@ import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 
-export type ProgramType = 'exe' | 'launcher' | 'appx' | 'updater';
+import type { SarahApi } from '../../core/sarah-api.js';
+export type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
+import type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
 
-export interface ProgramEntry {
-  name: string;
-  path: string;
-  type: ProgramType;
-  source: 'detected' | 'manual' | 'learned';
-  verified: boolean;
-  aliases: string[];
-  duplicateGroup?: string;
-}
-
-export interface PdfCategory {
-  tag: string;
-  folder: string;
-  pattern: string;
-  inferFromExisting: boolean;
-}
-
-export interface CustomCommand {
-  command: string;
-  prompt: string;
-}
-
-declare const sarah: {
-  version: string;
-  splashDone: () => void;
-  getSystemInfo: () => Promise<Record<string, string>>;
-  getConfig: () => Promise<Record<string, unknown>>;
-  saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  isFirstRun: () => Promise<boolean>;
-  selectFolder: (title?: string) => Promise<string | null>;
-  detectPrograms: () => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
-  scanFolderExes: (folderPath: string) => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
-};
+declare const sarah: SarahApi;
 
 (window as any).__sarah = sarah;
 
