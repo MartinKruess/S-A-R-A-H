@@ -14,6 +14,14 @@ declare var sarah: SarahAPI;
 const orbContainer = document.getElementById('orb')!;
 const orb = new SarahHexOrb(orbContainer);
 
+// Start orb small, dimmed, and shifted down
+const ORB_START_SCALE = 0.4;
+const ORB_START_LIGHT = 0.1;
+const ORB_START_Y = -0.35;
+orb.setOrbScale(ORB_START_SCALE);
+orb.setLightIntensity(ORB_START_LIGHT);
+orb.setOrbOffset(0, ORB_START_Y, 0);
+
 // Click triggers break effect for testing
 orbContainer.addEventListener('click', () => {
   orb.triggerBreak();
@@ -224,7 +232,7 @@ function updateAndDrawParticles(): boolean {
 const title = document.getElementById('splash-title')!;
 const subtitle = document.getElementById('splash-subtitle')!;
 
-type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve' | 'done';
+type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve' | 'spotlight' | 'reveal' | 'hold' | 'done';
 
 let phase: Phase = 'fade-in';
 let phaseStart = 0;
@@ -305,6 +313,71 @@ function tick(now: number): void {
     case 'dissolve': {
       const alive = updateAndDrawParticles();
       if (!alive) {
+        startPhase('spotlight');
+      }
+      break;
+    }
+
+    case 'spotlight': {
+      const t = elapsed();
+      const SPOTLIGHT_MS = 1400;
+      const p = Math.min(t / SPOTLIGHT_MS, 1);
+
+      // Soft ambient glow that pulses once around the orb center
+      const cx = canvas2d.width / 2;
+      const cy = canvas2d.height * 0.52;
+      const glowR = canvas2d.height * 0.35;
+
+      // Single smooth pulse: sine curve 0→1→0
+      const pulse = Math.sin(p * Math.PI);
+      const glowAlpha = pulse * 0.18;
+
+      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+      grad.addColorStop(0, `rgba(212, 175, 55, ${glowAlpha})`);
+      grad.addColorStop(0.5, `rgba(212, 175, 55, ${glowAlpha * 0.3})`);
+      grad.addColorStop(1, 'rgba(212, 175, 55, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas2d.width, canvas2d.height);
+
+      // Start nudging light up slightly during spotlight
+      const lightP = p * 0.15;
+      orb.setLightIntensity(ORB_START_LIGHT + lightP);
+
+      if (p >= 1) {
+        startPhase('reveal');
+      }
+      break;
+    }
+
+    case 'reveal': {
+      const t = elapsed();
+      const REVEAL_MS = 3500;
+      const p = Math.min(t / REVEAL_MS, 1);
+
+      // Ease-out quart for very smooth, slow deceleration
+      const eased = 1 - Math.pow(1 - p, 4);
+
+      // Grow orb from start scale to 1.0
+      const scale = ORB_START_SCALE + (1.0 - ORB_START_SCALE) * eased;
+      orb.setOrbScale(scale);
+
+      // Move orb upward (from shifted-down back to center)
+      const yOffset = ORB_START_Y * (1 - eased);
+      orb.setOrbOffset(0, yOffset, 0);
+
+      // Brighten lights — continue from where spotlight left off
+      const lightBase = ORB_START_LIGHT + 0.15;
+      const light = lightBase + (1.0 - lightBase) * eased;
+      orb.setLightIntensity(light);
+
+      if (p >= 1) {
+        startPhase('hold');
+      }
+      break;
+    }
+
+    case 'hold': {
+      if (elapsed() > 5000) {
         startPhase('done');
       }
       break;
