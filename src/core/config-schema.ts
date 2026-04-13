@@ -14,8 +14,6 @@ export const ProfileSchema = z.object({
   activities: z.string().default(''),
   usagePurposes: z.array(z.string()).default([]),
   hobbies: z.array(z.string()).default([]),
-  responseStyle: z.enum(['kurz', 'mittel', 'ausführlich']).default('mittel'),
-  tone: z.enum(['freundlich', 'professionell', 'locker', 'direkt']).default('freundlich'),
 });
 
 export const SkillsSchema = z.object({
@@ -64,10 +62,12 @@ export const ResourcesSchema = z.object({
 export const TrustSchema = z.object({
   memoryAllowed: z.boolean().default(true),
   fileAccess: z.preprocess(
-    (val) => val === 'full' ? 'all' : val,
+    (val) => (val === 'full' ? 'all' : val),
     z.enum(['specific-folders', 'all', 'none']).default('specific-folders'),
   ),
-  confirmationLevel: z.enum(['minimal', 'standard', 'maximal']).default('standard'),
+  confirmationLevel: z
+    .enum(['minimal', 'standard', 'maximal'])
+    .default('standard'),
   memoryExclusions: z.array(z.string()).default([]),
   anonymousEnabled: z.boolean().default(false),
   showContextEnabled: z.boolean().default(false),
@@ -80,7 +80,14 @@ export const PersonalizationSchema = z.object({
   chatFontSize: z.enum(['small', 'default', 'large']).default('default'),
   chatAlignment: z.enum(['stacked', 'bubbles']).default('stacked'),
   emojisEnabled: z.boolean().default(true),
-  responseMode: z.enum(['normal', 'spontaneous', 'thoughtful']).default('normal'),
+  responseMode: z
+    .enum(['normal', 'spontaneous', 'thoughtful'])
+    .default('normal'),
+  responseLanguage: z.enum(['de', 'en']).default('de'),
+  responseStyle: z.enum(['kurz', 'mittel', 'ausführlich']).default('mittel'),
+  tone: z
+    .enum(['freundlich', 'professionell', 'locker', 'direkt'])
+    .default('freundlich'),
   characterTraits: z.array(z.string()).default([]),
   quirk: z.string().nullable().default(null),
 });
@@ -94,12 +101,23 @@ export const ControlsSchema = z.object({
 
 export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
-  model: z.string().default('qwen3.5:4b'),
-  options: z.object({
-    temperature: z.number().optional(),
-    num_predict: z.number().optional(),
-    num_ctx: z.number().optional(),
-  }).default({}),
+  routerModel: z.string().default('phi4-mini:3.8b'),
+  workerModel: z.string().default('qwen3:8b'),
+  performanceProfile: z
+    .enum(['leistung', 'schnell', 'normal', 'sparsam'])
+    .default('normal'),
+  workerOptions: z
+    .object({
+      num_ctx: z.number().default(8192),
+    })
+    .default({ num_ctx: 8192 }),
+  options: z
+    .object({
+      temperature: z.number().optional(),
+      num_predict: z.number().optional(),
+      num_ctx: z.number().optional(),
+    })
+    .default({}),
 });
 
 export const SystemSchema = z.object({
@@ -114,30 +132,58 @@ export const SystemSchema = z.object({
   shell: z.string().default(''),
   language: z.string().default(''),
   timezone: z.string().default(''),
-  folders: pre(z.object({
-    documents: z.string().default(''),
-    downloads: z.string().default(''),
-    pictures: z.string().default(''),
-    desktop: z.string().default(''),
-  })),
+  folders: pre(
+    z.object({
+      documents: z.string().default(''),
+      downloads: z.string().default(''),
+      pictures: z.string().default(''),
+      desktop: z.string().default(''),
+    }),
+  ),
 });
 
 // ── Root Schema ──
 
-export const SarahConfigSchema = z.object({
-  onboarding: pre(z.object({ setupComplete: z.boolean().default(false) })),
-  system: pre(SystemSchema),
-  profile: pre(ProfileSchema),
-  skills: pre(SkillsSchema),
-  resources: pre(ResourcesSchema),
-  trust: pre(TrustSchema),
-  personalization: pre(PersonalizationSchema),
-  controls: pre(ControlsSchema),
-  llm: pre(LlmSchema),
-  integrations: pre(z.object({
-    context7: z.boolean().default(false),
-  })),
-});
+export const SarahConfigSchema = z.preprocess(
+  (raw) => {
+    const obj = (raw ?? {}) as Record<string, Record<string, unknown>>;
+    // Migrate responseStyle/tone from profile to personalization
+    if (obj.profile && obj.personalization) {
+      const p = obj.profile;
+      const pers = obj.personalization;
+      if (p.responseStyle && !pers.responseStyle) {
+        pers.responseStyle = p.responseStyle;
+        delete p.responseStyle;
+      }
+      if (p.tone && !pers.tone) {
+        pers.tone = p.tone;
+        delete p.tone;
+      }
+    }
+    // Migrate llm.model → llm.workerModel (old single model was the worker)
+    if (obj.llm && 'model' in obj.llm && !obj.llm.workerModel) {
+      obj.llm.workerModel = obj.llm.model;
+      delete obj.llm.model;
+    }
+    return obj;
+  },
+  z.object({
+    onboarding: pre(z.object({ setupComplete: z.boolean().default(false) })),
+    system: pre(SystemSchema),
+    profile: pre(ProfileSchema),
+    skills: pre(SkillsSchema),
+    resources: pre(ResourcesSchema),
+    trust: pre(TrustSchema),
+    personalization: pre(PersonalizationSchema),
+    controls: pre(ControlsSchema),
+    llm: pre(LlmSchema),
+    integrations: pre(
+      z.object({
+        context7: z.boolean().default(false),
+      }),
+    ),
+  }),
+);
 
 // ── Inferred Types ──
 

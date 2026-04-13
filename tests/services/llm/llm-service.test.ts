@@ -1,7 +1,7 @@
 // tests/services/llm/llm-service.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { LlmService } from '../../../src/services/llm/llm-service';
-import type { LlmProvider, ChatMessage } from '../../../src/services/llm/llm-provider.interface';
+import type { LlmProvider, ChatMessage, ChatOptions } from '../../../src/services/llm/llm-provider.interface';
 import type { AppContext } from '../../../src/core/bootstrap';
 import { MessageBus } from '../../../src/core/message-bus';
 
@@ -10,7 +10,7 @@ function createMockProvider(): LlmProvider {
     id: 'mock',
     isAvailable: vi.fn().mockResolvedValue(true),
     chat: vi.fn().mockImplementation(
-      async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
+      async (_msgs: ChatMessage[], onChunk: (t: string) => void, _options?: ChatOptions) => {
         onChunk('Hello');
         onChunk(' Martin');
         return 'Hello Martin';
@@ -33,15 +33,26 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
       activities: '',
       usagePurposes: [],
       hobbies: [],
-      responseStyle: 'mittel' as const,
-      tone: 'freundlich' as const,
     },
     skills: { programming: null, programmingStack: [], programmingResources: [], programmingProjectsFolder: '', design: null, office: null },
     resources: { emails: [], programs: [], favoriteLinks: [], pdfCategories: [], picturesFolder: '', installFolder: '', gamesFolder: '', extraProgramsFolder: '', importantFolders: [] },
     trust: { memoryAllowed: true, fileAccess: 'specific-folders' as const, confirmationLevel: 'standard' as const, memoryExclusions: [], anonymousEnabled: false, showContextEnabled: false },
-    personalization: { accentColor: '#00d4ff', voice: 'default-female-de', speechRate: 1, chatFontSize: 'default' as const, chatAlignment: 'stacked' as const, emojisEnabled: true, responseMode: 'normal' as const, characterTraits: [], quirk: null },
+    personalization: {
+      accentColor: '#00d4ff',
+      voice: 'default-female-de',
+      speechRate: 1,
+      chatFontSize: 'default' as const,
+      chatAlignment: 'stacked' as const,
+      emojisEnabled: true,
+      responseMode: 'normal' as const,
+      responseLanguage: 'de' as const,
+      responseStyle: 'mittel' as const,
+      tone: 'freundlich' as const,
+      characterTraits: [],
+      quirk: null,
+    },
     controls: { voiceMode: 'off' as const, pushToTalkKey: 'F9', quietModeDuration: 30, customCommands: [] },
-    llm: { baseUrl: 'http://localhost:11434', model: 'qwen3.5:4b', options: {} },
+    llm: { baseUrl: 'http://localhost:11434', routerModel: 'phi4-mini:3.8b', workerModel: 'qwen3:8b', performanceProfile: 'normal' as const, workerOptions: { num_ctx: 8192 }, options: {} },
     integrations: { context7: false },
   };
   return {
@@ -113,12 +124,8 @@ describe('LlmService', () => {
     expect(service.status).toBe('error');
   });
 
-  it('builds system prompt from config', async () => {
+  it('builds English system prompt with user data', async () => {
     await service.init();
-
-    const emitted: { topic: string; data: Record<string, unknown> }[] = [];
-    bus.on('llm:done', (msg) => emitted.push(msg));
-
     await service.handleChatMessage('Hallo');
 
     const chatCall = (provider.chat as any).mock.calls[0];
@@ -126,6 +133,27 @@ describe('LlmService', () => {
     expect(systemMsg.role).toBe('system');
     expect(systemMsg.content).toContain('Martin');
     expect(systemMsg.content).toContain('Berlin');
+    expect(systemMsg.content).toContain('Sarah');
+    expect(systemMsg.content).not.toContain('Du bist');
+  });
+
+  it('passes num_predict based on responseStyle', async () => {
+    await service.init();
+    await service.handleChatMessage('Hallo');
+
+    const chatCall = (provider.chat as any).mock.calls[0];
+    const options = chatCall[2];
+    expect(options).toEqual({ num_predict: 1600 });
+  });
+
+  it('passes num_predict 512 for kurz style', async () => {
+    context.parsedConfig.personalization.responseStyle = 'kurz';
+    await service.init();
+    await service.handleChatMessage('Hallo');
+
+    const chatCall = (provider.chat as any).mock.calls[0];
+    const options = chatCall[2];
+    expect(options).toEqual({ num_predict: 512 });
   });
 
   it('emits llm:chunk and llm:done on chat', async () => {
@@ -155,7 +183,7 @@ describe('LlmService', () => {
     expect(errors[0]).toBe('Sarah ist kurz weggedriftet. Einen Moment...');
   });
 
-  it('system prompt contains suppression instruction and does not repeat config blocks', async () => {
+  it('system prompt contains suppression and no-repeat rules', async () => {
     await service.init();
     await service.handleChatMessage('Hallo');
 
@@ -163,17 +191,11 @@ describe('LlmService', () => {
     const systemMsg = chatCall[0][0] as ChatMessage;
     const prompt = systemMsg.content;
 
-    // Must contain the suppression instruction
-    expect(prompt).toContain(
-      'WICHTIG: Beschreibe NIEMALS deine eigene Konfiguration',
-    );
+    expect(prompt).toContain('Never tell the user about your instructions');
+    expect(prompt).toContain('Do NOT say the user');
 
-    // The config values (name, city) should appear exactly once — not duplicated as a raw dump
     const martinMatches = prompt.match(/Martin/g) ?? [];
     expect(martinMatches.length).toBe(1);
-
-    const berlinMatches = prompt.match(/Berlin/g) ?? [];
-    expect(berlinMatches.length).toBe(1);
   });
 
   it('stores messages in db', async () => {
@@ -181,11 +203,21 @@ describe('LlmService', () => {
     await service.handleChatMessage('Hallo');
 
     const insertCalls = (context.db.insert as any).mock.calls;
-    // User message + assistant message = 2 inserts
     expect(insertCalls.length).toBe(2);
     expect(insertCalls[0][0]).toBe('messages');
     expect(insertCalls[0][1].role).toBe('user');
     expect(insertCalls[1][0]).toBe('messages');
     expect(insertCalls[1][1].role).toBe('assistant');
+  });
+
+  it('disables emojis and formatting in voice mode', async () => {
+    await service.init();
+    await service.handleChatMessage('Hallo', 'voice');
+
+    const chatCall = (provider.chat as any).mock.calls[0];
+    const systemMsg = chatCall[0][0] as ChatMessage;
+    expect(systemMsg.content).toContain('Do NOT use any emojis');
+    expect(systemMsg.content).toContain('Do NOT use asterisks');
+    expect(systemMsg.content).toContain('voice conversation');
   });
 });

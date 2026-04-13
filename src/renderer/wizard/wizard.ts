@@ -46,8 +46,6 @@ const wizardData: WizardData = {
     hobbies: [],
     profession: '',
     activities: '',
-    responseStyle: 'mittel',
-    tone: 'freundlich',
   },
   skills: {
     programming: null,
@@ -84,6 +82,9 @@ const wizardData: WizardData = {
     chatAlignment: 'stacked',
     emojisEnabled: true,
     responseMode: 'normal',
+    responseLanguage: 'de',
+    responseStyle: 'mittel',
+    tone: 'freundlich',
     characterTraits: [],
     quirk: null,
   },

@@ -13,13 +13,13 @@ describe('MessageBus', () => {
     const handler = vi.fn();
     bus.on('chat:message', handler);
 
-    bus.emit('test-service', 'chat:message', { text: 'hi' });
+    bus.emit('test-service', 'chat:message', { text: 'hi', mode: 'chat' });
 
     expect(handler).toHaveBeenCalledOnce();
     const msg: TypedBusMessage<'chat:message'> = handler.mock.calls[0][0];
     expect(msg.source).toBe('test-service');
     expect(msg.topic).toBe('chat:message');
-    expect(msg.data).toEqual({ text: 'hi' });
+    expect(msg.data).toEqual({ text: 'hi', mode: 'chat' });
     expect(msg.timestamp).toBeTruthy();
   });
 
@@ -49,7 +49,7 @@ describe('MessageBus', () => {
     const handler = vi.fn();
     bus.on('*', handler);
 
-    bus.emit('a', 'chat:message', { text: 'one' });
+    bus.emit('a', 'chat:message', { text: 'one', mode: 'chat' });
     bus.emit('b', 'llm:done', { fullText: 'two' });
 
     expect(handler).toHaveBeenCalledTimes(2);

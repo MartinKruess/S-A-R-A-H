@@ -7,7 +7,7 @@ describe('SarahConfigSchema', () => {
 
     expect(result.onboarding.setupComplete).toBe(false);
     expect(result.profile.displayName).toBe('');
-    expect(result.profile.responseStyle).toBe('mittel');
+    expect(result.personalization.responseStyle).toBe('mittel');
     expect(result.controls.voiceMode).toBe('off');
     expect(result.controls.pushToTalkKey).toBe('F9');
     expect(result.personalization.accentColor).toBe('#00d4ff');
@@ -24,7 +24,7 @@ describe('SarahConfigSchema', () => {
     expect(result.profile.displayName).toBe('Martin');
     expect(result.profile.city).toBe('Berlin');
     expect(result.controls.voiceMode).toBe('push-to-talk');
-    expect(result.profile.responseStyle).toBe('mittel');
+    expect(result.personalization.responseStyle).toBe('mittel');
   });
 
   it('migrates legacy fileAccess "full" to "all"', () => {
@@ -71,13 +71,13 @@ describe('SarahConfigSchema', () => {
       trust: { confirmationLevel: 'standard', memoryAllowed: true },
       personalization: { quirk: 'nerd', characterTraits: ['Humorvoll'] },
       controls: { voiceMode: 'push-to-talk', pushToTalkKey: 'F10' },
-      llm: { model: 'qwen3.5:4b' },
+      llm: { model: 'qwen3:8b' },
     };
 
     const result = SarahConfigSchema.parse(full);
     expect(result.profile.displayName).toBe('Martin');
     expect(result.resources.programs[0].name).toBe('VS Code');
     expect(result.controls.pushToTalkKey).toBe('F10');
-    expect(result.llm.model).toBe('qwen3.5:4b');
+    expect(result.llm.workerModel).toBe('qwen3:8b');
   });
 });

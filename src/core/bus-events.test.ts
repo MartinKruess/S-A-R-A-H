@@ -2,8 +2,8 @@ import { describe, it, expectTypeOf } from 'vitest';
 import type { BusEvents } from './bus-events.js';
 
 describe('BusEvents type map', () => {
-  it('maps chat:message to { text: string }', () => {
-    expectTypeOf<BusEvents['chat:message']>().toEqualTypeOf<{ text: string }>();
+  it('maps chat:message to { text: string; mode: chat | voice }', () => {
+    expectTypeOf<BusEvents['chat:message']>().toEqualTypeOf<{ text: string; mode: 'chat' | 'voice' }>();
   });
 
   it('maps llm:done to { fullText: string }', () => {

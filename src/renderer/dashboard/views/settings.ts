@@ -66,28 +66,6 @@ function createProfileSection(config: SarahConfig): HTMLElement {
     onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
 
-  grid.appendChild(sarahSelect({
-    label: 'Antwort-Stil',
-    options: [
-      { value: 'kurz', label: 'Kurz & knapp' },
-      { value: 'mittel', label: 'Ausgewogen' },
-      { value: 'ausführlich', label: 'Ausführlich' },
-    ],
-    value: profile.responseStyle || 'mittel',
-    onChange: (val) => { profile.responseStyle = val as typeof profile.responseStyle; save('profile', profile); showSaved(feedback); },
-  }));
-
-  grid.appendChild(sarahSelect({
-    label: 'Tonfall',
-    options: [
-      { value: 'freundlich', label: 'Freundlich' },
-      { value: 'professionell', label: 'Professionell' },
-      { value: 'locker', label: 'Locker' },
-    ],
-    value: profile.tone || 'freundlich',
-    onChange: (val) => { profile.tone = val as typeof profile.tone; save('profile', profile); showSaved(feedback); },
-  }));
-
   section.appendChild(grid);
   return section;
 }
@@ -441,6 +419,48 @@ function createPersonalizationSection(config: SarahConfig): HTMLElement {
 
   section.appendChild(grid);
 
+  // ── Response settings group ──
+  const responseGrid = document.createElement('div');
+  responseGrid.className = 'settings-grid';
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortsprache',
+    options: [
+      { value: 'de', label: 'Deutsch' },
+      { value: 'en', label: 'English' },
+    ],
+    value: pers.responseLanguage || 'de',
+    onChange: (val) => { pers.responseLanguage = val as typeof pers.responseLanguage; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortstil',
+    options: [
+      { value: 'kurz', label: 'Kurz & knapp' },
+      { value: 'mittel', label: 'Ausgewogen' },
+      { value: 'ausführlich', label: 'Ausführlich' },
+    ],
+    value: pers.responseStyle || 'mittel',
+    onChange: (val) => { pers.responseStyle = val as typeof pers.responseStyle; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Tonfall',
+    options: [
+      { value: 'freundlich', label: 'Freundlich' },
+      { value: 'professionell', label: 'Professionell' },
+      { value: 'locker', label: 'Locker' },
+    ],
+    value: pers.tone || 'freundlich',
+    onChange: (val) => { pers.tone = val as typeof pers.tone; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  section.appendChild(responseGrid);
+
+  const responseSpacer = document.createElement('div');
+  responseSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(responseSpacer);
+
   section.appendChild(sarahToggle({
     label: 'Smileys & Icons',
     description: 'Sarah darf Emojis in Antworten verwenden',
@@ -632,6 +652,32 @@ function createControlsSection(config: SarahConfig): HTMLElement {
   quietHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
   quietHint.textContent = 'Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.';
   section.appendChild(quietHint);
+
+  // Performance profile
+  const llm = { ...config.llm };
+  const perfSpacer = document.createElement('div');
+  perfSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(perfSpacer);
+
+  section.appendChild(sarahSelect({
+    label: 'GPU-Leistungsprofil',
+    options: [
+      { value: 'leistung', label: 'Leistung — Maximale GPU-Nutzung' },
+      { value: 'schnell', label: 'Schnell — Hohe GPU-Nutzung' },
+      { value: 'normal', label: 'Normal — Ausgewogen' },
+      { value: 'sparsam', label: 'Sparsam — Weniger GPU, mehr CPU' },
+    ],
+    value: llm.performanceProfile || 'normal',
+    onChange: (val) => {
+      llm.performanceProfile = val as typeof llm.performanceProfile;
+      save('llm', llm);
+      showSaved(feedback);
+    },
+  }));
+  const perfHint = document.createElement('div');
+  perfHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
+  perfHint.textContent = 'Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.';
+  section.appendChild(perfHint);
 
   const spacer2 = document.createElement('div');
   spacer2.style.height = 'var(--sarah-space-lg)';
