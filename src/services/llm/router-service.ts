@@ -93,7 +93,12 @@ export class RouterService implements SarahService {
     ];
 
     // Routing calls are NOT stored — we just need the route decision
+    const routerStart = performance.now();
     const routerResponse = await this.chatWithTimeout(this.routerProvider, messages, () => {});
+    this.context.bus.emit(this.id, 'perf:timing', {
+      label: 'router',
+      ms: Math.round(performance.now() - routerStart),
+    });
     const { route, feedback } = parseRouteTag(routerResponse);
 
     // No-tag fallback: parseRouteTag returns 'self' when no tag found
@@ -140,6 +145,7 @@ export class RouterService implements SarahService {
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
     const numPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
 
+    const workerStart = performance.now();
     const fullText = await this.chatWithTimeout(
       this.workerProvider,
       messages,
@@ -148,6 +154,10 @@ export class RouterService implements SarahService {
       },
       { num_predict: numPredict },
     );
+    this.context.bus.emit(this.id, 'perf:timing', {
+      label: 'worker',
+      ms: Math.round(performance.now() - workerStart),
+    });
 
     this.history.push({ role: 'assistant', content: fullText });
     await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: fullText });
