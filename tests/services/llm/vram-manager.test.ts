@@ -14,9 +14,12 @@ describe('VramManager', () => {
 
   describe('unloadModel', () => {
     it('sends keep_alive 0 to unload model', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
 
-      await manager.unloadModel('qwen3.5:2b');
+      await manager.unloadModel('phi4-mini:3.8b');
 
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:11434/api/generate',
@@ -24,7 +27,7 @@ describe('VramManager', () => {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'qwen3.5:2b',
+            model: 'phi4-mini:3.8b',
             prompt: '',
             keep_alive: '0',
           }),
@@ -34,7 +37,7 @@ describe('VramManager', () => {
 
     it('does not throw on fetch error', async () => {
       mockFetch.mockRejectedValue(new Error('connection refused'));
-      await expect(manager.unloadModel('qwen3.5:2b')).resolves.toBeUndefined();
+      await expect(manager.unloadModel('phi4-mini:3.8b')).resolves.toBeUndefined();
     });
   });
 
@@ -42,18 +45,19 @@ describe('VramManager', () => {
     it('returns list of loaded model names', async () => {
       mockFetch.mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({
-          models: [
-            { model: 'qwen3.5:2b', size_vram: 3000000000 },
-            { model: 'qwen3.5:9b', size_vram: 6500000000 },
-          ],
-        }),
+        json: () =>
+          Promise.resolve({
+            models: [
+              { model: 'phi4-mini:3.8b', size_vram: 3000000000 },
+              { model: 'qwen3:8b', size_vram: 6500000000 },
+            ],
+          }),
       });
 
       const models = await manager.getLoadedModels();
       expect(models).toEqual([
-        { model: 'qwen3.5:2b', sizeVram: 3000000000 },
-        { model: 'qwen3.5:9b', sizeVram: 6500000000 },
+        { model: 'phi4-mini:3.8b', sizeVram: 3000000000 },
+        { model: 'qwen3:8b', sizeVram: 6500000000 },
       ]);
     });
 
@@ -66,13 +70,16 @@ describe('VramManager', () => {
 
   describe('swapModels', () => {
     it('unloads current model then returns', async () => {
-      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
 
-      await manager.swapModels('qwen3.5:2b', 'qwen3.5:9b');
+      await manager.swapModels('phi4-mini:3.8b', 'qwen3:8b');
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.model).toBe('qwen3.5:2b');
+      expect(body.model).toBe('phi4-mini:3.8b');
       expect(body.keep_alive).toBe('0');
     });
   });

@@ -29,8 +29,8 @@ export interface LlmConfig {
 
 export const DEFAULT_LLM_CONFIG: LlmConfig = {
   baseUrl: 'http://localhost:11434',
-  routerModel: 'qwen3.5:2b',
-  workerModel: 'qwen3.5:9b',
+  routerModel: 'phi4-mini:3.8b',
+  workerModel: 'qwen3:8b',
   performanceProfile: 'normal',
   workerOptions: {
     num_ctx: 8192,
@@ -45,5 +45,5 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
 export const NUM_PREDICT_MAP: Record<string, number> = {
   kurz: 512,
   mittel: 1600,
-  'ausführlich': 3000,
+  ausführlich: 3000,
 };

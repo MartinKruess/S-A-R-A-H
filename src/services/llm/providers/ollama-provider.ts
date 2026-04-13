@@ -15,7 +15,8 @@ export class OllamaProvider implements LlmProvider {
       const res = await fetch(`${this.baseUrl}/api/tags`);
       if (!res.ok) return false;
       const data = (await res.json()) as { models: { name: string }[] };
-      return data.models.some((m) => m.name.startsWith(this.model));
+      const base = this.model.split(':')[0];
+      return data.models.some((m) => m.name.split(':')[0] === base);
     } catch {
       return false;
     }

@@ -71,13 +71,13 @@ describe('SarahConfigSchema', () => {
       trust: { confirmationLevel: 'standard', memoryAllowed: true },
       personalization: { quirk: 'nerd', characterTraits: ['Humorvoll'] },
       controls: { voiceMode: 'push-to-talk', pushToTalkKey: 'F10' },
-      llm: { model: 'qwen3.5:4b' },
+      llm: { model: 'qwen3:8b' },
     };
 
     const result = SarahConfigSchema.parse(full);
     expect(result.profile.displayName).toBe('Martin');
     expect(result.resources.programs[0].name).toBe('VS Code');
     expect(result.controls.pushToTalkKey).toBe('F10');
-    expect(result.llm.routerModel).toBe('qwen3.5:4b');
+    expect(result.llm.workerModel).toBe('qwen3:8b');
   });
 });
