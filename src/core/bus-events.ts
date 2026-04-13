@@ -21,6 +21,7 @@ export type BusEvents = {
   'voice:interrupted':   Record<string, never>;
   'voice:wake':          Record<string, never>;
   'voice:playback-done': Record<string, never>;
+  'perf:timing':         { label: string; ms: number; meta?: Record<string, unknown> };
 };
 
 /** All valid bus topic strings */

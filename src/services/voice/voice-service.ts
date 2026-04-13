@@ -104,6 +104,9 @@ export class VoiceService implements SarahService {
           console.error('[VoiceService] TTS error:', err);
           this.context.bus.emit(this.id, 'voice:error', { message: err.message });
         },
+        (ms) => {
+          this.context.bus.emit(this.id, 'perf:timing', { label: 'tts', ms });
+        },
       );
 
       this.playbackUnsub = this.context.bus.on('voice:playback-done', () => {
@@ -324,7 +327,13 @@ export class VoiceService implements SarahService {
     this.setState('processing');
 
     const sttLanguage = this.context.parsedConfig.personalization.responseLanguage ?? 'de';
+    const sttStart = performance.now();
     const transcript = await this.stt.transcribe(audioData, SAMPLE_RATE, sttLanguage);
+    this.context.bus.emit(this.id, 'perf:timing', {
+      label: 'whisper',
+      ms: Math.round(performance.now() - sttStart),
+      meta: { transcriptLength: transcript?.length ?? 0 },
+    });
 
     if (!transcript || transcript.trim().length === 0) {
       this.handleEmptyTranscript();

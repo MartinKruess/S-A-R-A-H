@@ -204,7 +204,7 @@ app.whenReady().then(async () => {
   // Register Voice service
   const { AudioManager } = await import('./services/voice/audio-manager.js');
   const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
-  const { WhisperProvider } = await import('./services/voice/providers/whisper-provider.js');
+  const { FasterWhisperProvider } = await import('./services/voice/providers/faster-whisper-provider.js');
   const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
   const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
 
@@ -213,7 +213,7 @@ app.whenReady().then(async () => {
     ? process.resourcesPath
     : path.join(__dirname, '..', 'resources');
   const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
-  const whisperProvider = new WhisperProvider(resourcesPath);
+  const whisperProvider = new FasterWhisperProvider(resourcesPath);
   const piperProvider = new PiperProvider(resourcesPath);
   const porcupineProvider = new PorcupineProvider(resourcesPath, picovoiceKey);
   const audioManager = new AudioManager();
@@ -229,7 +229,10 @@ app.whenReady().then(async () => {
   );
   appContext.registry.register(voiceService);
 
-  await appContext.registry.initAll();
+  // Init services in background — don't block splash screen
+  appContext.registry.initAll().catch((err) => {
+    console.error('[Bootstrap] Service init failed:', err);
+  });
 
   ipcMain.on('splash-done', async () => {
     if (mainWindow) {
@@ -373,6 +376,34 @@ app.whenReady().then(async () => {
   forwardToRenderers('llm:chunk');
   forwardToRenderers('llm:done');
   forwardToRenderers('llm:error');
+
+  // ── Performance timing collector ──
+  let perfStart = 0;
+  let perfData: Record<string, unknown> = {};
+
+  appContext!.bus.on('perf:timing', (msg) => {
+    const { label, ms, meta } = msg.data;
+    if (!perfStart) perfStart = Date.now();
+    perfData[`${label}Ms`] = ms;
+    if (meta) Object.assign(perfData, meta);
+    if (label === 'router') perfData.usedWorker = false;
+    if (label === 'worker') perfData.usedWorker = true;
+  });
+
+  const logPerf = () => {
+    if (!perfStart) return;
+    const msKeys = Object.keys(perfData).filter(k => k.endsWith('Ms'));
+    const totalMs = msKeys.reduce((sum, k) => sum + (perfData[k] as number), 0);
+    console.log('\n[⏱ Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
+    perfStart = 0;
+    perfData = {};
+  };
+
+  appContext!.bus.on('voice:done', logPerf);
+  // Chat-only mode (no voice) — log on llm:done if no whisper was involved
+  appContext!.bus.on('llm:done', () => {
+    if (!perfData.whisperMs) logPerf();
+  });
 
   // Voice IPC handlers
   ipcMain.handle('voice-get-state', () => {

@@ -20,6 +20,7 @@ export class TtsQueue {
     private onAudioReady: (audio: Float32Array, sampleRate: number) => void,
     private onQueueEmpty: () => void,
     private onError: (error: Error) => void,
+    private onTiming?: (ms: number) => void,
   ) {}
 
   enqueue(sentence: string): void {
@@ -88,7 +89,9 @@ export class TtsQueue {
     this.state = 'synthesizing';
     let audio: Float32Array;
     try {
+      const ttsStart = performance.now();
       audio = await this.tts.speak(sentence);
+      this.onTiming?.(Math.round(performance.now() - ttsStart));
     } catch (err) {
       this.onError(err instanceof Error ? err : new Error(String(err)));
       // Attempt to continue with remaining queue items
