@@ -130,8 +130,8 @@ export function createFinishStep(data: WizardData): HTMLElement {
     addSection(finish, 'Persönliches', [
       ['Beruf', data.profile.profession || '—'],
       ['Hobbys', data.profile.hobbies.join(', ') || '—'],
-      ['Antwortstil', data.profile.responseStyle],
-      ['Tonfall', data.profile.tone],
+      ['Antwortstil', data.personalization.responseStyle],
+      ['Tonfall', data.personalization.tone],
     ]);
   }
 

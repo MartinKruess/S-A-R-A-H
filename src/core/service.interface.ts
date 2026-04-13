@@ -1,4 +1,5 @@
-import type { BusMessage, ServiceStatus } from './types.js';
+import type { BusTopic } from './bus-events.js';
+import type { TypedBusMessage, ServiceStatus } from './types.js';
 
 /**
  * Every S.A.R.A.H. service implements this interface.
@@ -18,8 +19,8 @@ export interface SarahService {
   destroy(): Promise<void>;
 
   /** Handle an incoming bus message. Called by the registry for subscribed topics. */
-  onMessage(msg: BusMessage): void;
+  onMessage(msg: TypedBusMessage): void;
 
   /** Topics this service subscribes to. The registry wires these up automatically. */
-  readonly subscriptions: string[];
+  readonly subscriptions: readonly BusTopic[];
 }

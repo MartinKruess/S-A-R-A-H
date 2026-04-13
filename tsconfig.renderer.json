@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "rootDir": "./src/renderer",
-    "outDir": "./dist/renderer",
+    "rootDir": "./src",
+    "outDir": "./dist",
     "module": "ES2022",
     "target": "ES2022",
     "lib": ["ES2022", "DOM"],
@@ -14,6 +14,6 @@
     "ignoreDeprecations": "6.0",
     "declaration": false
   },
-  "include": ["src/renderer/**/*"],
+  "include": ["src/renderer/**/*", "src/core/*.ts", "src/services/voice/voice-types.ts"],
   "exclude": ["node_modules", "dist", "src/renderer/dashboard/orb-scene.ts", "src/renderer/dashboard/dialog.ts", "src/renderer/services/audio-worklet-processor.ts"]
 }

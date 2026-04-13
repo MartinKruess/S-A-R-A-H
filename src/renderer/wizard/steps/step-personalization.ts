@@ -196,6 +196,38 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
   // === SECTION: Verhalten ===
   const sectionVerhalten = createSectionHeading('Verhalten');
 
+  const responseLanguageSelect = sarahSelect({
+    label: 'Antwortsprache',
+    options: [
+      { value: 'de', label: 'Deutsch' },
+      { value: 'en', label: 'English' },
+    ],
+    value: data.personalization.responseLanguage || 'de',
+    onChange: (value) => { data.personalization.responseLanguage = value as 'de' | 'en'; },
+  });
+
+  const responseStyleSelect = sarahSelect({
+    label: 'Wie soll ich antworten?',
+    options: [
+      { value: 'kurz', label: 'Kurz & knapp' },
+      { value: 'mittel', label: 'Normal' },
+      { value: 'ausführlich', label: 'Ausführlich' },
+    ],
+    value: data.personalization.responseStyle,
+    onChange: (value) => { data.personalization.responseStyle = value as 'kurz' | 'mittel' | 'ausführlich'; },
+  });
+
+  const toneSelect = sarahSelect({
+    label: 'Wie soll ich klingen?',
+    options: [
+      { value: 'freundlich', label: 'Freundlich' },
+      { value: 'professionell', label: 'Professionell' },
+      { value: 'locker', label: 'Locker' },
+    ],
+    value: data.personalization.tone,
+    onChange: (value) => { data.personalization.tone = value as 'freundlich' | 'professionell' | 'locker' | 'direkt'; },
+  });
+
   const responseModeSelect = sarahSelect({
     label: 'Antwortmodus',
     options: [
@@ -274,6 +306,9 @@ export function createPersonalizationStep(data: WizardData): HTMLElement {
       alignmentSelect,
       emojisToggle,
       sectionVerhalten,
+      responseLanguageSelect,
+      responseStyleSelect,
+      toneSelect,
       responseModeSelect,
       traitsSelect,
       quirkWrapper,

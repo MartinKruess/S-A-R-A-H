@@ -4,10 +4,10 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import { bootstrap, AppContext } from './core/bootstrap.js';
-import { LlmService } from './services/llm/llm-service.js';
+import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
-import { DEFAULT_LLM_CONFIG } from './services/llm/llm-types.js';
-import type { LlmConfig } from './services/llm/llm-types.js';
+import { PERFORMANCE_PROFILE_MAP } from './services/llm/llm-types.js';
+import type { SarahConfig } from './core/config-schema.js';
 import { VoiceService } from './services/voice/voice-service.js';
 
 try {
@@ -170,22 +170,41 @@ app.whenReady().then(async () => {
   createWindow();
   appContext = await bootstrap(app.getPath('userData'));
 
-  // Register LLM service
-  const rootConfig = (await appContext.config.get<Record<string, unknown>>('root')) ?? {};
-  const llmRaw = rootConfig.llm as Partial<LlmConfig> | undefined;
-  const llmConfig: LlmConfig = {
-    baseUrl: llmRaw?.baseUrl ?? DEFAULT_LLM_CONFIG.baseUrl,
-    model: llmRaw?.model ?? DEFAULT_LLM_CONFIG.model,
-    options: llmRaw?.options ?? DEFAULT_LLM_CONFIG.options,
+  // Show dialog if config validation failed
+  if (appContext.configErrors) {
+    const issues = appContext.configErrors.map((e) => `• ${e}`).join('\n');
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Konfigurationsfehler',
+      message: 'Die Konfigurationsdatei enthält ungültige Werte:',
+      detail: `${issues}\n\nMit Standard-Werten fortfahren?`,
+      buttons: ['Mit Defaults fortfahren', 'Beenden'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (response === 1) {
+      app.quit();
+      return;
+    }
+  }
+
+  // Register Router service (replaces LlmService — dual-LLM routing)
+  const { llm: llmConfig } = appContext.parsedConfig;
+  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, { ...llmConfig.options, num_ctx: 2048 });
+  const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
+  const workerOptions = {
+    ...llmConfig.options,
+    num_ctx: llmConfig.workerOptions.num_ctx,
+    num_gpu: numGpu,
   };
-  const ollamaProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.model, llmConfig.options);
-  const llmService = new LlmService(appContext, ollamaProvider);
-  appContext.registry.register(llmService);
+  const workerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.workerModel, workerOptions);
+  const routerService = new RouterService(appContext, routerProvider, workerProvider);
+  appContext.registry.register(routerService);
 
   // Register Voice service
   const { AudioManager } = await import('./services/voice/audio-manager.js');
   const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
-  const { WhisperProvider } = await import('./services/voice/providers/whisper-provider.js');
+  const { FasterWhisperProvider } = await import('./services/voice/providers/faster-whisper-provider.js');
   const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
   const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
 
@@ -194,7 +213,7 @@ app.whenReady().then(async () => {
     ? process.resourcesPath
     : path.join(__dirname, '..', 'resources');
   const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
-  const whisperProvider = new WhisperProvider(resourcesPath);
+  const whisperProvider = new FasterWhisperProvider(resourcesPath);
   const piperProvider = new PiperProvider(resourcesPath);
   const porcupineProvider = new PorcupineProvider(resourcesPath, picovoiceKey);
   const audioManager = new AudioManager();
@@ -210,13 +229,14 @@ app.whenReady().then(async () => {
   );
   appContext.registry.register(voiceService);
 
-  await appContext.registry.initAll();
+  // Init services in background — don't block splash screen
+  appContext.registry.initAll().catch((err) => {
+    console.error('[Bootstrap] Service init failed:', err);
+  });
 
   ipcMain.on('splash-done', async () => {
     if (mainWindow) {
-      const config =
-        (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
-      if ((config as any).onboarding?.setupComplete) {
+      if (appContext!.parsedConfig.onboarding.setupComplete) {
         // Dashboard: compact window (25vh x 30vh), both relative to screen height
         const { height: screenH } =
           require('electron').screen.getPrimaryDisplay().workAreaSize;
@@ -258,19 +278,20 @@ app.whenReady().then(async () => {
     };
   });
 
-  ipcMain.handle('get-config', async () => {
-    return (
-      (await appContext!.config.get<Record<string, unknown>>('root')) ?? {}
-    );
+  ipcMain.handle('get-config', () => {
+    return appContext!.parsedConfig;
   });
 
   ipcMain.handle(
     'save-config',
-    async (_event, config: Record<string, unknown>) => {
-      const existing =
-        (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
+    async (_event, config: Partial<SarahConfig>) => {
+      const existing = (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
       const merged = { ...existing, ...config };
       await appContext!.config.set('root', merged);
+
+      // Re-parse merged config
+      const { SarahConfigSchema } = await import('./core/config-schema.js');
+      appContext!.parsedConfig = SarahConfigSchema.parse(merged);
 
       // Apply voice config changes live when controls section is saved
       if ('controls' in config) {
@@ -280,14 +301,12 @@ app.whenReady().then(async () => {
         }
       }
 
-      return merged;
+      return appContext!.parsedConfig;
     },
   );
 
-  ipcMain.handle('is-first-run', async () => {
-    const config =
-      (await appContext!.config.get<Record<string, unknown>>('root')) ?? {};
-    return !(config as any).onboarding?.setupComplete;
+  ipcMain.handle('is-first-run', () => {
+    return !appContext!.parsedConfig.onboarding.setupComplete;
   });
 
   ipcMain.handle('select-folder', async (event, title?: string) => {
@@ -340,11 +359,11 @@ app.whenReady().then(async () => {
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
       voiceService.setInteractionMode('chatspeak');
     }
-    appContext!.bus.emit('renderer', 'chat:message', { text });
+    appContext!.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
   });
 
   // Forward LLM events to all renderer windows
-  const forwardToRenderers = (topic: string) => {
+  const forwardToRenderers = <T extends import('./core/bus-events.js').BusTopic>(topic: T) => {
     appContext!.bus.on(topic, (msg) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) {
@@ -357,6 +376,34 @@ app.whenReady().then(async () => {
   forwardToRenderers('llm:chunk');
   forwardToRenderers('llm:done');
   forwardToRenderers('llm:error');
+
+  // ── Performance timing collector ──
+  let perfStart = 0;
+  let perfData: Record<string, unknown> = {};
+
+  appContext!.bus.on('perf:timing', (msg) => {
+    const { label, ms, meta } = msg.data;
+    if (!perfStart) perfStart = Date.now();
+    perfData[`${label}Ms`] = ms;
+    if (meta) Object.assign(perfData, meta);
+    if (label === 'router') perfData.usedWorker = false;
+    if (label === 'worker') perfData.usedWorker = true;
+  });
+
+  const logPerf = () => {
+    if (!perfStart) return;
+    const msKeys = Object.keys(perfData).filter(k => k.endsWith('Ms'));
+    const totalMs = msKeys.reduce((sum, k) => sum + (perfData[k] as number), 0);
+    console.log('\n[⏱ Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
+    perfStart = 0;
+    perfData = {};
+  };
+
+  appContext!.bus.on('voice:done', logPerf);
+  // Chat-only mode (no voice) — log on llm:done if no whisper was involved
+  appContext!.bus.on('llm:done', () => {
+    if (!perfData.whisperMs) logPerf();
+  });
 
   // Voice IPC handlers
   ipcMain.handle('voice-get-state', () => {

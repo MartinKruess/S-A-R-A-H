@@ -11,108 +11,32 @@ import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 
-export type ProgramType = 'exe' | 'launcher' | 'appx' | 'updater';
+import type { SarahApi } from '../../core/sarah-api.js';
+export type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
+import type { ProgramEntry, PdfCategory, CustomCommand } from '../../core/config-schema.js';
+export type ProgramType = ProgramEntry['type'];
 
-export interface ProgramEntry {
-  name: string;
-  path: string;
-  type: ProgramType;
-  source: 'detected' | 'manual' | 'learned';
-  verified: boolean;
-  aliases: string[];
-  duplicateGroup?: string;
-}
-
-export interface PdfCategory {
-  tag: string;
-  folder: string;
-  pattern: string;
-  inferFromExisting: boolean;
-}
-
-export interface CustomCommand {
-  command: string;
-  prompt: string;
-}
-
-declare const sarah: {
-  version: string;
-  splashDone: () => void;
-  getSystemInfo: () => Promise<Record<string, string>>;
-  getConfig: () => Promise<Record<string, unknown>>;
-  saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  isFirstRun: () => Promise<boolean>;
-  selectFolder: (title?: string) => Promise<string | null>;
-  detectPrograms: () => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
-  scanFolderExes: (folderPath: string) => Promise<{ name: string; path: string; verified: boolean; aliases: string[] }[]>;
-};
+declare const sarah: SarahApi;
 
 (window as any).__sarah = sarah;
 
 registerComponents();
 
+import type { SarahConfig } from '../../core/config-schema.js';
+
 export interface WizardData {
-  system: Record<string, string>;
-  profile: {
-    displayName: string;
-    city: string;
-    usagePurposes: string[];
-    lastName: string;
-    address: string;
-    hobbies: string[];
-    profession: string;
-    activities: string;
-    responseStyle: string;
-    tone: string;
-  };
-  skills: {
-    programming: string | null;
-    programmingStack: string[];
-    programmingResources: string[];
-    programmingProjectsFolder: string;
-    design: string | null;
-    office: string | null;
-  };
-  resources: {
-    emails: string[];
-    programs: ProgramEntry[];
-    favoriteLinks: string[];
-    pdfCategories: PdfCategory[];
-    picturesFolder: string;
-    installFolder: string;
-    gamesFolder: string;
-    extraProgramsFolder: string;
-  };
-  trust: {
-    memoryAllowed: boolean;
-    fileAccess: string;
-    confirmationLevel: 'minimal' | 'standard' | 'maximal';
-    memoryExclusions: string[];
-    anonymousEnabled: boolean;
-    showContextEnabled: boolean;
-  };
-  personalization: {
-    accentColor: string;
-    voice: string;
-    speechRate: number;
-    chatFontSize: 'small' | 'default' | 'large';
-    chatAlignment: 'stacked' | 'bubbles';
-    emojisEnabled: boolean;
-    responseMode: 'normal' | 'spontaneous' | 'thoughtful';
-    characterTraits: string[];
-    quirk: string | null;
-  };
-  controls: {
-    voiceMode: 'keyword' | 'push-to-talk' | 'off';
-    pushToTalkKey: string;
-    quietModeDuration: number;
-    customCommands: CustomCommand[];
-  };
+  system: SarahConfig['system'];
+  profile: SarahConfig['profile'];
+  skills: SarahConfig['skills'];
+  resources: SarahConfig['resources'];
+  trust: SarahConfig['trust'];
+  personalization: SarahConfig['personalization'];
+  controls: SarahConfig['controls'];
   skippedSteps: Set<string>;
 }
 
 const wizardData: WizardData = {
-  system: {},
+  system: { os: '', platform: '', arch: '', cpu: '', cpuCores: '', totalMemory: '', freeMemory: '', hostname: '', shell: '', language: '', timezone: '', folders: { documents: '', downloads: '', pictures: '', desktop: '' } },
   profile: {
     displayName: '',
     city: '',
@@ -122,8 +46,6 @@ const wizardData: WizardData = {
     hobbies: [],
     profession: '',
     activities: '',
-    responseStyle: 'mittel',
-    tone: 'freundlich',
   },
   skills: {
     programming: null,
@@ -142,6 +64,7 @@ const wizardData: WizardData = {
     installFolder: '',
     gamesFolder: '',
     extraProgramsFolder: '',
+    importantFolders: [],
   },
   trust: {
     memoryAllowed: true,
@@ -159,6 +82,9 @@ const wizardData: WizardData = {
     chatAlignment: 'stacked',
     emojisEnabled: true,
     responseMode: 'normal',
+    responseLanguage: 'de',
+    responseStyle: 'mittel',
+    tone: 'freundlich',
     characterTraits: [],
     quirk: null,
   },

@@ -5,11 +5,11 @@ import { sarahButton } from '../../components/sarah-button.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { applyAccentColor } from '../accent.js';
+import type { SarahApi } from '../../../core/sarah-api.js';
+import type { SarahConfig, PdfCategory, CustomCommand } from '../../../core/config-schema.js';
 
-type Config = Record<string, Record<string, unknown>>;
-
-function getSarah(): Record<string, (...args: unknown[]) => unknown> {
-  return ((window as unknown) as Record<string, unknown>).__sarah as Record<string, (...args: unknown[]) => unknown>;
+function getSarah(): SarahApi {
+  return (window as any).__sarah as SarahApi;
 }
 
 function showSaved(feedback: HTMLElement): void {
@@ -31,14 +31,14 @@ function createSectionHeader(titleText: string): { header: HTMLElement; feedback
   return { header, feedback };
 }
 
-function save(key: string, value: Record<string, unknown>): void {
-  (getSarah().saveConfig as (c: Record<string, unknown>) => Promise<unknown>)({ [key]: value });
+function save(key: string, value: Partial<SarahConfig>[keyof SarahConfig]): void {
+  getSarah().saveConfig({ [key]: value } as Partial<SarahConfig>);
 }
 
 // ── Section: Profil ──
 
-function createProfileSection(config: Config): HTMLElement {
-  const profile = (config.profile || {}) as Record<string, string>;
+function createProfileSection(config: SarahConfig): HTMLElement {
+  const profile = { ...config.profile };
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -66,28 +66,6 @@ function createProfileSection(config: Config): HTMLElement {
     onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
 
-  grid.appendChild(sarahSelect({
-    label: 'Antwort-Stil',
-    options: [
-      { value: 'kurz', label: 'Kurz & knapp' },
-      { value: 'mittel', label: 'Ausgewogen' },
-      { value: 'ausführlich', label: 'Ausführlich' },
-    ],
-    value: profile.responseStyle || 'mittel',
-    onChange: (val) => { profile.responseStyle = val; save('profile', profile); showSaved(feedback); },
-  }));
-
-  grid.appendChild(sarahSelect({
-    label: 'Tonfall',
-    options: [
-      { value: 'freundlich', label: 'Freundlich' },
-      { value: 'professionell', label: 'Professionell' },
-      { value: 'locker', label: 'Locker' },
-    ],
-    value: profile.tone || 'freundlich',
-    onChange: (val) => { profile.tone = val; save('profile', profile); showSaved(feedback); },
-  }));
-
   section.appendChild(grid);
   return section;
 }
@@ -113,13 +91,6 @@ const PDF_PLACEHOLDERS: Record<string, string> = {
   'Gewerblich': 'Firma_Dokumenttyp',
   'Präsentationen': 'Thema_Datum',
 };
-
-interface PdfCategory {
-  tag: string;
-  folder: string;
-  pattern: string;
-  inferFromExisting: boolean;
-}
 
 function createPdfBlock(cat: PdfCategory, onUpdate: () => void): HTMLElement {
   const block = document.createElement('div');
@@ -154,9 +125,9 @@ function createPdfBlock(cat: PdfCategory, onUpdate: () => void): HTMLElement {
   return block;
 }
 
-function createFilesSection(config: Config): HTMLElement {
-  const resources = (config.resources || {}) as Record<string, unknown>;
-  const skills = (config.skills || {}) as Record<string, unknown>;
+function createFilesSection(config: SarahConfig): HTMLElement {
+  const resources = { ...config.resources };
+  const skills = { ...config.skills };
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -169,28 +140,28 @@ function createFilesSection(config: Config): HTMLElement {
   grid.appendChild(sarahPathPicker({
     label: 'Bilder-Ordner',
     placeholder: 'Bilder-Ordner...',
-    value: (resources.picturesFolder as string) || '',
+    value: resources.picturesFolder || '',
     onChange: (val) => { resources.picturesFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahPathPicker({
     label: 'Installations-Ordner',
     placeholder: 'Installations-Ordner...',
-    value: (resources.installFolder as string) || '',
+    value: resources.installFolder || '',
     onChange: (val) => { resources.installFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahPathPicker({
     label: 'Games-Ordner',
     placeholder: 'Games-Ordner...',
-    value: (resources.gamesFolder as string) || '',
+    value: resources.gamesFolder || '',
     onChange: (val) => { resources.gamesFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahPathPicker({
     label: 'Weitere Programme (Ordner)',
     placeholder: 'z.B. D:\\Programme...',
-    value: (resources.extraProgramsFolder as string) || '',
+    value: resources.extraProgramsFolder || '',
     onChange: (val) => { resources.extraProgramsFolder = val; save('resources', resources); showSaved(feedback); },
   }));
 
@@ -198,7 +169,7 @@ function createFilesSection(config: Config): HTMLElement {
     grid.appendChild(sarahPathPicker({
       label: 'Projekte-Ordner',
       placeholder: 'Projekte-Ordner...',
-      value: (skills.programmingProjectsFolder as string) || '',
+      value: skills.programmingProjectsFolder || '',
       onChange: (val) => { skills.programmingProjectsFolder = val; save('skills', skills); showSaved(feedback); },
     }));
   }
@@ -206,7 +177,7 @@ function createFilesSection(config: Config): HTMLElement {
   section.appendChild(grid);
 
   // PDF Categories
-  const pdfCats: PdfCategory[] = (resources.pdfCategories as PdfCategory[]) || [];
+  const pdfCats: PdfCategory[] = resources.pdfCategories || [];
   const pdfContainer = document.createElement('div');
   pdfContainer.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-md); margin-top: var(--sarah-space-md);';
 
@@ -255,8 +226,8 @@ const EXCLUSION_OPTIONS = [
   { value: 'Finanzen', label: 'Finanzen', icon: '💰' },
 ];
 
-function createTrustSection(config: Config): HTMLElement {
-  const trust = (config.trust || {}) as Record<string, unknown>;
+function createTrustSection(config: SarahConfig): HTMLElement {
+  const trust = { ...config.trust };
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -283,7 +254,7 @@ function createTrustSection(config: Config): HTMLElement {
   memoryHint.textContent = 'Sarah merkt sich dein Verhalten und Muster, aber niemals Passwörter, Bank- oder Versicherungsdaten.';
   section.appendChild(memoryHint);
 
-  const exclusions = (trust.memoryExclusions as string[]) || [];
+  const exclusions = trust.memoryExclusions || [];
   exclusionsWrapper.appendChild(sarahTagSelect({
     label: 'Was soll Sarah sich nicht merken?',
     options: EXCLUSION_OPTIONS,
@@ -304,8 +275,8 @@ function createTrustSection(config: Config): HTMLElement {
       { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
       { value: 'all', label: 'Alle Dateien' },
     ],
-    value: ((trust.fileAccess as string) === 'full' ? 'all' : (trust.fileAccess as string)) || 'specific-folders',
-    onChange: (val) => { trust.fileAccess = val; save('trust', trust); showSaved(feedback); },
+    value: trust.fileAccess || 'specific-folders',
+    onChange: (val) => { trust.fileAccess = val as typeof trust.fileAccess; save('trust', trust); showSaved(feedback); },
   }));
 
   const spacer2 = document.createElement('div');
@@ -319,8 +290,8 @@ function createTrustSection(config: Config): HTMLElement {
       { value: 'standard', label: 'Standard — Sarah fragt wenn sinnvoll' },
       { value: 'maximal', label: 'Maximal — bei jeder verändernden Aktion' },
     ],
-    value: (trust.confirmationLevel as string) || 'standard',
-    onChange: (val) => { trust.confirmationLevel = val; save('trust', trust); showSaved(feedback); },
+    value: trust.confirmationLevel || 'standard',
+    onChange: (val) => { trust.confirmationLevel = val as typeof trust.confirmationLevel; save('trust', trust); showSaved(feedback); },
   }));
 
   return section;
@@ -359,8 +330,8 @@ const QUIRK_OPTIONS = [
   { value: 'custom', label: 'Eigene...' },
 ];
 
-function createPersonalizationSection(config: Config): HTMLElement {
-  const pers = (config.personalization || {}) as Record<string, unknown>;
+function createPersonalizationSection(config: SarahConfig): HTMLElement {
+  const pers = { ...config.personalization };
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -410,7 +381,7 @@ function createPersonalizationSection(config: Config): HTMLElement {
       { value: 'default-female-en', label: 'Standard (English, female)' },
       { value: 'warm-female-de', label: 'Warm (Deutsch, weiblich)' },
     ],
-    value: (pers.voice as string) || 'default-female-de',
+    value: pers.voice || 'default-female-de',
     onChange: (val) => { pers.voice = val; save('personalization', pers); showSaved(feedback); },
   }));
 
@@ -432,8 +403,8 @@ function createPersonalizationSection(config: Config): HTMLElement {
       { value: 'default', label: 'Standard' },
       { value: 'large', label: 'Groß' },
     ],
-    value: (pers.chatFontSize as string) || 'default',
-    onChange: (val) => { pers.chatFontSize = val; save('personalization', pers); showSaved(feedback); },
+    value: pers.chatFontSize || 'default',
+    onChange: (val) => { pers.chatFontSize = val as typeof pers.chatFontSize; save('personalization', pers); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahSelect({
@@ -442,11 +413,53 @@ function createPersonalizationSection(config: Config): HTMLElement {
       { value: 'stacked', label: 'Untereinander (wie ChatGPT)' },
       { value: 'bubbles', label: 'Bubbles (wie WhatsApp)' },
     ],
-    value: (pers.chatAlignment as string) || 'stacked',
-    onChange: (val) => { pers.chatAlignment = val; save('personalization', pers); showSaved(feedback); },
+    value: pers.chatAlignment || 'stacked',
+    onChange: (val) => { pers.chatAlignment = val as typeof pers.chatAlignment; save('personalization', pers); showSaved(feedback); },
   }));
 
   section.appendChild(grid);
+
+  // ── Response settings group ──
+  const responseGrid = document.createElement('div');
+  responseGrid.className = 'settings-grid';
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortsprache',
+    options: [
+      { value: 'de', label: 'Deutsch' },
+      { value: 'en', label: 'English' },
+    ],
+    value: pers.responseLanguage || 'de',
+    onChange: (val) => { pers.responseLanguage = val as typeof pers.responseLanguage; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Antwortstil',
+    options: [
+      { value: 'kurz', label: 'Kurz & knapp' },
+      { value: 'mittel', label: 'Ausgewogen' },
+      { value: 'ausführlich', label: 'Ausführlich' },
+    ],
+    value: pers.responseStyle || 'mittel',
+    onChange: (val) => { pers.responseStyle = val as typeof pers.responseStyle; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  responseGrid.appendChild(sarahSelect({
+    label: 'Tonfall',
+    options: [
+      { value: 'freundlich', label: 'Freundlich' },
+      { value: 'professionell', label: 'Professionell' },
+      { value: 'locker', label: 'Locker' },
+    ],
+    value: pers.tone || 'freundlich',
+    onChange: (val) => { pers.tone = val as typeof pers.tone; save('personalization', pers); showSaved(feedback); },
+  }));
+
+  section.appendChild(responseGrid);
+
+  const responseSpacer = document.createElement('div');
+  responseSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(responseSpacer);
 
   section.appendChild(sarahToggle({
     label: 'Smileys & Icons',
@@ -466,8 +479,8 @@ function createPersonalizationSection(config: Config): HTMLElement {
       { value: 'spontaneous', label: 'Spontan — kurz und direkt' },
       { value: 'thoughtful', label: 'Nachdenklich — gründlich und ausführlich' },
     ],
-    value: (pers.responseMode as string) || 'normal',
-    onChange: (val) => { pers.responseMode = val; save('personalization', pers); showSaved(feedback); },
+    value: pers.responseMode || 'normal',
+    onChange: (val) => { pers.responseMode = val as typeof pers.responseMode; save('personalization', pers); showSaved(feedback); },
   }));
 
   const spacer2 = document.createElement('div');
@@ -475,7 +488,7 @@ function createPersonalizationSection(config: Config): HTMLElement {
   section.appendChild(spacer2);
 
   // Character traits
-  const traits = (pers.characterTraits as string[]) || [];
+  const traits = pers.characterTraits || [];
   const traitsSelect = sarahTagSelect({
     label: 'Charakter-Eigenschaften (max. 2)',
     options: TRAIT_OPTIONS,
@@ -504,10 +517,10 @@ function createPersonalizationSection(config: Config): HTMLElement {
   const customQuirkInput = sarahInput({
     label: 'Deine Eigenart',
     placeholder: 'z.B. Sage ab und zu "Wunderbar!" wenn etwas klappt',
-    value: (pers.quirk as string) && !QUIRK_OPTIONS.some(q => q.value === pers.quirk) ? (pers.quirk as string) : '',
+    value: pers.quirk && !QUIRK_OPTIONS.some(q => q.value === pers.quirk) ? pers.quirk : '',
     onChange: (value) => { pers.quirk = value || 'custom'; save('personalization', pers); showSaved(feedback); },
   });
-  customQuirkInput.style.display = pers.quirk === 'custom' || ((pers.quirk as string) && !QUIRK_OPTIONS.some(q => q.value === pers.quirk)) ? 'block' : 'none';
+  customQuirkInput.style.display = pers.quirk === 'custom' || (pers.quirk && !QUIRK_OPTIONS.some(q => q.value === pers.quirk)) ? 'block' : 'none';
   customQuirkInput.style.marginTop = 'var(--sarah-space-sm)';
 
   const quirkHint = document.createElement('div');
@@ -518,7 +531,7 @@ function createPersonalizationSection(config: Config): HTMLElement {
   quirkWrapper.appendChild(sarahSelect({
     label: 'Eigenart',
     options: QUIRK_OPTIONS,
-    value: (pers.quirk as string) ?? '',
+    value: pers.quirk ?? '',
     onChange: (value) => {
       if (value === 'custom') {
         customQuirkInput.style.display = 'block';
@@ -548,11 +561,6 @@ const BUILTIN_COMMANDS = [
   { command: '/quietmode', description: 'Ruhemodus ein/aus' },
 ];
 
-interface CustomCommand {
-  command: string;
-  prompt: string;
-}
-
 function createCommandRow(cmd: { command: string; description: string }, deletable: boolean, onDelete?: () => void): HTMLElement {
   const row = document.createElement('div');
   row.style.cssText = 'display: flex; align-items: center; gap: var(--sarah-space-sm); padding: var(--sarah-space-xs) var(--sarah-space-sm); background: var(--sarah-bg-surface); border: 1px solid var(--sarah-border); border-radius: var(--sarah-radius-md);';
@@ -578,8 +586,8 @@ function createCommandRow(cmd: { command: string; description: string }, deletab
   return row;
 }
 
-function createControlsSection(config: Config): HTMLElement {
-  const controls = (config.controls || {}) as Record<string, unknown>;
+function createControlsSection(config: SarahConfig): HTMLElement {
+  const controls = { ...config.controls };
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -593,9 +601,9 @@ function createControlsSection(config: Config): HTMLElement {
       { value: 'off', label: 'Aus' },
       { value: 'push-to-talk', label: 'Push-to-Talk' },
     ],
-    value: (controls.voiceMode as string) || 'off',
+    value: controls.voiceMode || 'off',
     onChange: (val) => {
-      controls.voiceMode = val;
+      controls.voiceMode = val as typeof controls.voiceMode;
       hotkeyWrapper.style.display = (val === 'push-to-talk') ? '' : 'none';
       save('controls', controls);
       showSaved(feedback);
@@ -606,10 +614,10 @@ function createControlsSection(config: Config): HTMLElement {
   // Push-to-Talk Taste (only visible in push-to-talk mode)
   const hotkeyWrapper = sarahInput({
     label: 'Push-to-Talk Taste',
-    value: (controls.pushToTalkKey as string) || 'F9',
+    value: controls.pushToTalkKey || 'F9',
     placeholder: 'Taste drücken...',
   });
-  hotkeyWrapper.style.display = ((controls.voiceMode as string) === 'push-to-talk') ? '' : 'none';
+  hotkeyWrapper.style.display = (controls.voiceMode === 'push-to-talk') ? '' : 'none';
 
   // Configure hotkey capture via public API
   hotkeyWrapper.setReadOnly(true);
@@ -640,14 +648,36 @@ function createControlsSection(config: Config): HTMLElement {
     value: String(controls.quietModeDuration ?? 60),
     onChange: (val) => { controls.quietModeDuration = parseInt(val, 10); save('controls', controls); showSaved(feedback); },
   }));
-  quirkWrapper.appendChild(customQuirkInput);
-  quirkWrapper.appendChild(quirkHint);
-  section.appendChild(quirkWrapper);
-
   const quietHint = document.createElement('div');
   quietHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
   quietHint.textContent = 'Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.';
   section.appendChild(quietHint);
+
+  // Performance profile
+  const llm = { ...config.llm };
+  const perfSpacer = document.createElement('div');
+  perfSpacer.style.height = 'var(--sarah-space-md)';
+  section.appendChild(perfSpacer);
+
+  section.appendChild(sarahSelect({
+    label: 'GPU-Leistungsprofil',
+    options: [
+      { value: 'leistung', label: 'Leistung — Maximale GPU-Nutzung' },
+      { value: 'schnell', label: 'Schnell — Hohe GPU-Nutzung' },
+      { value: 'normal', label: 'Normal — Ausgewogen' },
+      { value: 'sparsam', label: 'Sparsam — Weniger GPU, mehr CPU' },
+    ],
+    value: llm.performanceProfile || 'normal',
+    onChange: (val) => {
+      llm.performanceProfile = val as typeof llm.performanceProfile;
+      save('llm', llm);
+      showSaved(feedback);
+    },
+  }));
+  const perfHint = document.createElement('div');
+  perfHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
+  perfHint.textContent = 'Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.';
+  section.appendChild(perfHint);
 
   const spacer2 = document.createElement('div');
   spacer2.style.height = 'var(--sarah-space-lg)';
@@ -668,7 +698,7 @@ function createControlsSection(config: Config): HTMLElement {
   }
 
   // Custom commands
-  const customCmds: CustomCommand[] = (controls.customCommands as CustomCommand[]) || [];
+  const customCmds: CustomCommand[] = controls.customCommands || [];
 
   function renderCustomCommands(): void {
     cmdList.querySelectorAll('[data-custom-cmd]').forEach(el => el.remove());
@@ -744,7 +774,7 @@ export async function createSettingsView(): Promise<HTMLElement> {
   pageTitle.textContent = 'Einstellungen';
   container.appendChild(pageTitle);
 
-  const config = await (getSarah().getConfig as () => Promise<Config>)() as Config;
+  const config = await getSarah().getConfig();
 
   container.appendChild(createProfileSection(config));
   container.appendChild(createFilesSection(config));

@@ -2,34 +2,16 @@ import { registerComponents } from '../components/index.js';
 import { applyAccentColor } from './accent.js';
 import { AudioBridge } from '../services/audio-bridge.js';
 
-declare const sarah: {
-  version: string;
-  getConfig: () => Promise<Record<string, unknown>>;
-  saveConfig: (config: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  selectFolder: (title?: string) => Promise<string | null>;
-  openDialog: (view: string) => Promise<void>;
-  chat: (message: string) => Promise<void>;
-  onChatChunk: (cb: (data: { text: string }) => void) => () => void;
-  onChatDone: (cb: (data: { fullText: string }) => void) => () => void;
-  onChatError: (cb: (data: { message: string }) => void) => () => void;
-  voice: {
-    getState: () => Promise<string>;
-    onStateChange: (cb: (data: { state: string }) => void) => () => void;
-    onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
-    playbackDone: () => Promise<void>;
-    onError: (cb: (data: { message: string }) => void) => () => void;
-    setInteractionMode: (mode: string) => Promise<void>;
-    sendAudioChunk: (chunk: number[]) => Promise<void>;
-    onTranscript: (cb: (data: { text: string }) => void) => () => void;
-  };
-};
+import type { SarahApi } from '../../core/sarah-api.js';
+
+declare const sarah: SarahApi;
 
 (window as any).__sarah = sarah;
 
 registerComponents();
 
 // Apply saved accent color on load
-sarah.getConfig().then((config: any) => {
+sarah.getConfig().then((config) => {
   const color = config.personalization?.accentColor;
   if (color && color !== '#00d4ff') {
     applyAccentColor(color);

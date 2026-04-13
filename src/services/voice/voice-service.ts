@@ -1,6 +1,6 @@
 // src/services/voice/voice-service.ts
 import type { SarahService } from '../../core/service.interface.js';
-import type { BusMessage, ServiceStatus } from '../../core/types.js';
+import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { SttProvider } from './stt-provider.interface.js';
 import type { TtsProvider } from './tts-provider.interface.js';
@@ -27,7 +27,7 @@ const SAMPLE_RATE = 16_000;
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
-  readonly subscriptions = ['llm:chunk', 'llm:done', 'llm:error'];
+  readonly subscriptions = ['llm:chunk', 'llm:done', 'llm:error'] as const;
   status: ServiceStatus = 'pending';
 
   private voiceMode: VoiceMode = 'off';
@@ -79,12 +79,11 @@ export class VoiceService implements SarahService {
 
   async init(): Promise<void> {
     try {
-      const config = await this.context.config.get<Record<string, Record<string, unknown>>>('root');
-      const controls = config?.controls as Record<string, unknown> | undefined;
-      const rawMode = (controls?.voiceMode as VoiceMode) ?? 'off';
+      const { controls } = this.context.parsedConfig;
+      const rawMode = controls.voiceMode;
       // keyword mode is non-functional — treat as off
       this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
-      this.pushToTalkKey = (controls?.pushToTalkKey as string) ?? DEFAULT_PTT_KEY;
+      this.pushToTalkKey = controls.pushToTalkKey;
 
       await this.stt.init();
       await this.tts.init();
@@ -104,6 +103,9 @@ export class VoiceService implements SarahService {
         (err) => {
           console.error('[VoiceService] TTS error:', err);
           this.context.bus.emit(this.id, 'voice:error', { message: err.message });
+        },
+        (ms) => {
+          this.context.bus.emit(this.id, 'perf:timing', { label: 'tts', ms });
         },
       );
 
@@ -152,12 +154,12 @@ export class VoiceService implements SarahService {
     this.audio.feedChunk(chunk);
   }
 
-  onMessage(msg: BusMessage): void {
+  onMessage(msg: TypedBusMessage): void {
     const shouldSpeak = this.voiceMode !== 'off' && this.interactionMode !== 'chat';
 
     if (msg.topic === 'llm:chunk') {
       if (!shouldSpeak) return;
-      const text = msg.data.text as string;
+      const { text } = msg.data;
       if (!text) return;
 
       const sentences = this.sentenceBuffer.push(text);
@@ -195,7 +197,7 @@ export class VoiceService implements SarahService {
       } else if (this._voiceState === 'processing') {
         this.setState('idle');
         this.context.bus.emit(this.id, 'voice:error', {
-          message: (msg.data.message as string) ?? 'LLM request failed',
+          message: msg.data.message ?? 'LLM request failed',
         });
       }
     }
@@ -233,12 +235,15 @@ export class VoiceService implements SarahService {
     this.conversationActive = false;
     this.setState('idle');
 
-    // Re-read config
-    const config = await this.context.config.get<Record<string, Record<string, unknown>>>('root');
-    const controls = config?.controls as Record<string, unknown> | undefined;
-    const rawMode = (controls?.voiceMode as VoiceMode) ?? 'off';
+    // Re-read config from storage and re-parse
+    const raw = (await this.context.config.get<Record<string, unknown>>('root')) ?? {};
+    const { SarahConfigSchema } = await import('../../core/config-schema.js');
+    const parsed = SarahConfigSchema.parse(raw);
+    this.context.parsedConfig = parsed;
+    const { controls } = parsed;
+    const rawMode = controls.voiceMode;
     this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
-    this.pushToTalkKey = (controls?.pushToTalkKey as string) ?? DEFAULT_PTT_KEY;
+    this.pushToTalkKey = controls.pushToTalkKey;
 
     // Set up new mode
     this.setupMode();
@@ -321,7 +326,14 @@ export class VoiceService implements SarahService {
 
     this.setState('processing');
 
-    const transcript = await this.stt.transcribe(audioData, SAMPLE_RATE);
+    const sttLanguage = this.context.parsedConfig.personalization.responseLanguage ?? 'de';
+    const sttStart = performance.now();
+    const transcript = await this.stt.transcribe(audioData, SAMPLE_RATE, sttLanguage);
+    this.context.bus.emit(this.id, 'perf:timing', {
+      label: 'whisper',
+      ms: Math.round(performance.now() - sttStart),
+      meta: { transcriptLength: transcript?.length ?? 0 },
+    });
 
     if (!transcript || transcript.trim().length === 0) {
       this.handleEmptyTranscript();
@@ -343,7 +355,7 @@ export class VoiceService implements SarahService {
     // Emit chat message for LLM processing
     console.log('[Voice] transcript to LLM:', JSON.stringify(transcript));
     console.log('[Voice] hex:', Buffer.from(transcript).toString('hex'));
-    this.context.bus.emit(this.id, 'chat:message', { text: transcript });
+    this.context.bus.emit(this.id, 'chat:message', { text: transcript, mode: 'voice' });
   }
 
   private interrupt(): void {

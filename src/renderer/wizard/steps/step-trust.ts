@@ -110,7 +110,7 @@ export function createTrustStep(data: WizardData): HTMLElement {
     ],
     value: data.trust.fileAccess,
     onChange: (value) => {
-      data.trust.fileAccess = value;
+      data.trust.fileAccess = value as typeof data.trust.fileAccess;
       folderHint.style.display = value === 'specific-folders' ? 'block' : 'none';
     },
   });
