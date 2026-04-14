@@ -409,10 +409,13 @@ git commit -m "feat: add boot status and chat bubble containers to splash HTML"
 
 ---
 
-### Task 6: Remove Click-to-Break from Splash Orb
+### Task 6: Remove All Click-to-Break Listeners
 
 **Files:**
 - Modify: `src/splash.ts`
+- Modify: `src/renderer/dashboard/orb-scene.ts`
+
+Break soll ab jetzt nur noch programmatisch ausgelöst werden (z.B. wenn Sarah spricht), nie per Klick.
 
 - [ ] **Step 1: Remove the click listener in splash.ts**
 
@@ -427,11 +430,23 @@ orbContainer.addEventListener('click', () => {
 
 **Important:** Read the current file before editing — do not rely on line numbers, search for the code snippet above.
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: Remove the click listener in orb-scene.ts**
+
+In `src/renderer/dashboard/orb-scene.ts`, read the file first, then remove the click listener. The current file content is roughly:
+
+```typescript
+container.addEventListener('click', () => {
+  orb.triggerBreak();
+});
+```
+
+Remove that block. Keep the `SarahHexOrb` creation intact.
+
+- [ ] **Step 3: Commit**
 
 ```bash
-git add src/splash.ts
-git commit -m "fix: remove click-to-break from splash orb"
+git add src/splash.ts src/renderer/dashboard/orb-scene.ts
+git commit -m "fix: remove all click-to-break listeners, break is now programmatic only"
 ```
 
 ---
