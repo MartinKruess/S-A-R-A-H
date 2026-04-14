@@ -46,7 +46,7 @@ export type BootStatus = {
 };
 ```
 
-Add to `SarahApi` interface after `splashDone()`:
+Add to `SarahApi` interface after `splashDone():
 
 ```typescript
   bootReady(): void;
@@ -54,6 +54,8 @@ Add to `SarahApi` interface after `splashDone()`:
   onBootStatus(cb: (data: BootStatus) => void): () => void;
   splashTts(text: string): Promise<void>;
 ```
+
+**Important:** Task 2 (preload.ts) depends on this — the `api` object is typed as `SarahApi`, so these must exist in the interface before they can be added to the implementation. Task 1 must be complete before Task 2.
 
 - [ ] **Step 2: Add boot:status bus event to bus-events.ts**
 
@@ -63,20 +65,30 @@ In `src/core/bus-events.ts`, add to the `BusEvents` type:
   'boot:status':         { step: string; message?: string };
 ```
 
-- [ ] **Step 3: Add boot-status to ipc-contract.ts**
+- [ ] **Step 3: Add boot channels to ipc-contract.ts**
 
-In `src/core/ipc-contract.ts`, add to the `RendererReceives` type:
+In `src/core/ipc-contract.ts`, the existing structure is:
+- `IpcCommands` — invoke/handle (request-response)
+- `IpcEvents` — main→renderer (one-way)
+- `IpcSendEvents` — renderer→main (one-way)
+
+Add `splash-tts` to `IpcCommands`:
+
+```typescript
+  'splash-tts':          { input: { text: string }; output: void };
+```
+
+Add `boot-status` to `IpcEvents`:
 
 ```typescript
   'boot-status':         BusEvents['boot:status'];
 ```
 
-Add to `MainReceives`:
+Add `boot-ready` and `reveal-done` to `IpcSendEvents`:
 
 ```typescript
-  'boot-ready':          void;
-  'reveal-done':         void;
-  'splash-tts':          { text: string };
+  'boot-ready': void;
+  'reveal-done': void;
 ```
 
 - [ ] **Step 4: Commit**
@@ -393,7 +405,7 @@ This is the core change. The `hold` and `done` phases are replaced by boot-seque
 
 - [ ] **Step 1: Update SarahAPI interface in splash.ts**
 
-Replace the existing `SarahAPI` interface at the top of `src/splash.ts`:
+**Note:** `splash.ts` has its own local `SarahAPI` interface (a `declare` for the preload-injected global). This is separate from `src/core/sarah-api.ts`. The local interface must match what the splash actually uses — including `voice` for TTS playback. Search for the existing `interface SarahAPI` block and replace it:
 
 ```typescript
 // --- Type declarations for preload-exposed API ---
