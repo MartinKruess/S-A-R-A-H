@@ -45,26 +45,14 @@ let routerReady = false;
 let piperReady = false;
 let breakTriggered = false;
 let ttsTriggered = false;
-let dotInterval: ReturnType<typeof setInterval> | null = null;
 
 function showStatus(message: string, animated = false): void {
   statusEl.classList.remove('visible');
-  if (dotInterval) {
-    clearInterval(dotInterval);
-    dotInterval = null;
-  }
 
   setTimeout(() => {
     if (animated) {
       const base = message.replace(/\s*\.{3}\s*$/, '').replace(/\s*\.\.\.\s*$/, '');
-      let dotCount = 0;
-      const updateDots = () => {
-        const dots = '.'.repeat(dotCount % 4);
-        statusEl.textContent = dots.length > 0 ? `${base} ${dots}` : base;
-        dotCount++;
-      };
-      updateDots();
-      dotInterval = setInterval(updateDots, 500);
+      statusEl.innerHTML = `${base} <span class="loading-dots"><span>.</span><span>.</span><span>.</span></span>`;
     } else {
       statusEl.textContent = message;
     }
@@ -74,10 +62,6 @@ function showStatus(message: string, animated = false): void {
 
 function hideStatus(): void {
   statusEl.classList.remove('visible');
-  if (dotInterval) {
-    clearInterval(dotInterval);
-    dotInterval = null;
-  }
 }
 
 function showBubble(text: string): void {
@@ -514,7 +498,8 @@ function tick(now: number): void {
         ttsTriggered = true;
         sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
         ttsAudioResolve = () => {
-          startPhase('done');
+          // Brief pause after speech before next action
+          setTimeout(() => startPhase('done'), 1000);
         };
       }
       // Wait for audio to be ready, then trigger break with 200ms head start
