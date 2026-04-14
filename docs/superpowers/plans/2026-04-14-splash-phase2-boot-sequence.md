@@ -117,7 +117,7 @@ git commit -m "feat: wire boot-status and splash-tts preload bridges"
 **Files:**
 - Modify: `src/main.ts`
 
-This is the biggest change. The current flow is: create providers → register services → `initAll()` in background → on `splash-done` load dashboard. The new flow is: create providers (preload) → on `boot-ready` activate sequentially → send `boot-status` for each step → on `splash-done` transition.
+This is the biggest change. The current flow is: create providers → register services → `initAll()` in background → on `splash-done` load dashboard. The new flow is: create providers → start Whisper + Router init **immediately** (parallel to Phase 1) → buffer results → on `boot-ready` flush buffered status + continue with Piper → on `splash-done` transition. This eliminates the race condition where services finish before Phase 1.
 
 - [ ] **Step 1: Extract provider creation into separate variables accessible to boot handler**
 
@@ -163,51 +163,88 @@ Move the provider imports and creation to happen right after `bootstrap()` but s
   );
   appContext.registry.register(voiceService);
 
-  // DO NOT call registry.initAll() here — boot sequence handles activation
+  // --- Start heavy inits immediately (parallel to Phase 1) ---
+  // Buffer results so we can flush status to renderer after boot-ready
+  let whisperDone = false;
+  let whisperError = false;
+  let routerDone = false;
+  let routerError = false;
+  let bootReady = false;
+
+  const send = (step: string, message?: string) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('boot-status', { step, message });
+    }
+  };
+
+  // Fire-and-forget: Whisper init
+  whisperProvider.init()
+    .then(() => { whisperDone = true; })
+    .catch((err) => {
+      console.error('[Boot] Whisper init failed:', err);
+      whisperDone = true;
+      whisperError = true;
+    });
+
+  // Fire-and-forget: Router init
+  routerService.init()
+    .then(() => { routerDone = true; })
+    .catch((err) => {
+      console.error('[Boot] Router init failed:', err);
+      routerDone = true;
+      routerError = true;
+    });
 ```
 
-- [ ] **Step 2: Add boot-ready handler with sequential activation**
+- [ ] **Step 2: Add boot-ready handler that flushes buffered state + continues**
 
-After the provider setup, add the boot-ready IPC handler:
+After the provider setup and fire-and-forget inits, add the boot-ready IPC handler:
 
 ```typescript
   ipcMain.on('boot-ready', async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-
-    const send = (step: string, message?: string) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('boot-status', { step, message });
-      }
-    };
+    bootReady = true;
 
     try {
-      // Step 1: Activate Whisper
+      // Step 1: Whisper — show status, wait if still loading
       send('whisper', 'Spracherkennung wird aktiviert ...');
-      await whisperProvider.init();
+      if (!whisperDone) {
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (whisperDone) { clearInterval(check); resolve(); }
+          }, 50);
+        });
+      }
 
-      // Step 2: Activate Router (the ~4s bottleneck)
+      // Step 2: Router — show status, wait if still loading
       send('router', 'Sarah Protokoll wird initialisiert ...');
-      await routerService.init();
+      if (!routerDone) {
+        await new Promise<void>((resolve) => {
+          const check = setInterval(() => {
+            if (routerDone) { clearInterval(check); resolve(); }
+          }, 50);
+        });
+      }
 
-      // Signal router ready — renderer starts orb reveal
+      // Signal router ready — renderer starts orb reveal (even if router errored)
       send('router-ready');
 
       // Step 3: Activate Piper (after reveal has time to start)
       await new Promise((r) => setTimeout(r, 3500)); // Wait for reveal animation
       send('piper', 'Sprachprotokolle werden geladen ...');
-      await piperProvider.init();
+      await piperProvider.init().catch((err) => {
+        console.error('[Boot] Piper init failed:', err);
+      });
 
       // Signal piper ready — renderer starts break + TTS
       send('piper-ready');
 
-      // Finish remaining service init (hotkeys, subscriptions, etc.)
-      // We manually init'd the providers, now let the registry wire bus subscriptions
-      // and do remaining setup without re-calling provider init
-      await porcupineProvider.init().catch(() => {}); // Optional, non-blocking
-      audioManager; // No init needed
-      hotkeyManager; // No init needed
+      // Remaining optional inits
+      await porcupineProvider.init().catch(() => {});
     } catch (err) {
       console.error('[Boot] Activation failed:', err);
+      // Ensure splash doesn't hang — send piper-ready as fallback
+      send('piper-ready');
     }
   });
 ```
@@ -685,8 +722,10 @@ git commit -m "fix: polish boot sequence timing and edge cases"
 
 | Spec Requirement | Task |
 |-----------------|------|
-| Preload providers during Phase 1 | Task 3 (providers created before boot-ready) |
-| Sequential activation after Phase 1 | Task 3 (boot-ready handler) |
+| Preload + init providers during Phase 1 | Task 3 (whisper + router init start immediately, results buffered) |
+| Race condition: services finish before Phase 1 | Task 3 (boot-ready handler flushes buffered state) |
+| Sequential status display after Phase 1 | Task 3 (boot-ready handler) |
+| Error handling: services fail gracefully | Task 3 (catch per provider, fallback sends) + Task 6 (6s timeout) |
 | Status messages bottom-left, replacing, animated dots | Task 4 (HTML) + Task 6 (showStatus) |
 | Router-ready triggers orb reveal | Task 6 (boot-reveal phase) |
 | Chat bubble "Willkommen!" after reveal | Task 6 (boot-bubble phase) |

@@ -9,8 +9,10 @@ Nach der Text-Animation (Phase 1) zeigt der Splash eine Boot-Sequence: Services 
 ### Sofort bei App-Start (parallel zu Phase 1)
 
 - Fenster + Splash-Screen erscheint instant
-- Main-Process beginnt **Preload** von Whisper + Phi4-mini Router im Hintergrund
-- Preload = Module importieren + Provider erstellen, aber **nicht aktivieren**
+- Main-Process beginnt **Preload + Init** von Whisper + Router im Hintergrund
+- Whisper + Router `init()` starten sofort parallel zu Phase 1
+- Ergebnisse werden **gepuffert** bis Renderer `boot-ready` sendet (Phase 1 fertig)
+- Falls Services schneller fertig sind als Phase 1: kein Problem, gepufferte Status-Events werden nach `boot-ready` nachgeliefert
 - Phase-1 Text-Animation läuft unabhängig davon
 
 ### Timing
@@ -52,10 +54,11 @@ Phase 1 (Text-Animation) muss fertig sein bevor die Boot-Sequence startet.
 - Gestyled im Dashboard-Chat-Style (wie Sarahs Nachrichten im SarahOrb-Screen)
 - Nur Text, kein Voice (Piper ist zu diesem Zeitpunkt noch nicht geladen)
 - Verschwindet nach ~2s oder wenn Piper-Laden beginnt
+- **UX-Intention:** Sarah kann erst nur schreiben, dann sprechen — der Übergang von Bubble zu Voice erzählt diese Geschichte
 
 ## Orb-Änderungen gegenüber Phase 1
 
-- **Break-Animation nicht mehr klickbar** im Splash — Click-Listener entfernen
+- **Break-Animation nicht mehr klickbar** im Splash — Click-Listener in `src/splash.ts` (Zeile 26-28) entfernen (nicht in sarahHexOrb.ts, `triggerBreak()` bleibt public)
 - Break wird **getimed** ausgelöst wenn Piper ready ist (Schritt 6)
 - Break startet **100-300ms vor** dem TTS-Satz (damit es aussieht als käme der Break von Sarah)
 - Bestehende Reveal-Animation (spotlight → reveal) bleibt, wird aber an Router-Ready gekoppelt statt an festen Timer
@@ -65,7 +68,10 @@ Phase 1 (Text-Animation) muss fertig sein bevor die Boot-Sequence startet.
 ### Preload-Phase (parallel zu Phase 1)
 
 1. Main: Importiert Whisper/Router Module, erstellt Provider-Instanzen
-2. Main: Wartet auf `ready-for-boot` vom Renderer (Phase 1 fertig)
+2. Main: Startet `whisperProvider.init()` + `routerService.init()` sofort (parallel)
+3. Main: Puffert Ergebnisse (whisper-done, router-done Flags)
+4. Main: Wartet auf `boot-ready` vom Renderer (Phase 1 fertig)
+5. Nach `boot-ready`: Liefert gepufferte Status-Events nach oder wartet auf noch laufende Inits
 
 ### Boot-Sequence
 
@@ -97,6 +103,14 @@ type BootStatus = {
 - **`splash.html`**: Container für Statusmeldungen (unten links) + Chat-Bubble hinzufügen
 - **`src/preload.ts`**: `onBootStatus`, `bootReady` APIs hinzufügen
 - **`src/sarahHexOrb.ts`**: Click-Listener für Break im Splash entfernen (nur noch programmatisch triggerbar)
+
+## Fehlerbehandlung
+
+- **Whisper-Init schlägt fehl:** Fehler loggen, Status überspringen, weiter mit Router-Init. Spracherkennung ist dann im Dashboard nicht verfügbar, aber App startet trotzdem.
+- **Router-Init schlägt fehl:** Fehler loggen, Orb-Reveal trotzdem auslösen (Sarah ist "da" aber eingeschränkt). Boot-Sequence läuft weiter.
+- **Piper-Init schlägt fehl:** Fehler loggen, Break-Animation ohne TTS auslösen. `splashDone()` trotzdem feuern.
+- **TTS-Aufruf schlägt fehl:** Break-Animation läuft trotzdem, Fallback-Timeout (6s) stellt sicher dass `splashDone()` feuert.
+- **Grundregel:** Boot-Sequence darf niemals hängenbleiben oder abstürzen. Jede Phase hat einen Fallback/Timeout.
 
 ## Abgrenzung
 
