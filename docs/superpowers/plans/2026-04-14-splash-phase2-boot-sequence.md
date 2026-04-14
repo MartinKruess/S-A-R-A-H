@@ -8,6 +8,8 @@
 
 **Tech Stack:** Electron IPC, TypeScript, Canvas 2D, Three.js (SarahHexOrb), Piper TTS
 
+**Important for execution:** Always read the current state of a file before editing. Never rely on line numbers — search for code snippets to locate edit positions. The codebase may have changed since this plan was written.
+
 ---
 
 ## File Structure
@@ -48,6 +50,7 @@ Add to `SarahApi` interface after `splashDone()`:
 
 ```typescript
   bootReady(): void;
+  revealDone(): void;
   onBootStatus(cb: (data: BootStatus) => void): () => void;
   splashTts(text: string): Promise<void>;
 ```
@@ -72,6 +75,7 @@ Add to `MainReceives`:
 
 ```typescript
   'boot-ready':          void;
+  'reveal-done':         void;
   'splash-tts':          { text: string };
 ```
 
@@ -95,6 +99,7 @@ In `src/preload.ts`, add these to the `api` object after `splashDone`:
 
 ```typescript
   bootReady: () => ipcRenderer.send('boot-ready'),
+  revealDone: () => ipcRenderer.send('reveal-done'),
   onBootStatus: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { step: string; message?: string }) => callback(data as any);
     ipcRenderer.on('boot-status', handler);
@@ -229,8 +234,13 @@ After the provider setup and fire-and-forget inits, add the boot-ready IPC handl
       // Signal router ready — renderer starts orb reveal (even if router errored)
       send('router-ready');
 
-      // Step 3: Activate Piper (after reveal has time to start)
-      await new Promise((r) => setTimeout(r, 3500)); // Wait for reveal animation
+      // Step 3: Wait for reveal animation to finish (renderer sends reveal-done IPC)
+      await new Promise<void>((resolve) => {
+        ipcMain.once('reveal-done', () => resolve());
+        // Fallback: if renderer never sends reveal-done, continue after 8s
+        setTimeout(resolve, 8000);
+      });
+
       send('piper', 'Sprachprotokolle werden geladen ...');
       await piperProvider.init().catch((err) => {
         console.error('[Boot] Piper init failed:', err);
@@ -354,14 +364,16 @@ git commit -m "feat: add boot status and chat bubble containers to splash HTML"
 
 - [ ] **Step 1: Remove the click listener in splash.ts**
 
-In `src/splash.ts`, remove lines 26-28:
+In `src/splash.ts`, read the file first, then find and remove the click-to-break listener block. Search for this code and delete it:
 
 ```typescript
-// DELETE these lines:
+// Click triggers break effect for testing
 orbContainer.addEventListener('click', () => {
   orb.triggerBreak();
 });
 ```
+
+**Important:** Read the current file before editing — do not rely on line numbers, search for the code snippet above.
 
 - [ ] **Step 2: Commit**
 
@@ -394,6 +406,7 @@ interface SarahAPI {
   version: string;
   splashDone: () => void;
   bootReady: () => void;
+  revealDone: () => void;
   onBootStatus: (cb: (data: BootStatus) => void) => () => void;
   splashTts: (text: string) => Promise<void>;
   voice: {
@@ -606,6 +619,7 @@ Replace `spotlight`, `reveal`, `hold`, and `done` with the new boot phases:
         orb.setLightIntensity(light);
 
         if (p >= 1) {
+          sarah.revealDone(); // Tell main process reveal animation is complete
           startPhase('boot-bubble');
         }
       }

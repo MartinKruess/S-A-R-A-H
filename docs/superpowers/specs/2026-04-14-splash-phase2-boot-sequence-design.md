@@ -86,6 +86,7 @@ Phase 1 (Text-Animation) muss fertig sein bevor die Boot-Sequence startet.
 
 - `sarah.onBootStatus(callback: (status: BootStatus) => void)` — Listener für Boot-Meldungen
 - `sarah.bootReady()` — Signal vom Renderer dass Phase 1 fertig ist und Boot starten kann
+- `sarah.revealDone()` — Signal vom Renderer dass Orb-Reveal-Animation abgeschlossen ist (Main wartet darauf vor Piper-Init)
 
 ### BootStatus Type
 
