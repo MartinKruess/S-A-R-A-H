@@ -315,7 +315,7 @@ app.whenReady().then(async () => {
   });
 
   // Splash TTS handler (uses Piper directly, VoiceService not wired yet)
-  ipcMain.handle('splash-tts', async (_event, { text }: { text: string }) => {
+  ipcMain.handle('splash-tts', async (_event, text: string) => {
     try {
       const audio = await piperProvider.speak(text);
       if (mainWindow && !mainWindow.isDestroyed()) {

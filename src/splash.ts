@@ -495,7 +495,7 @@ function tick(now: number): void {
       if (t < 100) {
         showBubble('Willkommen!');
       }
-      if (t > 2000) {
+      if (t > 4000) {
         hideBubble();
         startPhase('boot-piper-wait');
       }
