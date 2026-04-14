@@ -296,7 +296,7 @@ const subtitle = document.getElementById('splash-subtitle')!;
 
 type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve'
   | 'boot-wait' | 'boot-reveal' | 'boot-bubble'
-  | 'boot-piper-wait' | 'boot-break' | 'done';
+  | 'boot-piper-wait' | 'done';
 
 let phase: Phase = 'fade-in';
 let phaseStart = 0;
@@ -336,14 +336,20 @@ function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
 }
 
 let ttsAudioResolve: (() => void) | null = null;
+let ttsAudioReady = false;
+let pendingTtsPlay: (() => void) | null = null;
 
 sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
-  playTtsAudio(audio, sampleRate).then(() => {
-    if (ttsAudioResolve) {
-      ttsAudioResolve();
-      ttsAudioResolve = null;
-    }
-  });
+  // Buffer the audio — don't play yet, wait for break animation to trigger playback
+  ttsAudioReady = true;
+  pendingTtsPlay = () => {
+    playTtsAudio(audio, sampleRate).then(() => {
+      if (ttsAudioResolve) {
+        ttsAudioResolve();
+        ttsAudioResolve = null;
+      }
+    });
+  };
 });
 
 // ============================================================
@@ -503,26 +509,23 @@ function tick(now: number): void {
     }
 
     case 'boot-piper-wait': {
-      if (piperReady) {
-        startPhase('boot-break');
-      }
-      break;
-    }
-
-    case 'boot-break': {
-      const t = elapsed();
-      if (t >= 0 && !breakTriggered) {
-        breakTriggered = true;
-        orb.triggerBreak(3000);
-      }
-      if (t >= 200 && !ttsTriggered) {
+      if (piperReady && !ttsTriggered) {
+        // Start TTS generation immediately — audio will arrive via voice:play-audio
         ttsTriggered = true;
         sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
         ttsAudioResolve = () => {
           startPhase('done');
         };
       }
-      if (t > 6000 && phase === 'boot-break') {
+      // Wait for audio to be ready, then trigger break with 200ms head start
+      if (ttsAudioReady && !breakTriggered) {
+        breakTriggered = true;
+        orb.triggerBreak(3000);
+        // Delay audio playback by 200ms so break starts visually first
+        setTimeout(() => { pendingTtsPlay?.(); }, 200);
+      }
+      // Fallback: if TTS never arrives, move on after 8s
+      if (ttsTriggered && elapsed() > 8000) {
         startPhase('done');
       }
       break;
