@@ -24,7 +24,7 @@
 | `splash.html` | Modify | Add status message container + chat bubble container |
 | `src/splash.ts` | Modify | Replace `hold`/`done` phases with boot-sequence phases, render status messages, chat bubble, break timing, TTS trigger |
 | `src/services/voice/providers/faster-whisper-provider.ts` | Modify | Add idempotency guard to `init()` — skip if server already running |
-| `src/sarahHexOrb.ts` | Modify | Remove click-listener for break in splash (keep `triggerBreak()` public) |
+| `src/splash.ts` | Modify | Also: remove click-to-break listener (the listener is in splash.ts, not sarahHexOrb.ts) |
 
 ---
 
@@ -483,6 +483,8 @@ const bubbleEl = document.getElementById('splash-bubble')!;
 
 let routerReady = false;
 let piperReady = false;
+let breakTriggered = false;
+let ttsTriggered = false;
 let dotInterval: ReturnType<typeof setInterval> | null = null;
 
 function showStatus(message: string, animated = false): void {
@@ -701,12 +703,13 @@ Replace `spotlight`, `reveal`, `hold`, and `done` with the new boot phases:
 
     case 'boot-break': {
       const t = elapsed();
-      // Trigger break at t=0, TTS at t=200ms
-      if (t < 16) {
+      // Trigger break at t=0, TTS at t=200ms (using flags to avoid frame-skip issues)
+      if (t >= 0 && !breakTriggered) {
+        breakTriggered = true;
         orb.triggerBreak(3000);
       }
-      if (t >= 200 && t < 216) {
-        // Fire TTS once
+      if (t >= 200 && !ttsTriggered) {
+        ttsTriggered = true;
         sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
         ttsAudioResolve = () => {
           startPhase('done');
