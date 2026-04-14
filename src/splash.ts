@@ -1,9 +1,22 @@
 import { SarahHexOrb } from './sarahHexOrb';
 
 // --- Type declarations for preload-exposed API ---
+interface BootStatus {
+  step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
+  message?: string;
+}
+
 interface SarahAPI {
   version: string;
   splashDone: () => void;
+  bootReady: () => void;
+  revealDone: () => void;
+  onBootStatus: (cb: (data: BootStatus) => void) => () => void;
+  splashTts: (text: string) => Promise<void>;
+  voice: {
+    onPlayAudio: (cb: (data: { audio: number[]; sampleRate: number }) => void) => () => void;
+    playbackDone: () => Promise<void>;
+  };
 }
 
 declare var sarah: SarahAPI;
@@ -21,6 +34,60 @@ const ORB_START_Y = -0.35;
 orb.setOrbScale(ORB_START_SCALE);
 orb.setLightIntensity(ORB_START_LIGHT);
 orb.setOrbOffset(0, ORB_START_Y, 0);
+
+// ============================================================
+// Boot sequence state
+// ============================================================
+const statusEl = document.getElementById('boot-status')!;
+const bubbleEl = document.getElementById('splash-bubble')!;
+
+let routerReady = false;
+let piperReady = false;
+let breakTriggered = false;
+let ttsTriggered = false;
+let dotInterval: ReturnType<typeof setInterval> | null = null;
+
+function showStatus(message: string, animated = false): void {
+  statusEl.classList.remove('visible');
+  if (dotInterval) {
+    clearInterval(dotInterval);
+    dotInterval = null;
+  }
+
+  setTimeout(() => {
+    if (animated) {
+      const base = message.replace(/\s*\.{3}\s*$/, '').replace(/\s*\.\.\.\s*$/, '');
+      let dotCount = 0;
+      const updateDots = () => {
+        const dots = '.'.repeat(dotCount % 4);
+        statusEl.textContent = dots.length > 0 ? `${base} ${dots}` : base;
+        dotCount++;
+      };
+      updateDots();
+      dotInterval = setInterval(updateDots, 500);
+    } else {
+      statusEl.textContent = message;
+    }
+    statusEl.classList.add('visible');
+  }, 150);
+}
+
+function hideStatus(): void {
+  statusEl.classList.remove('visible');
+  if (dotInterval) {
+    clearInterval(dotInterval);
+    dotInterval = null;
+  }
+}
+
+function showBubble(text: string): void {
+  bubbleEl.textContent = text;
+  bubbleEl.classList.add('visible');
+}
+
+function hideBubble(): void {
+  bubbleEl.classList.remove('visible');
+}
 
 // ============================================================
 // 2D Canvas for particles/streak (overlay)
@@ -227,7 +294,9 @@ function updateAndDrawParticles(): boolean {
 const title = document.getElementById('splash-title')!;
 const subtitle = document.getElementById('splash-subtitle')!;
 
-type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve' | 'spotlight' | 'reveal' | 'hold' | 'done';
+type Phase = 'fade-in' | 'streak' | 'streak-fade' | 'pause' | 'dissolve'
+  | 'boot-wait' | 'boot-reveal' | 'boot-bubble'
+  | 'boot-piper-wait' | 'boot-break' | 'done';
 
 let phase: Phase = 'fade-in';
 let phaseStart = 0;
@@ -241,6 +310,62 @@ function startPhase(newPhase: Phase): void {
 function elapsed(): number {
   return performance.now() - phaseStart;
 }
+
+// ============================================================
+// Audio playback for splash TTS
+// ============================================================
+let audioContext: AudioContext | null = null;
+
+function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (!audioContext) audioContext = new AudioContext({ sampleRate });
+    const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < audioData.length; i++) {
+      channel[i] = audioData[i]!;
+    }
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    source.onended = () => {
+      sarah.voice.playbackDone();
+      resolve();
+    };
+    source.start();
+  });
+}
+
+let ttsAudioResolve: (() => void) | null = null;
+
+sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
+  playTtsAudio(audio, sampleRate).then(() => {
+    if (ttsAudioResolve) {
+      ttsAudioResolve();
+      ttsAudioResolve = null;
+    }
+  });
+});
+
+// ============================================================
+// Boot status IPC listener
+// ============================================================
+sarah.onBootStatus((data) => {
+  switch (data.step) {
+    case 'whisper':
+    case 'router':
+    case 'piper':
+      if (data.message) showStatus(data.message, true);
+      break;
+    case 'router-ready':
+      routerReady = true;
+      hideStatus();
+      break;
+    case 'piper-ready':
+      piperReady = true;
+      hideStatus();
+      break;
+  }
+});
 
 function tick(now: number): void {
   // 2D overlay
@@ -308,71 +433,96 @@ function tick(now: number): void {
     case 'dissolve': {
       const alive = updateAndDrawParticles();
       if (!alive) {
-        startPhase('spotlight');
+        sarah.bootReady();
+        startPhase('boot-wait');
       }
       break;
     }
 
-    case 'spotlight': {
+    case 'boot-wait': {
+      if (routerReady) {
+        startPhase('boot-reveal');
+      }
+      break;
+    }
+
+    case 'boot-reveal': {
       const t = elapsed();
-      const SPOTLIGHT_MS = 1400;
-      const p = Math.min(t / SPOTLIGHT_MS, 1);
 
-      // Soft ambient glow that pulses once around the orb center
-      const cx = canvas2d.width / 2;
-      const cy = canvas2d.height * 0.52;
-      const glowR = canvas2d.height * 0.35;
+      if (t < 1400) {
+        const p = t / 1400;
+        const cx = canvas2d.width / 2;
+        const cy = canvas2d.height * 0.52;
+        const glowR = canvas2d.height * 0.35;
+        const pulse = Math.sin(p * Math.PI);
+        const glowAlpha = pulse * 0.18;
 
-      // Single smooth pulse: sine curve 0→1→0
-      const pulse = Math.sin(p * Math.PI);
-      const glowAlpha = pulse * 0.18;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+        grad.addColorStop(0, `rgba(212, 175, 55, ${glowAlpha})`);
+        grad.addColorStop(0.5, `rgba(212, 175, 55, ${glowAlpha * 0.3})`);
+        grad.addColorStop(1, 'rgba(212, 175, 55, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas2d.width, canvas2d.height);
 
-      const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
-      grad.addColorStop(0, `rgba(212, 175, 55, ${glowAlpha})`);
-      grad.addColorStop(0.5, `rgba(212, 175, 55, ${glowAlpha * 0.3})`);
-      grad.addColorStop(1, 'rgba(212, 175, 55, 0)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, canvas2d.width, canvas2d.height);
+        const lightP = p * 0.15;
+        orb.setLightIntensity(ORB_START_LIGHT + lightP);
+      } else {
+        const revealT = t - 1400;
+        const REVEAL_MS = 3500;
+        const p = Math.min(revealT / REVEAL_MS, 1);
+        const eased = 1 - Math.pow(1 - p, 4);
 
-      // Start nudging light up slightly during spotlight
-      const lightP = p * 0.15;
-      orb.setLightIntensity(ORB_START_LIGHT + lightP);
+        const scale = ORB_START_SCALE + (1.0 - ORB_START_SCALE) * eased;
+        orb.setOrbScale(scale);
 
-      if (p >= 1) {
-        startPhase('reveal');
+        const yOffset = ORB_START_Y * (1 - eased);
+        orb.setOrbOffset(0, yOffset, 0);
+
+        const lightBase = ORB_START_LIGHT + 0.15;
+        const light = lightBase + (1.0 - lightBase) * eased;
+        orb.setLightIntensity(light);
+
+        if (p >= 1) {
+          sarah.revealDone();
+          startPhase('boot-bubble');
+        }
       }
       break;
     }
 
-    case 'reveal': {
+    case 'boot-bubble': {
       const t = elapsed();
-      const REVEAL_MS = 3500;
-      const p = Math.min(t / REVEAL_MS, 1);
-
-      // Ease-out quart for very smooth, slow deceleration
-      const eased = 1 - Math.pow(1 - p, 4);
-
-      // Grow orb from start scale to 1.0
-      const scale = ORB_START_SCALE + (1.0 - ORB_START_SCALE) * eased;
-      orb.setOrbScale(scale);
-
-      // Move orb upward (from shifted-down back to center)
-      const yOffset = ORB_START_Y * (1 - eased);
-      orb.setOrbOffset(0, yOffset, 0);
-
-      // Brighten lights — continue from where spotlight left off
-      const lightBase = ORB_START_LIGHT + 0.15;
-      const light = lightBase + (1.0 - lightBase) * eased;
-      orb.setLightIntensity(light);
-
-      if (p >= 1) {
-        startPhase('hold');
+      if (t < 100) {
+        showBubble('Willkommen!');
+      }
+      if (t > 2000) {
+        hideBubble();
+        startPhase('boot-piper-wait');
       }
       break;
     }
 
-    case 'hold': {
-      if (elapsed() > 5000) {
+    case 'boot-piper-wait': {
+      if (piperReady) {
+        startPhase('boot-break');
+      }
+      break;
+    }
+
+    case 'boot-break': {
+      const t = elapsed();
+      if (t >= 0 && !breakTriggered) {
+        breakTriggered = true;
+        orb.triggerBreak(3000);
+      }
+      if (t >= 200 && !ttsTriggered) {
+        ttsTriggered = true;
+        sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
+        ttsAudioResolve = () => {
+          startPhase('done');
+        };
+      }
+      if (t > 6000 && phase === 'boot-break') {
         startPhase('done');
       }
       break;
