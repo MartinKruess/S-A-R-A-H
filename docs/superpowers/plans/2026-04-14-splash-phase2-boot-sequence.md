@@ -249,7 +249,7 @@ Move the provider imports and creation to happen right after `bootstrap()` but s
 After the provider setup and fire-and-forget inits, add the boot-ready IPC handler:
 
 ```typescript
-  ipcMain.on('boot-ready', async () => {
+  ipcMain.once('boot-ready', async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     bootReady = true;
 
