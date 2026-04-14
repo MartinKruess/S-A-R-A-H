@@ -18,6 +18,7 @@ export interface IpcCommands {
   'voice-audio-chunk':          { input: number[]; output: void };
   'voice-set-interaction-mode': { input: 'chat' | 'voice'; output: void };
   'voice-config-changed':       { input: void; output: void };
+  'splash-tts':                 { input: { text: string }; output: void };
 }
 
 /** IPC events sent from main to renderer (one-way, forwarded bus events) */
@@ -34,11 +35,14 @@ export interface IpcEvents {
   'voice:error':       BusEvents['voice:error'];
   'voice:interrupted': BusEvents['voice:interrupted'];
   'voice:wake':        BusEvents['voice:wake'];
+  'boot-status':       BusEvents['boot:status'];
 }
 
 /** IPC events sent from renderer to main (one-way) */
 export interface IpcSendEvents {
-  'splash-done': void;
+  'splash-done':  void;
+  'boot-ready':   void;
+  'reveal-done':  void;
 }
 
 /** System info returned by get-system-info IPC channel */

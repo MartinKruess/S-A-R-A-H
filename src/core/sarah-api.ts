@@ -3,6 +3,12 @@ import type { BusEvents } from './bus-events.js';
 import type { SystemIpcInfo } from './ipc-contract.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 
+/** Boot sequence status sent from main to splash renderer */
+export type BootStatus = {
+  step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
+  message?: string;
+};
+
 /** Voice sub-API exposed to renderers */
 export interface SarahVoiceApi {
   getState(): Promise<VoiceState>;
@@ -20,6 +26,10 @@ export interface SarahVoiceApi {
 export interface SarahApi {
   version: string;
   splashDone(): void;
+  bootReady(): void;
+  revealDone(): void;
+  onBootStatus(cb: (data: BootStatus) => void): () => void;
+  splashTts(text: string): Promise<void>;
   getSystemInfo(): Promise<SystemIpcInfo>;
   getConfig(): Promise<SarahConfig>;
   saveConfig(config: Partial<SarahConfig>): Promise<SarahConfig>;
