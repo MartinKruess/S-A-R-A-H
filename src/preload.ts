@@ -1,9 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { SarahApi } from './core/sarah-api.js';
+import type { SarahApi, BootStatus } from './core/sarah-api.js';
 
 const api: SarahApi = {
   version: process.versions.electron,
   splashDone: () => ipcRenderer.send('splash-done'),
+  bootReady: () => ipcRenderer.send('boot-ready'),
+  revealDone: () => ipcRenderer.send('reveal-done'),
+  onBootStatus: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: BootStatus) => callback(data);
+    ipcRenderer.on('boot-status', handler);
+    return () => ipcRenderer.removeListener('boot-status', handler);
+  },
+  splashTts: (text) => ipcRenderer.invoke('splash-tts', text),
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
