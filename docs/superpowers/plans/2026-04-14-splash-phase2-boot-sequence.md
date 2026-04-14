@@ -23,6 +23,7 @@
 | `src/main.ts` | Modify | Restructure service init: preload during splash, activate sequentially after `boot-ready`, send `boot-status` events, add `splash-tts` IPC handler |
 | `splash.html` | Modify | Add status message container + chat bubble container |
 | `src/splash.ts` | Modify | Replace `hold`/`done` phases with boot-sequence phases, render status messages, chat bubble, break timing, TTS trigger |
+| `src/services/voice/providers/faster-whisper-provider.ts` | Modify | Add idempotency guard to `init()` — skip if server already running |
 | `src/sarahHexOrb.ts` | Modify | Remove click-listener for break in splash (keep `triggerBreak()` public) |
 
 ---
@@ -129,12 +130,42 @@ git commit -m "feat: wire boot-status and splash-tts preload bridges"
 
 ---
 
-### Task 3: Restructure Main Process Service Init
+### Task 3: Make FasterWhisperProvider.init() Idempotent
+
+**Files:**
+- Modify: `src/services/voice/providers/faster-whisper-provider.ts`
+
+The boot handler calls `whisperProvider.init()` early for status messages. Later, `registry.initAll()` → `voiceService.init()` → `stt.init()` calls it again. Without a guard, the second call kills the running server and restarts it.
+
+- [ ] **Step 1: Add idempotency guard to init()**
+
+In `src/services/voice/providers/faster-whisper-provider.ts`, add a guard at the top of `init()`. Search for `async init(): Promise<void> {` and add the guard as the first line:
+
+```typescript
+  async init(): Promise<void> {
+    // Idempotency guard — skip if server is already running
+    if (this.serverProcess) return;
+
+    if (!fs.existsSync(this.scriptPath)) {
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add src/services/voice/providers/faster-whisper-provider.ts
+git commit -m "fix: make FasterWhisperProvider.init() idempotent with process guard"
+```
+
+---
+
+### Task 4: Restructure Main Process Service Init
 
 **Files:**
 - Modify: `src/main.ts`
 
-This is the biggest change. The current flow is: create providers → register services → `initAll()` in background → on `splash-done` load dashboard. The new flow is: create providers → start Whisper + Router init **immediately** (parallel to Phase 1) → buffer results → on `boot-ready` flush buffered status + continue with Piper → on `splash-done` transition. This eliminates the race condition where services finish before Phase 1.
+This is the biggest change. The current flow is: create providers → register services → `initAll()` in background → on `splash-done` load dashboard. The new flow is: create providers → start Whisper + Router init **immediately** (parallel to Phase 1) → buffer results → on `boot-ready` flush buffered status + continue with Piper → after boot sequence call `registry.initAll()` for remaining service wiring → on `splash-done` transition.
+
+**Critical:** `voiceService.init()` does more than provider inits — it sets up TtsQueue, playback subscriptions, hotkeys, and sets `status = 'running'`. We must call `registry.initAll()` after the boot sequence. Provider inits are now idempotent (Task 3), so double-calling is safe.
 
 - [ ] **Step 1: Extract provider creation into separate variables accessible to boot handler**
 
@@ -254,19 +285,28 @@ After the provider setup and fire-and-forget inits, add the boot-ready IPC handl
       });
 
       send('piper', 'Sprachprotokolle werden geladen ...');
-      await piperProvider.init().catch((err) => {
-        console.error('[Boot] Piper init failed:', err);
-      });
+      // Piper init is near-instant (just file existence checks), so add minimum display time
+      const [piperResult] = await Promise.all([
+        piperProvider.init().catch((err) => {
+          console.error('[Boot] Piper init failed:', err);
+        }),
+        new Promise((r) => setTimeout(r, 1000)), // Minimum 1s for status message
+      ]);
 
       // Signal piper ready — renderer starts break + TTS
       send('piper-ready');
 
-      // Remaining optional inits
-      await porcupineProvider.init().catch(() => {});
+      // Wire up remaining service plumbing (TtsQueue, hotkeys, subscriptions, status)
+      // Provider inits are idempotent (Task 3), so double-calling is safe
+      await appContext!.registry.initAll().catch((err) => {
+        console.error('[Boot] Service wiring failed:', err);
+      });
     } catch (err) {
       console.error('[Boot] Activation failed:', err);
       // Ensure splash doesn't hang — send piper-ready as fallback
       send('piper-ready');
+      // Still try to wire services even on error
+      await appContext!.registry.initAll().catch(() => {});
     }
   });
 ```
@@ -300,7 +340,7 @@ git commit -m "feat: restructure service init for boot-sequence activation"
 
 ---
 
-### Task 4: Add HTML Containers for Status Messages + Chat Bubble
+### Task 5: Add HTML Containers for Status Messages + Chat Bubble
 
 **Files:**
 - Modify: `splash.html`
@@ -369,7 +409,7 @@ git commit -m "feat: add boot status and chat bubble containers to splash HTML"
 
 ---
 
-### Task 5: Remove Click-to-Break from Splash Orb
+### Task 6: Remove Click-to-Break from Splash Orb
 
 **Files:**
 - Modify: `src/splash.ts`
@@ -396,7 +436,7 @@ git commit -m "fix: remove click-to-break from splash orb"
 
 ---
 
-### Task 6: Implement Boot Sequence in splash.ts
+### Task 7: Implement Boot Sequence in splash.ts
 
 **Files:**
 - Modify: `src/splash.ts`
@@ -707,7 +747,7 @@ git commit -m "feat: implement boot sequence phases in splash renderer"
 
 ---
 
-### Task 7: Smoke Test + Polish
+### Task 8: Smoke Test + Polish
 
 **Files:**
 - All modified files
@@ -748,16 +788,19 @@ git commit -m "fix: polish boot sequence timing and edge cases"
 
 | Spec Requirement | Task |
 |-----------------|------|
-| Preload + init providers during Phase 1 | Task 3 (whisper + router init start immediately, results buffered) |
-| Race condition: services finish before Phase 1 | Task 3 (boot-ready handler flushes buffered state) |
-| Sequential status display after Phase 1 | Task 3 (boot-ready handler) |
-| Error handling: services fail gracefully | Task 3 (catch per provider, fallback sends) + Task 6 (6s timeout) |
-| Status messages bottom-left, replacing, animated dots | Task 4 (HTML) + Task 6 (showStatus) |
-| Router-ready triggers orb reveal | Task 6 (boot-reveal phase) |
-| Chat bubble "Willkommen!" after reveal | Task 6 (boot-bubble phase) |
-| Piper activation + status message | Task 3 (boot-ready handler) + Task 6 |
-| Break 100-300ms before TTS | Task 6 (boot-break: break at t=0, TTS at t=200ms) |
-| Break not clickable | Task 5 |
-| TTS "Huch, jetzt bin ich einsatzbereit!" | Task 3 (splash-tts handler) + Task 6 |
-| splashDone after TTS | Task 6 (done phase after ttsAudioResolve) |
+| Preload + init providers during Phase 1 | Task 4 (whisper + router init start immediately, results buffered) |
+| Race condition: services finish before Phase 1 | Task 4 (boot-ready handler flushes buffered state) |
+| FasterWhisperProvider idempotency | Task 3 (process guard prevents double-init) |
+| voiceService full wiring (TtsQueue, hotkeys, status) | Task 4 (registry.initAll() after boot sequence) |
+| Piper status minimum display time | Task 4 (1s minimum via Promise.all) |
+| Sequential status display after Phase 1 | Task 4 (boot-ready handler) |
+| Error handling: services fail gracefully | Task 4 (catch per provider, fallback sends) + Task 7 (6s timeout) |
+| Status messages bottom-left, replacing, animated dots | Task 5 (HTML) + Task 7 (showStatus) |
+| Router-ready triggers orb reveal | Task 7 (boot-reveal phase) |
+| Chat bubble "Willkommen!" after reveal | Task 7 (boot-bubble phase) |
+| Piper activation + status message | Task 4 (boot-ready handler) + Task 7 |
+| Break 100-300ms before TTS | Task 7 (boot-break: break at t=0, TTS at t=200ms) |
+| Break not clickable | Task 6 |
+| TTS "Huch, jetzt bin ich einsatzbereit!" | Task 4 (splash-tts handler) + Task 7 |
+| splashDone after TTS | Task 7 (done phase after ttsAudioResolve) |
 | IPC: boot-status, boot-ready, BootStatus type | Task 1 + Task 2 |
