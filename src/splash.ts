@@ -22,11 +22,6 @@ orb.setOrbScale(ORB_START_SCALE);
 orb.setLightIntensity(ORB_START_LIGHT);
 orb.setOrbOffset(0, ORB_START_Y, 0);
 
-// Click triggers break effect for testing
-orbContainer.addEventListener('click', () => {
-  orb.triggerBreak();
-});
-
 // ============================================================
 // 2D Canvas for particles/streak (overlay)
 // ============================================================
