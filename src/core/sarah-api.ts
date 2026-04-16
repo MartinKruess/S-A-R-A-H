@@ -26,9 +26,12 @@ export interface SarahVoiceApi {
 export interface SarahApi {
   version: string;
   splashDone(): void;
+  wizardDone(): void;
+  bootDone(): void;
   bootReady(): void;
   revealDone(): void;
   onBootStatus(cb: (data: BootStatus) => void): () => void;
+  onTransitionStart(cb: () => void): () => void;
   splashTts(text: string): Promise<void>;
   getSystemInfo(): Promise<SystemIpcInfo>;
   getConfig(): Promise<SarahConfig>;

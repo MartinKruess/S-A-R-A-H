@@ -256,7 +256,7 @@ async function finishWizard(): Promise<void> {
     },
   });
 
-  sarah.splashDone();
+  sarah.wizardDone();
 }
 
 goToStep(0);

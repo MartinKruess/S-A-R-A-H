@@ -329,24 +329,30 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.on('splash-done', async () => {
-    if (mainWindow) {
-      if (appContext!.parsedConfig.onboarding.setupComplete) {
-        // Dashboard: compact window (25vh x 30vh), both relative to screen height
-        const { height: screenH } =
-          require('electron').screen.getPrimaryDisplay().workAreaSize;
-        mainWindow.setSize(
-          Math.round(screenH * 0.3),
-          Math.round(screenH * 0.33),
-        );
-        mainWindow.setPosition(0, 0);
-        mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
-      } else {
-        // Wizard: fullscreen
-        mainWindow.maximize();
-        mainWindow.loadFile(path.join(__dirname, '..', 'wizard.html'));
-      }
+  function loadDashboardBootMode(): void {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const { screen } = require('electron');
+    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    mainWindow.setSize(800, 600);
+    mainWindow.setPosition(
+      Math.round((screenW - 800) / 2),
+      Math.round((screenH - 600) / 2),
+    );
+    mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
+  }
+
+  ipcMain.on('splash-done', () => {
+    if (!mainWindow) return;
+    if (appContext!.parsedConfig.onboarding.setupComplete) {
+      loadDashboardBootMode();
+    } else {
+      mainWindow.maximize();
+      mainWindow.loadFile(path.join(__dirname, '..', 'wizard.html'));
     }
+  });
+
+  ipcMain.on('wizard-done', () => {
+    loadDashboardBootMode();
   });
 
   ipcMain.handle('get-system-info', async () => {
@@ -755,6 +761,42 @@ app.whenReady().then(async () => {
     } catch {
       return [];
     }
+  });
+
+  ipcMain.once('boot-done', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    const { screen } = require('electron');
+    const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    const targetW = Math.round(screenH * 0.3);
+    const targetH = Math.round(screenH * 0.33);
+    const targetX = 0;
+    const targetY = 0;
+
+    const startBounds = mainWindow.getBounds();
+    const duration = 1500;
+    const startTime = Date.now();
+
+    mainWindow.webContents.send('transition-start');
+
+    const interval = setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        clearInterval(interval);
+        return;
+      }
+      const elapsed = Date.now() - startTime;
+      const p = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+
+      mainWindow.setBounds({
+        x: Math.round(startBounds.x + (targetX - startBounds.x) * eased),
+        y: Math.round(startBounds.y + (targetY - startBounds.y) * eased),
+        width: Math.round(startBounds.width + (targetW - startBounds.width) * eased),
+        height: Math.round(startBounds.height + (targetH - startBounds.height) * eased),
+      });
+
+      if (p >= 1) clearInterval(interval);
+    }, 16);
   });
 
   app.on('activate', () => {
