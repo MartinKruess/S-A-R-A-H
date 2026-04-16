@@ -213,7 +213,7 @@ function tick(): void {
         orb.setLightColor(0.5, 0.05, 0.05);
 
         // Play genesis audio file
-        playAudioFile('audio/genesis-protocol.wav')
+        playAudioFile('audio/sarah-corrupted.mp3')
           .then(() => { genesisAudioDone = true; })
           .catch(() => { genesisAudioDone = true; });
       }
