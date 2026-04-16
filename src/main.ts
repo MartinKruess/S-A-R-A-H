@@ -331,13 +331,7 @@ app.whenReady().then(async () => {
 
   function loadDashboardBootMode(): void {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    const { screen } = require('electron');
-    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
-    mainWindow.setSize(800, 600);
-    mainWindow.setPosition(
-      Math.round((screenW - 800) / 2),
-      Math.round((screenH - 600) / 2),
-    );
+    // Window is already 800x600 centered from splash — just swap the page
     mainWindow.loadFile(path.join(__dirname, '..', 'dashboard.html'));
   }
 
@@ -352,6 +346,16 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.on('wizard-done', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // Wizard was maximized — restore to splash size and center
+    mainWindow.unmaximize();
+    mainWindow.setSize(800, 600);
+    const { screen } = require('electron');
+    const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    mainWindow.setPosition(
+      Math.round((screenW - 800) / 2),
+      Math.round((screenH - 600) / 2),
+    );
     loadDashboardBootMode();
   });
 
