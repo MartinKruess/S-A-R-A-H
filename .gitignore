@@ -3,3 +3,6 @@ dist/
 out/
 resources/
 *.js.map
+
+# Runtime artifacts (superpowers plugin)
+.superpowers/
