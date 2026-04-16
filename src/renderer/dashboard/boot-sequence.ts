@@ -23,9 +23,8 @@ interface BootStatus {
 // ============================================================
 // Genesis timing constants (adjust when final audio is ready)
 // ============================================================
-const GENESIS_STATUS_DURATION = 2500;
 const GENESIS_AUDIO_START = 2500;
-const GENESIS_STATUS2_START = 3500;
+const GENESIS_STATUS2_DELAY = 1000;
 const GENESIS_FALLBACK_TIMEOUT = 12000;
 
 // ============================================================
@@ -132,6 +131,7 @@ let ttsAudioResolve: (() => void) | null = null;
 // Genesis state
 let genesisAudioPlaying = false;
 let genesisAudioDone = false;
+let genesisStatus2Shown = false;
 
 function startPhase(newPhase: Phase): void {
   phase = newPhase;
@@ -218,8 +218,9 @@ function tick(): void {
           .catch(() => { genesisAudioDone = true; });
       }
 
-      // Switch status text at 1s into this phase
-      if (t >= 1000 && statusEl.textContent?.indexOf('Persönlichkeits') === -1) {
+      // Switch status text after delay
+      if (t >= GENESIS_STATUS2_DELAY && !genesisStatus2Shown) {
+        genesisStatus2Shown = true;
         showStatus('Überschreiben des Persönlichkeitsprofils ...', true);
       }
 
