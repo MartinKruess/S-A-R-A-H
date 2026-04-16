@@ -1,6 +1,8 @@
 import { registerComponents } from '../components/index.js';
 import { applyAccentColor } from './accent.js';
 import { AudioBridge } from '../services/audio-bridge.js';
+import { startBootSequence } from './boot-sequence.js';
+import { orb } from './orb-scene.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 
@@ -107,3 +109,8 @@ audioBridge.start().catch((err) => {
 window.addEventListener('beforeunload', () => {
   audioBridge.destroy();
 });
+
+// ── Boot Sequence ──
+if (document.body.classList.contains('boot-mode') && orb) {
+  startBootSequence(orb);
+}
