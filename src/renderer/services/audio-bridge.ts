@@ -80,7 +80,7 @@ export class AudioBridge {
       // Load worklet processor (only once)
       if (!this.workletLoaded) {
         await this.captureCtx.audioWorklet.addModule(
-          new URL('./audio-worklet-processor.js', import.meta.url).href
+          'dist/renderer/services/audio-worklet-processor.js'
         );
         this.workletLoaded = true;
       }
