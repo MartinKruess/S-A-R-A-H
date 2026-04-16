@@ -67,12 +67,6 @@
   position: relative;
 }
 
-.sarah-placeholder {
-  font-size: var(--sarah-font-size-lg);
-  color: var(--sarah-text-muted);
-  letter-spacing: 0.1em;
-}
-
 /* ── Standalone dialog window ── */
 .dialog-standalone {
   width: 100%;

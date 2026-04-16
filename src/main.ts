@@ -229,9 +229,7 @@ app.whenReady().then(async () => {
 
   // --- Start heavy inits immediately (parallel to Phase 1) ---
   let whisperDone = false;
-  let whisperError = false;
   let routerDone = false;
-  let routerError = false;
 
   const send = (step: string, message?: string) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -245,7 +243,6 @@ app.whenReady().then(async () => {
     .catch((err) => {
       console.error('[Boot] Whisper init failed:', err);
       whisperDone = true;
-      whisperError = true;
     });
 
   // Fire-and-forget: Router init
@@ -254,7 +251,6 @@ app.whenReady().then(async () => {
     .catch((err) => {
       console.error('[Boot] Router init failed:', err);
       routerDone = true;
-      routerError = true;
     });
 
   ipcMain.once('boot-ready', async () => {
@@ -410,9 +406,7 @@ app.whenReady().then(async () => {
     },
   );
 
-  ipcMain.handle('is-first-run', () => {
-    return !appContext!.parsedConfig.onboarding.setupComplete;
-  });
+
 
   ipcMain.handle('select-folder', async (event, title?: string) => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? mainWindow;

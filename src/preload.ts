@@ -22,7 +22,6 @@ const api: SarahApi = {
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
-  isFirstRun: () => ipcRenderer.invoke('is-first-run'),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
   scanFolderExes: (folderPath) => ipcRenderer.invoke('scan-folder-exes', folderPath),
