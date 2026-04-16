@@ -2,8 +2,8 @@ import type { WizardData, ProgramEntry, ProgramType, PdfCategory } from '../wiza
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
-import { sarahInput } from '../../components/sarah-input.js';
-import { sarahToggle } from '../../components/sarah-toggle.js';
+import { PDF_CATEGORY_OPTIONS } from '../../shared/pdf-constants.js';
+import { createPdfBlock } from '../../shared/pdf-block.js';
 
 function getSarah(): any {
   return (window as any).__sarah;
@@ -121,27 +121,6 @@ function buildProgramEntry(name: string): ProgramEntry {
   return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
 }
 
-// --- PDF Category constants ---
-
-const PDF_CATEGORY_OPTIONS = [
-  { value: 'Gewerblich', label: 'Gewerblich', icon: '🏢' },
-  { value: 'Steuern', label: 'Steuern', icon: '🧾' },
-  { value: 'Präsentationen', label: 'Präsentationen', icon: '📊' },
-  { value: 'Bewerbung', label: 'Bewerbung', icon: '📨' },
-  { value: 'Zertifikate', label: 'Zertifikate', icon: '🏅' },
-  { value: 'Verträge', label: 'Verträge', icon: '📝' },
-  { value: 'Kontoauszüge', label: 'Kontoauszüge', icon: '🏦' },
-];
-
-const PDF_PLACEHOLDERS: Record<string, string> = {
-  'Kontoauszüge': 'Bankname_MM_YY',
-  'Bewerbung': 'Firmenname_Stelle',
-  'Steuern': 'Jahr_Steuerart',
-  'Verträge': 'Anbieter_Vertragsart',
-  'Zertifikate': 'Aussteller_Thema_Jahr',
-  'Gewerblich': 'Firma_Dokumenttyp',
-  'Präsentationen': 'Thema_Datum',
-};
 
 const GRID_CSS = `
   .folder-grid {
@@ -181,41 +160,6 @@ function findCategory(data: WizardData, tag: string): PdfCategory {
     data.resources.pdfCategories.push(cat);
   }
   return cat;
-}
-
-function createPdfBlock(tag: string, data: WizardData): HTMLElement {
-  const cat = findCategory(data, tag);
-
-  const block = document.createElement('div');
-  block.className = 'pdf-block';
-  block.dataset.pdfTag = tag;
-
-  const title = document.createElement('div');
-  title.className = 'pdf-block-title';
-  title.textContent = tag;
-  block.appendChild(title);
-
-  block.appendChild(sarahPathPicker({
-    label: 'Ordner',
-    placeholder: 'Ordner auswählen...',
-    value: cat.folder,
-    onChange: (value) => { cat.folder = value; },
-  }));
-
-  block.appendChild(sarahInput({
-    label: 'Benennungsschema (optional)',
-    placeholder: PDF_PLACEHOLDERS[tag] ?? 'Beschreibung_Datum',
-    value: cat.pattern,
-    onChange: (value) => { cat.pattern = value; },
-  }));
-
-  block.appendChild(sarahToggle({
-    label: 'An bestehenden Dateien orientieren',
-    checked: cat.inferFromExisting,
-    onChange: (value) => { cat.inferFromExisting = value; },
-  }));
-
-  return block;
 }
 
 export function createFilesStep(data: WizardData): HTMLElement {
@@ -312,7 +256,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
 
   // Restore existing category blocks
   for (const cat of data.resources.pdfCategories) {
-    pdfBlocksContainer.appendChild(createPdfBlock(cat.tag, data));
+    pdfBlocksContainer.appendChild(createPdfBlock(findCategory(data, cat.tag)));
   }
 
   children.push(
@@ -325,7 +269,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
         // Add new blocks
         for (const tag of values) {
           if (!pdfBlocksContainer.querySelector(`[data-pdf-tag="${tag}"]`)) {
-            pdfBlocksContainer.appendChild(createPdfBlock(tag, data));
+            pdfBlocksContainer.appendChild(createPdfBlock(findCategory(data, tag)));
           }
         }
         // Remove deselected blocks

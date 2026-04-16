@@ -5,6 +5,8 @@ import { sarahButton } from '../../components/sarah-button.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { applyAccentColor } from '../accent.js';
+import { PDF_CATEGORY_OPTIONS } from '../../shared/pdf-constants.js';
+import { createPdfBlock } from '../../shared/pdf-block.js';
 import type { SarahApi } from '../../../core/sarah-api.js';
 import type { SarahConfig, PdfCategory, CustomCommand } from '../../../core/config-schema.js';
 
@@ -72,58 +74,6 @@ function createProfileSection(config: SarahConfig): HTMLElement {
 
 // ── Section: Dateien & Ordner ──
 
-const PDF_CATEGORY_OPTIONS = [
-  { value: 'Gewerblich', label: 'Gewerblich', icon: '🏢' },
-  { value: 'Steuern', label: 'Steuern', icon: '🧾' },
-  { value: 'Präsentationen', label: 'Präsentationen', icon: '📊' },
-  { value: 'Bewerbung', label: 'Bewerbung', icon: '📨' },
-  { value: 'Zertifikate', label: 'Zertifikate', icon: '🏅' },
-  { value: 'Verträge', label: 'Verträge', icon: '📝' },
-  { value: 'Kontoauszüge', label: 'Kontoauszüge', icon: '🏦' },
-];
-
-const PDF_PLACEHOLDERS: Record<string, string> = {
-  'Kontoauszüge': 'Bankname_MM_YY',
-  'Bewerbung': 'Firmenname_Stelle',
-  'Steuern': 'Jahr_Steuerart',
-  'Verträge': 'Anbieter_Vertragsart',
-  'Zertifikate': 'Aussteller_Thema_Jahr',
-  'Gewerblich': 'Firma_Dokumenttyp',
-  'Präsentationen': 'Thema_Datum',
-};
-
-function createPdfBlock(cat: PdfCategory, onUpdate: () => void): HTMLElement {
-  const block = document.createElement('div');
-  block.style.cssText = 'padding: var(--sarah-space-md); background: var(--sarah-bg-surface); border: 1px solid var(--sarah-border); border-radius: var(--sarah-radius-md); display: flex; flex-direction: column; gap: var(--sarah-space-sm);';
-  block.dataset.pdfTag = cat.tag;
-
-  const title = document.createElement('div');
-  title.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-accent); font-weight: 500; letter-spacing: 0.03em;';
-  title.textContent = cat.tag;
-  block.appendChild(title);
-
-  block.appendChild(sarahPathPicker({
-    label: 'Ordner',
-    placeholder: 'Ordner auswählen...',
-    value: cat.folder,
-    onChange: (value) => { cat.folder = value; onUpdate(); },
-  }));
-
-  block.appendChild(sarahInput({
-    label: 'Benennungsschema (optional)',
-    placeholder: PDF_PLACEHOLDERS[cat.tag] ?? 'Beschreibung_Datum',
-    value: cat.pattern,
-    onChange: (value) => { cat.pattern = value; onUpdate(); },
-  }));
-
-  block.appendChild(sarahToggle({
-    label: 'An bestehenden Dateien orientieren',
-    checked: cat.inferFromExisting,
-    onChange: (value) => { cat.inferFromExisting = value; onUpdate(); },
-  }));
-
-  return block;
-}
 
 function createFilesSection(config: SarahConfig): HTMLElement {
   const resources = { ...config.resources };
