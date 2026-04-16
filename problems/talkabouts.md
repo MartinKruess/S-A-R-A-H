@@ -1,23 +1,43 @@
-﻿# Phase 3 Review - Befunde fur Claude
+﻿# Housekeeping Audit - Befunde
 
-Implementierung vollstandig abgeschlossen. `npx tsc --noEmit` lauft fehlerfrei durch.
+## Orphaned Files (loeschen)
 
-Alle 14 Prufpunkte bestanden:
+| # | Pfad | Grund |
+|---|---|---|
+| 1 | `src/renderer/.gitkeep` | Renderer-Ordner hat Inhalt, Placeholder ueberfluessig |
+| 2 | `test-detect.js` | Prototyp, Feature seit langem in main.ts eingebaut |
+| 3 | `src/services/voice/providers/whisper-provider.ts` | Durch FasterWhisperProvider ersetzt, kein Import mehr |
+| 4 | `styles/components.css` | Komplett leer, nirgends referenziert |
 
-- `config-schema.ts` - `firstStart` korrekt im onboarding-Schema
-- `sarahHexOrb.ts` - `setLightColor()` vorhanden
-- `splash.ts` - text-only, kein Three.js, kein Orb
-- `splash.html` - sauber, nur Text-Container und Canvas
-- `sarah-api.ts` - `wizardDone`, `bootDone`, `onTransitionStart` im Interface
-- `preload.ts` - alle drei IPC-Bridges korrekt verdrahtet
-- `main.ts` - `loadDashboardBootMode()`, splash-done, wizard-done, boot-done + setBounds()-Animation, transition-start alle vorhanden
-- `wizard.ts` - ruft `sarah.wizardDone()` statt `splashDone()`
-- `dashboard.html` - `body.boot-mode`, `#boot-status`, `#boot-bubble`, `#genesis-overlay` vorhanden
-- `dashboard.css` - Boot-Mode-CSS-Block vorhanden
-- `orb-scene.ts` - exportiert `orb`, initialisiert im Boot-Mode-State
-- `boot-sequence.ts` - kein direkter `ipcRenderer`-Import, nutzt `sarah.bootDone()`
-- `dashboard.ts` - Imports oben, Boot-Trigger unten
-- `public/sarahHexOrb.ts` - geloscht
+## Tote Variablen in src/main.ts
 
-Die in der Prufung gefundene Korrektur (saveConfig shallow-merge Bug) wurde korrekt umgesetzt:
-`sarah.getConfig().then(config => sarah.saveConfig({ onboarding: { ...config.onboarding, firstStart: false } }))` in `genesis-recover`.
+| # | Variable | Grund |
+|---|---|---|
+| 5 | `whisperError` | Wird gesetzt, aber nie gelesen - Boot laeuft immer weiter |
+| 6 | `routerError` | Identische Situation |
+
+## Totes IPC-Tripel (isFirstRun)
+
+| # | Stelle | Grund |
+|---|---|---|
+| 7 | main.ts Handler + preload.ts Bridge + sarah-api.ts Type | Kein Renderer ruft sarah.isFirstRun() auf - alle lesen direkt config.onboarding via getConfig() |
+
+## Stale Config
+
+| # | Datei | Grund |
+|---|---|---|
+| 8 | tsconfig.json exclude `src/sarahOrb.ts` | Alter Dateiname - Datei heisst jetzt sarahHexOrb.ts, Exclusion greift nicht mehr |
+
+## Totes CSS
+
+| # | Regel | Grund |
+|---|---|---|
+| 9 | `.sarah-placeholder` in styles/dashboard.css | Klasse existiert in keinem HTML oder TS-File |
+
+## Test fuer toten Code
+
+| # | Datei | Grund |
+|---|---|---|
+| 10 | `tests/services/voice/whisper-provider.test.ts` | Testet whisper-provider.ts - das selbst dead code ist (Nr. 3) |
+
+Wichtiger Hinweis Nr. 8: Der falsche tsconfig.json-Exclude fuehrt dazu, dass sarahHexOrb.ts vom Main-Process-Compiler mitverarbeitet wird (unbeabsichtigt).
