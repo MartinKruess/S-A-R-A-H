@@ -92,9 +92,10 @@ function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
 }
 
 /** Play an audio file from a URL, returns a promise that resolves when done. */
-function playAudioFile(url: string): Promise<void> {
+function playAudioFile(url: string, volume = 1.0): Promise<void> {
   return new Promise((resolve, reject) => {
     const audio = new Audio(url);
+    audio.volume = volume;
     audio.onended = () => resolve();
     audio.onerror = () => reject(new Error(`Failed to play ${url}`));
     audio.play().catch(reject);
@@ -212,8 +213,8 @@ function tick(): void {
         // Orb to dark red
         orb.setLightColor(0.5, 0.05, 0.05);
 
-        // Play genesis audio file
-        playAudioFile('audio/sarah-corrupted.mp3')
+        // Play genesis audio file at 50% volume
+        playAudioFile('audio/sarah-corrupted.mp3', 0.5)
           .then(() => { genesisAudioDone = true; })
           .catch(() => { genesisAudioDone = true; });
       }
@@ -303,6 +304,12 @@ function tick(): void {
         document.body.classList.remove('boot-mode');
       });
 
+      // Resolve the promise so AudioBridge can start
+      if (bootDoneResolve) {
+        bootDoneResolve();
+        bootDoneResolve = null;
+      }
+
       return; // Stop tick loop
     }
   }
@@ -313,48 +320,53 @@ function tick(): void {
 // ============================================================
 // Exported entry point
 // ============================================================
-export async function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
-  orb = orbInstance;
+let bootDoneResolve: (() => void) | null = null;
 
-  // Check if this is a first start
-  const config = await sarah.getConfig();
-  isFirstStart = config.onboarding.firstStart;
+export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
+  return new Promise(async (resolve) => {
+    bootDoneResolve = resolve;
+    orb = orbInstance;
 
-  // Listen for boot status from main
-  sarah.onBootStatus((data) => {
-    switch (data.step) {
-      case 'whisper':
-      case 'router':
-      case 'piper':
-        if (data.message) showStatus(data.message, true);
-        break;
-      case 'router-ready':
-        routerReady = true;
-        hideStatus();
-        break;
-      case 'piper-ready':
-        piperReady = true;
-        hideStatus();
-        break;
-    }
+    // Check if this is a first start
+    const config = await sarah.getConfig();
+    isFirstStart = config.onboarding.firstStart;
+
+    // Listen for boot status from main
+    sarah.onBootStatus((data) => {
+      switch (data.step) {
+        case 'whisper':
+        case 'router':
+        case 'piper':
+          if (data.message) showStatus(data.message, true);
+          break;
+        case 'router-ready':
+          routerReady = true;
+          hideStatus();
+          break;
+        case 'piper-ready':
+          piperReady = true;
+          hideStatus();
+          break;
+      }
+    });
+
+    // Buffer TTS audio
+    sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
+      ttsAudioReady = true;
+      pendingTtsPlay = () => {
+        playTtsAudio(audio, sampleRate).then(() => {
+          if (ttsAudioResolve) {
+            ttsAudioResolve();
+            ttsAudioResolve = null;
+          }
+        });
+      };
+    });
+
+    // Signal main.ts that we're ready for boot status
+    sarah.bootReady();
+
+    // Start phase loop
+    requestAnimationFrame(tick);
   });
-
-  // Buffer TTS audio
-  sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
-    ttsAudioReady = true;
-    pendingTtsPlay = () => {
-      playTtsAudio(audio, sampleRate).then(() => {
-        if (ttsAudioResolve) {
-          ttsAudioResolve();
-          ttsAudioResolve = null;
-        }
-      });
-    };
-  });
-
-  // Signal main.ts that we're ready for boot status
-  sarah.bootReady();
-
-  // Start phase loop
-  requestAnimationFrame(tick);
 }

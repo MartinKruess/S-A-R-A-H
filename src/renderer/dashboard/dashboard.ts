@@ -101,16 +101,25 @@ sarah.voice.onTranscript((data) => {
 });
 
 // ── Voice Audio Bridge ──
-const audioBridge = new AudioBridge();
-audioBridge.start().catch((err) => {
-  console.error('[Dashboard] AudioBridge failed to start:', err);
-});
+// Delay AudioBridge start until boot mode ends to avoid double TTS playback
+// (boot-sequence has its own audio handler during boot)
+let audioBridge: AudioBridge | null = null;
+
+function startAudioBridge(): void {
+  if (audioBridge) return;
+  audioBridge = new AudioBridge();
+  audioBridge.start().catch((err) => {
+    console.error('[Dashboard] AudioBridge failed to start:', err);
+  });
+}
 
 window.addEventListener('beforeunload', () => {
-  audioBridge.destroy();
+  audioBridge?.destroy();
 });
 
 // ── Boot Sequence ──
 if (document.body.classList.contains('boot-mode') && orb) {
-  startBootSequence(orb);
+  startBootSequence(orb).then(() => startAudioBridge());
+} else {
+  startAudioBridge();
 }
