@@ -1,126 +1,15 @@
-import type { WizardData, ProgramEntry, ProgramType, PdfCategory } from '../wizard.js';
+import type { WizardData, PdfCategory } from '../wizard.js';
 import { sarahForm } from '../../components/sarah-form.js';
 import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
 import { PDF_CATEGORY_OPTIONS } from '../../shared/pdf-constants.js';
 import { createPdfBlock } from '../../shared/pdf-block.js';
+import { createProgramDetector } from '../program-detection.js';
+import type { ScannedProgram, ProgramOption } from '../program-detection.js';
 
 function getSarah(): any {
   return (window as any).__sarah;
 }
-
-interface DetectedProgram {
-  path: string;
-  type: ProgramType;
-  verified: boolean;
-  aliases: string[];
-  duplicateGroup?: string;
-}
-
-/** Maps program name → detected metadata */
-const detectedProgramMap = new Map<string, DetectedProgram>();
-
-const KNOWN_ICONS: Record<string, string> = {
-  'visual studio code': '💻',
-  'vs code': '💻',
-  'google chrome': '🌐',
-  'chrome': '🌐',
-  'mozilla firefox': '🦊',
-  'firefox': '🦊',
-  'microsoft word': '📝',
-  'word': '📝',
-  'microsoft excel': '📊',
-  'excel': '📊',
-  'microsoft outlook': '📧',
-  'outlook': '📧',
-  'slack': '💬',
-  'discord': '🎮',
-  'spotify': '🎵',
-  'adobe photoshop': '🎨',
-  'photoshop': '🎨',
-  'steam': '🎮',
-  'notepad++': '📝',
-  'git': '🔧',
-  '7-zip': '📦',
-  'vlc': '🎬',
-  'obs studio': '🎥',
-  'telegram': '💬',
-  'whatsapp': '💬',
-  'zoom': '📹',
-  'microsoft teams': '📹',
-  'davinci': '🎬',
-  'resolve': '🎬',
-  'blender': '🎨',
-  'gimp': '🎨',
-  'audacity': '🎵',
-  'opera': '🌐',
-  'brave': '🌐',
-  'edge': '🌐',
-  'filezilla': '📂',
-  'postman': '🔧',
-  'docker': '🐳',
-  'after effects': '🎬',
-  'premiere': '🎬',
-  'illustrator': '🎨',
-  'lightroom': '📷',
-  'acrobat': '📄',
-};
-
-function getIcon(name: string): string {
-  const lower = name.toLowerCase();
-  for (const [key, icon] of Object.entries(KNOWN_ICONS)) {
-    if (lower.includes(key)) return icon;
-  }
-  return '📦';
-}
-
-/** Reference to the tag-select element so folder scans can inject options */
-let tagSelectEl: ReturnType<typeof sarahTagSelect> | null = null;
-let currentOptions: { value: string; label: string; icon: string }[] = [];
-let currentSelected: string[] = [];
-
-function syncTagSelect(data: WizardData): void {
-  if (!tagSelectEl) return;
-  tagSelectEl.setOptions(currentOptions);
-  tagSelectEl.setSelected(currentSelected);
-}
-
-function addScannedPrograms(
-  programs: { name: string; path: string; type: ProgramType; verified: boolean; aliases: string[]; duplicateGroup?: string }[],
-  data: WizardData,
-): void {
-  for (const prog of programs) {
-    if (!detectedProgramMap.has(prog.name)) {
-      detectedProgramMap.set(prog.name, {
-        path: prog.path,
-        type: prog.type,
-        verified: prog.verified,
-        aliases: prog.aliases,
-        duplicateGroup: prog.duplicateGroup,
-      });
-      const warning = prog.type === 'updater' ? ' ⚠️ Updater' : prog.type === 'launcher' ? ' ⚠️ Launcher' : '';
-      currentOptions.push({ value: prog.name, label: prog.name + warning, icon: getIcon(prog.name) });
-    }
-  }
-  syncTagSelect(data);
-}
-
-function buildProgramEntry(name: string): ProgramEntry {
-  const detected = detectedProgramMap.get(name);
-  if (detected) {
-    return {
-      name,
-      path: detected.path,
-      type: detected.type,
-      source: 'detected',
-      verified: detected.verified,
-      aliases: detected.aliases,
-      duplicateGroup: detected.duplicateGroup,
-    };
-  }
-  return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
-}
-
 
 const GRID_CSS = `
   .folder-grid {
@@ -163,6 +52,23 @@ function findCategory(data: WizardData, tag: string): PdfCategory {
 }
 
 export function createFilesStep(data: WizardData): HTMLElement {
+  // Per-instance state — no module-level singletons
+  const detector = createProgramDetector();
+  let tagSelectEl: ReturnType<typeof sarahTagSelect> | null = null;
+  let currentOptions: ProgramOption[] = [];
+  let currentSelected: string[] = data.resources.programs.map(p => p.name);
+
+  function syncTagSelect(): void {
+    if (!tagSelectEl) return;
+    tagSelectEl.setOptions(currentOptions);
+    tagSelectEl.setSelected(currentSelected);
+  }
+
+  function addScannedPrograms(programs: ScannedProgram[]): void {
+    detector.addScannedPrograms(programs, currentOptions);
+    syncTagSelect();
+  }
+
   const container = document.createElement('div');
 
   const style = document.createElement('style');
@@ -200,11 +106,11 @@ export function createFilesStep(data: WizardData): HTMLElement {
       data.resources.extraProgramsFolder = value;
       if (value) {
         scanStatus.textContent = 'Scanne Ordner...';
-        getSarah().scanFolderExes(value).then((programs: any[]) => {
+        getSarah().scanFolderExes(value).then((programs: ScannedProgram[]) => {
           scanStatus.textContent = programs.length > 0
             ? `${programs.length} Programme gefunden in ${value}`
             : 'Keine Programme gefunden';
-          addScannedPrograms(programs, data);
+          addScannedPrograms(programs);
           setTimeout(() => { scanStatus.textContent = ''; }, 4000);
         }).catch(() => { scanStatus.textContent = ''; });
       }
@@ -221,11 +127,11 @@ export function createFilesStep(data: WizardData): HTMLElement {
         data.resources.gamesFolder = value;
         if (value) {
           scanStatus.textContent = 'Scanne Games-Ordner...';
-          getSarah().scanFolderExes(value).then((programs: any[]) => {
+          getSarah().scanFolderExes(value).then((programs: ScannedProgram[]) => {
             scanStatus.textContent = programs.length > 0
               ? `${programs.length} Games gefunden in ${value}`
               : 'Keine Games gefunden';
-            addScannedPrograms(programs, data);
+            addScannedPrograms(programs);
             setTimeout(() => { scanStatus.textContent = ''; }, 4000);
           }).catch(() => { scanStatus.textContent = ''; });
         }
@@ -295,27 +201,9 @@ export function createFilesStep(data: WizardData): HTMLElement {
   container.appendChild(form);
 
   // Async: detect programs and replace placeholder with tag-select
-  currentSelected = data.resources.programs.map(p => p.name);
-
-  getSarah().detectPrograms().then((programs: { name: string; path: string; type: ProgramType; verified: boolean; aliases: string[]; duplicateGroup?: string }[]) => {
-    for (const prog of programs) {
-      detectedProgramMap.set(prog.name, {
-        path: prog.path,
-        type: prog.type,
-        verified: prog.verified,
-        aliases: prog.aliases,
-        duplicateGroup: prog.duplicateGroup,
-      });
-    }
-
-    currentOptions = programs.map(prog => {
-      const warning = prog.type === 'updater' ? ' ⚠️ Updater' : prog.type === 'launcher' ? ' ⚠️ Launcher' : '';
-      return {
-        value: prog.name,
-        label: prog.name + warning,
-        icon: getIcon(prog.name),
-      };
-    });
+  getSarah().detectPrograms().then((programs: ScannedProgram[]) => {
+    detector.registerDetected(programs);
+    currentOptions = detector.buildOptions(programs);
 
     tagSelectEl = sarahTagSelect({
       label: 'Welche Programme nutzt du oft?',
@@ -324,7 +212,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
       allowCustom: true,
       onChange: (values) => {
         currentSelected = values;
-        data.resources.programs = values.map(buildProgramEntry);
+        data.resources.programs = values.map(detector.buildProgramEntry);
       },
     });
 
@@ -338,7 +226,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
       allowCustom: true,
       onChange: (values) => {
         currentSelected = values;
-        data.resources.programs = values.map(buildProgramEntry);
+        data.resources.programs = values.map(detector.buildProgramEntry);
       },
     });
     programsPlaceholder.replaceWith(tagSelectEl);
