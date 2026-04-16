@@ -6,6 +6,7 @@ export interface ParsedRoute {
 }
 
 const ROUTE_PATTERN = /^\s*\[ROUTE:(\w+)]\s*/;
+const VALID_ROUTES: Set<string> = new Set<string>(['self', '9b', 'backend', 'vision', 'extern']);
 
 export function parseRouteTag(response: string): ParsedRoute {
   const match = response.match(ROUTE_PATTERN);
@@ -14,7 +15,8 @@ export function parseRouteTag(response: string): ParsedRoute {
     return { route: 'self', feedback: response };
   }
 
-  const route = match[1] as RouteTarget;
+  const raw = match[1];
+  const route: RouteTarget = VALID_ROUTES.has(raw) ? raw as RouteTarget : 'self';
   const feedback = response.slice(match[0].length);
 
   return { route, feedback };

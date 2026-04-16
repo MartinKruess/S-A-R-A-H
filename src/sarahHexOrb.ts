@@ -46,12 +46,29 @@ export class SarahHexOrb {
   private radius: number;
   private segmentRadius: number;
 
+  // Light references for dynamic intensity control
+  private ambientLight: THREE.AmbientLight | null = null;
+  private keyLight: THREE.DirectionalLight | null = null;
+  private fillLight: THREE.DirectionalLight | null = null;
+  private rimLight: THREE.PointLight | null = null;
+
+  // Base intensities (set in createLights)
+  private baseLightIntensities = {
+    ambient: 0.95,
+    key: 2.4,
+    fill: 0.7,
+    rim: 1.1,
+  };
+  private lightFactor = 1.0;
+
   constructor(
     private container: HTMLElement,
     options: SarahHexOrbOptions = {},
   ) {
     this.accentColor = new THREE.Color(options.accentColor ?? '#6ee7ff');
-    this.outlineColor = new THREE.Color(options.accentColor ?? '#6ee7ff').multiplyScalar(0.75);
+    this.outlineColor = new THREE.Color(
+      options.accentColor ?? '#6ee7ff',
+    ).multiplyScalar(0.75);
     this.shellColor = new THREE.Color(options.shellColor ?? '#d4af37');
 
     this.radius = options.radius ?? 1;
@@ -109,20 +126,20 @@ export class SarahHexOrb {
   }
 
   private createLights() {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.95);
-    this.scene.add(ambient);
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.95);
+    this.scene.add(this.ambientLight);
 
-    const key = new THREE.DirectionalLight(0xffffff, 2.4);
-    key.position.set(3.2, 4.4, 5.8);
-    this.scene.add(key);
+    this.keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+    this.keyLight.position.set(3.2, 4.4, 5.8);
+    this.scene.add(this.keyLight);
 
-    const fill = new THREE.DirectionalLight(0x9fd3ff, 0.7);
-    fill.position.set(-4.2, -1.8, 2.2);
-    this.scene.add(fill);
+    this.fillLight = new THREE.DirectionalLight(0x9fd3ff, 0.7);
+    this.fillLight.position.set(-4.2, -1.8, 2.2);
+    this.scene.add(this.fillLight);
 
-    const rim = new THREE.PointLight(this.accentColor, 1.1, 14);
-    rim.position.set(-2.2, 1.3, 2.6);
-    this.scene.add(rim);
+    this.rimLight = new THREE.PointLight(this.accentColor, 1.1, 14);
+    this.rimLight.position.set(-2.2, 1.3, 2.6);
+    this.scene.add(this.rimLight);
   }
 
   private createInnerSphere() {
@@ -302,6 +319,34 @@ export class SarahHexOrb {
       this.innerMaterial.color.copy(this.innerIdleColor);
       this.innerMaterial.emissive.copy(this.innerIdleColor);
     }
+  }
+
+  /** Set overall light intensity factor (0 = off, 1 = normal). */
+  public setLightIntensity(factor: number): void {
+    this.lightFactor = factor;
+    const b = this.baseLightIntensities;
+    if (this.ambientLight) this.ambientLight.intensity = b.ambient * factor;
+    if (this.keyLight) this.keyLight.intensity = b.key * factor;
+    if (this.fillLight) this.fillLight.intensity = b.fill * factor;
+    if (this.rimLight) this.rimLight.intensity = b.rim * factor;
+  }
+
+  /** Set the orb root scale uniformly. */
+  public setOrbScale(scale: number): void {
+    this.root.scale.setScalar(scale);
+  }
+
+  /** Offset the orb root position (e.g. to simulate approach from below). */
+  public setOrbOffset(x: number, y: number, z: number): void {
+    this.root.position.set(x, y, z);
+  }
+
+  /** Set the color of all scene lights (key, fill, rim). Ambient stays neutral. */
+  public setLightColor(r: number, g: number, b: number): void {
+    const color = new THREE.Color(r, g, b);
+    if (this.keyLight) this.keyLight.color.copy(color);
+    if (this.fillLight) this.fillLight.color.copy(color);
+    if (this.rimLight) this.rimLight.color.copy(color);
   }
 
   public triggerBreak(durationMs = 3000) {

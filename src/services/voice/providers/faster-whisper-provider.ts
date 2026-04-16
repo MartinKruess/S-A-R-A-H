@@ -19,6 +19,9 @@ export class FasterWhisperProvider implements SttProvider {
   }
 
   async init(): Promise<void> {
+    // Idempotency guard — skip if server is already running
+    if (this.serverProcess) return;
+
     if (!fs.existsSync(this.scriptPath)) {
       throw new Error(`faster-whisper server script not found: ${this.scriptPath}`);
     }
