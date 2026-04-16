@@ -239,6 +239,7 @@ async function finishWizard(): Promise<void> {
   await sarah.saveConfig({
     onboarding: {
       setupComplete: true,
+      firstStart: true,
     },
     system: wizardData.system,
     profile: {
@@ -256,7 +257,7 @@ async function finishWizard(): Promise<void> {
     },
   });
 
-  sarah.splashDone();
+  sarah.wizardDone();
 }
 
 goToStep(0);

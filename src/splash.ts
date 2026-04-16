@@ -1,23 +1,9 @@
-import { SarahHexOrb } from './sarahHexOrb';
-
 // --- Type declarations for preload-exposed API ---
 interface SarahAPI {
-  version: string;
   splashDone: () => void;
 }
 
 declare var sarah: SarahAPI;
-
-// ============================================================
-// Three.js HexOrb
-// ============================================================
-const orbContainer = document.getElementById('orb')!;
-const orb = new SarahHexOrb(orbContainer);
-
-// Click triggers break effect for testing
-orbContainer.addEventListener('click', () => {
-  orb.triggerBreak();
-});
 
 // ============================================================
 // 2D Canvas for particles/streak (overlay)
@@ -239,7 +225,7 @@ function elapsed(): number {
   return performance.now() - phaseStart;
 }
 
-function tick(now: number): void {
+function tick(): void {
   // 2D overlay
   ctx.clearRect(0, 0, canvas2d.width, canvas2d.height);
 

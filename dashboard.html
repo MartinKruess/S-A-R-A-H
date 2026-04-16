@@ -6,7 +6,7 @@
     <title>S.A.R.A.H.</title>
     <link rel="stylesheet" href="styles/dashboard.css" />
   </head>
-  <body>
+  <body class="boot-mode">
     <div class="app-layout">
       <nav class="app-sidebar">
           <button class="nav-item active" data-view="sarah" title="S.A.R.A.H.">
@@ -35,7 +35,11 @@
       </div>
     </div>
 
-    <script type="module" src="dist/renderer/dashboard/dashboard.js"></script>
-    <script src="dist/renderer/dashboard/orb-scene.js"></script>
+    <!-- Boot-mode overlays -->
+    <div id="boot-status"></div>
+    <div id="boot-bubble"></div>
+    <div id="genesis-overlay"></div>
+
+    <script src="dist/renderer/dashboard/dashboard.js"></script>
   </body>
 </html>

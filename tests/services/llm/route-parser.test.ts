@@ -46,4 +46,9 @@ describe('parseRouteTag', () => {
     const result = parseRouteTag('[ROUTE:self] Zeile eins.\nZeile zwei.');
     expect(result).toEqual({ route: 'self', feedback: 'Zeile eins.\nZeile zwei.' });
   });
+
+  it('falls back to self for unknown route tag', () => {
+    const result = parseRouteTag('[ROUTE:bla] Irgendwas.');
+    expect(result).toEqual({ route: 'self', feedback: 'Irgendwas.' });
+  });
 });

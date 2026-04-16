@@ -168,7 +168,10 @@ export const SarahConfigSchema = z.preprocess(
     return obj;
   },
   z.object({
-    onboarding: pre(z.object({ setupComplete: z.boolean().default(false) })),
+    onboarding: pre(z.object({
+      setupComplete: z.boolean().default(false),
+      firstStart: z.boolean().default(true),
+    })),
     system: pre(SystemSchema),
     profile: pre(ProfileSchema),
     skills: pre(SkillsSchema),

@@ -22,6 +22,7 @@ export type BusEvents = {
   'voice:wake':          Record<string, never>;
   'voice:playback-done': Record<string, never>;
   'perf:timing':         { label: string; ms: number; meta?: Record<string, unknown> };
+  'boot:status':         { step: string; message?: string };
 };
 
 /** All valid bus topic strings */
