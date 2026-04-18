@@ -1,6 +1,6 @@
 import type { SarahConfig, ProgramEntry } from './config-schema.js';
 import type { BusEvents } from './bus-events.js';
-import type { SystemIpcInfo } from './ipc-contract.js';
+import type { SystemIpcInfo, SystemMetrics } from './ipc-contract.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 
 /** Boot sequence status sent from main to splash renderer */
@@ -34,6 +34,8 @@ export interface SarahApi {
   onTransitionStart(cb: () => void): () => void;
   splashTts(text: string): Promise<void>;
   getSystemInfo(): Promise<SystemIpcInfo>;
+  getSystemMetrics(): Promise<SystemMetrics>;
+  onSystemMetrics(cb: (data: SystemMetrics) => void): () => void;
   getConfig(): Promise<SarahConfig>;
   saveConfig(config: Partial<SarahConfig>): Promise<SarahConfig>;
   selectFolder(title?: string): Promise<string | null>;

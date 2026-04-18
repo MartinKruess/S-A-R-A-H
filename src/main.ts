@@ -9,6 +9,7 @@ import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
+import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 
 try {
   require('electron-reloader')(module);
@@ -17,6 +18,7 @@ try {
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
 const dialogWindows = new Map<string, BrowserWindow>();
+let stopSystemMetrics: (() => void) | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -124,6 +126,11 @@ app.whenReady().then(async () => {
     piperProvider,
   });
 
+  stopSystemMetrics = registerSystemMetricsHandlers(ipcMain, {
+    getMainWindow,
+    dialogWindows,
+  });
+
   ipcMain.once('boot-done', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -168,6 +175,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
+  if (stopSystemMetrics) {
+    stopSystemMetrics();
+    stopSystemMetrics = null;
+  }
   if (appContext) {
     await appContext.shutdown();
   }
