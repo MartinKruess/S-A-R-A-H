@@ -1,0 +1,141 @@
+1. Farbpalette (Core + Glow System)
+🔹 Base (Hintergrund & Flächen)
+#05070D → Deep Space (Haupt-Hintergrund)
+#0B1220 → Panel Base
+#111827 → Secondary Panels
+#1A2333 → Hover / Active Layer
+🔹 Neon / Accent (SARAH Identity)
+#00E5FF → Primary Cyan Glow (Hauptfarbe)
+#7C3AED → Purple Accent
+#FF2FD1 → Pink Highlight
+#22FFC0 → Mint (für positive States)
+#FF3B3B → Error / Critical
+🔹 Systemfarben (für deine Widgets)
+CPU → #00E5FF
+GPU → #7C3AED
+RAM → #FF2FD1
+Audio → #22FFC0
+
+🔹 Gradients (wichtig für „spacig“ Look)
+
+/* Main Glow */
+linear-gradient(135deg, #00E5FF, #7C3AED)
+
+/* Highlight */
+linear-gradient(90deg, #FF2FD1, #00E5FF)
+
+/* Background subtle */
+radial-gradient(circle at center, #0B1220, #05070D)
+
+2. Formen & Layout-Sprache
+🔷 Panels
+Abgerundet, aber nicht weich:
+border-radius: 12px–18px
+Dünne Neon-Ränder:
+1px solid rgba(0,229,255,0.3)
+Glow:
+box-shadow: 0 0 20px rgba(0,229,255,0.15)
+🔷 Rahmen-Stil
+Cut Corners / Sci-Fi Edges
+→ leicht abgeschrägte Ecken (nicht komplett rund)
+🔷 Grid-System
+12-column Grid
+Viel „Luft“ (Padding ≥ 16px)
+Panels schweben → keine harten Trennlinien
+🧩 3. UI-Komponenten (konkret für dein Dashboard)
+🧠 System Panel (CPU / GPU / RAM)
+Circular Progress Rings
+Animated Stroke
+Inner Glow + Pulsieren bei Last > 80%
+🎤 Voice Controls
+Waveform Bars (live animiert)
+Slider mit Glow-Track
+Mic / Speaker Icons neon-outline
+📅 Terminübersicht
+Minimaler Kalender (keine klassische Tabellenoptik)
+Timeline-Style:
+vertikale Linie + Events als Nodes
+🌦 Wetter
+Semi-transparent Panel
+Icon + Temperatur groß
+Background leicht blurred (Glassmorphism)
+🎧 Audio Player
+Equalizer Animation
+Play Button = glowing circle
+Fortschritt = Neon Line
+🧊 4. Materialien / Effekte
+🔹 Glassmorphism (leicht, nicht übertreiben)
+background: rgba(255,255,255,0.03);
+backdrop-filter: blur(10px);
+🔹 Glow System
+Outer Glow (UI)
+Inner Glow (Buttons / Rings)
+Pulsing (für aktive States)
+🔹 Noise Layer (wichtig!)
+
+→ leichtes Film Grain Overlay
+→ macht es realistischer
+
+🖼️ 5. Bilder & Assets
+🌌 Hintergrund
+Space / Nebula / City + Space Mix
+Wichtig: dunkel + wenig Details
+→ UI muss im Vordergrund bleiben
+🧠 SARAH Core (optional)
+3D Orb (dein Konzept!)
+Glow aus Accent Color
+leicht animiert (idle breathing)
+🚀 Icons
+
+Style:
+
+Outline + Neon
+Keine filled Icons
+Dünn (1.5px Stroke)
+
+Tools:
+
+Lucide Icons (gut anpassbar)
+oder eigene SVGs
+🔤 6. Fonts
+Primary (UI)
+Orbitron (sehr sci-fi)
+oder Inter (clean + modern)
+Secondary (Numbers / Stats)
+JetBrains Mono
+→ perfekt für CPU/GPU Zahlen
+⚙️ 7. Animationen (entscheidend für „alive“ Gefühl)
+Pflicht:
+Hover Glow Intensität ↑
+Progress Bars smooth
+Voice Waveform live
+Orb pulsiert
+Timing:
+150–250ms UI Interactions
+2–4s slow ambient loops
+🧠 8. Design-Prinzip (wichtigster Punkt)
+
+Nicht überladen.
+
+Regel:
+
+Maximal 1–2 starke Glows pro Panel
+
+Sonst wirkt es schnell wie „billiges Sci-Fi“.
+
+🧩 9. Mini-Styleguide (copy ready)
+:root {
+  --bg: #05070D;
+  --panel: #0B1220;
+  --accent: #00E5FF;
+  --accent2: #7C3AED;
+  --accent3: #FF2FD1;
+}
+
+.panel {
+  background: rgba(11,18,32,0.8);
+  border: 1px solid rgba(0,229,255,0.2);
+  border-radius: 14px;
+  box-shadow: 0 0 20px rgba(0,229,255,0.1);
+  backdrop-filter: blur(10px);
+}
