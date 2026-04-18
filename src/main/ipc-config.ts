@@ -5,6 +5,7 @@ import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
+import { getService } from './ipc-helpers.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -57,10 +58,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
       // Apply voice config changes live when controls section is saved
       if ('controls' in config) {
-        const voiceService = ctx.registry.get('voice');
-        if (voiceService && voiceService instanceof VoiceService) {
-          await voiceService.applyConfig();
-        }
+        await getService<VoiceService>(ctx, 'voice').applyConfig();
       }
 
       return ctx.parsedConfig;
