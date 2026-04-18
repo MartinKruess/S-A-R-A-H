@@ -1,5 +1,5 @@
 import { registerComponents } from '../components/index.js';
-import { applyAccentColor } from './accent.js';
+import { applyAccentColor } from '../shared/accent.js';
 import { createHomeView } from './views/home.js';
 import { createSettingsView } from './views/settings.js';
 
