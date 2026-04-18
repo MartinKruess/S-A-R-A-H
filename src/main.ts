@@ -10,6 +10,7 @@ import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
+import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
 
 try {
   require('electron-reloader')(module);
@@ -19,6 +20,7 @@ let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
 const dialogWindows = new Map<string, BrowserWindow>();
 let stopSystemMetrics: (() => void) | null = null;
+let stopVoiceLevel: (() => void) | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -114,8 +116,15 @@ app.whenReady().then(async () => {
     dialogWindows,
   });
 
+  const voiceLevel = registerVoiceLevelForwarder({
+    getMainWindow,
+    dialogWindows,
+  });
+  stopVoiceLevel = voiceLevel.stop;
+
   registerVoiceHandlers(ipcMain, {
     getAppContext,
+    onChunk: voiceLevel.onChunk,
   });
 
   registerBootHandlers({
@@ -178,6 +187,10 @@ app.on('window-all-closed', async () => {
   if (stopSystemMetrics) {
     stopSystemMetrics();
     stopSystemMetrics = null;
+  }
+  if (stopVoiceLevel) {
+    stopVoiceLevel();
+    stopVoiceLevel = null;
   }
   if (appContext) {
     await appContext.shutdown();

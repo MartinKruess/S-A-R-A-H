@@ -37,6 +37,7 @@ export interface IpcEvents {
   'voice:wake':        BusEvents['voice:wake'];
   'boot-status':       BusEvents['boot:status'];
   'system:metrics':    SystemMetrics;
+  'voice:level':       VoiceLevel;
 }
 
 /** IPC events sent from renderer to main (one-way) */
@@ -51,6 +52,13 @@ export interface SystemMetrics {
   cpu: number;
   ram: number;
   gpu: number | null;
+  ts: number;
+}
+
+/** Live voice input level pushed via `voice:level`. `bars` is a rolling FIFO window, oldest → newest. */
+export interface VoiceLevel {
+  rms: number;
+  bars: number[];
   ts: number;
 }
 
