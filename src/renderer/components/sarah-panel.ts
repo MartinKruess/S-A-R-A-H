@@ -38,6 +38,12 @@ const CSS = `
     box-shadow: 0 0 20px rgba(0, 229, 255, 0.15);
     clip-path: ${CHAMFER_WRAPPER};
     height: 100%;
+    transition: box-shadow 200ms ease;
+    animation: cockpit-panel-breathe 6s ease-in-out infinite;
+  }
+
+  :host(:hover) .panel-wrapper {
+    box-shadow: 0 0 40px rgba(0, 229, 255, 0.3);
   }
 
   :host([accent="violet"]) .panel-wrapper {
@@ -45,9 +51,17 @@ const CSS = `
     box-shadow: 0 0 20px rgba(124, 58, 237, 0.15);
   }
 
+  :host([accent="violet"]:hover) .panel-wrapper {
+    box-shadow: 0 0 40px rgba(124, 58, 237, 0.3);
+  }
+
   :host([accent="pink"]) .panel-wrapper {
     background: var(--panel-accent, linear-gradient(135deg, var(--cockpit-accent-pink), var(--cockpit-accent-cyan)));
     box-shadow: 0 0 20px rgba(255, 47, 209, 0.15);
+  }
+
+  :host([accent="pink"]:hover) .panel-wrapper {
+    box-shadow: 0 0 40px rgba(255, 47, 209, 0.3);
   }
 
   :host([accent="mint"]) .panel-wrapper {
@@ -55,9 +69,29 @@ const CSS = `
     box-shadow: 0 0 20px rgba(34, 255, 192, 0.15);
   }
 
+  :host([accent="mint"]:hover) .panel-wrapper {
+    box-shadow: 0 0 40px rgba(34, 255, 192, 0.3);
+  }
+
   :host([state="error"]) .panel-wrapper {
     background: var(--cockpit-accent-red);
     box-shadow: 0 0 20px rgba(255, 59, 59, 0.25);
+  }
+
+  :host([state="error"]:hover) .panel-wrapper {
+    box-shadow: 0 0 40px rgba(255, 59, 59, 0.5);
+  }
+
+  @keyframes cockpit-panel-breathe {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.98; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel-wrapper {
+      transition: none;
+      animation: none;
+    }
   }
 
   .panel-inner {
