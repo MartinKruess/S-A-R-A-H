@@ -62,15 +62,6 @@ export function getIcon(name: string): string {
   return '📦';
 }
 
-export interface ScannedProgram {
-  name: string;
-  path: string;
-  type: ProgramType;
-  verified: boolean;
-  aliases: string[];
-  duplicateGroup?: string;
-}
-
 export interface ProgramOption {
   value: string;
   label: string;
@@ -84,8 +75,8 @@ export interface ProgramOption {
 export function createProgramDetector() {
   const detectedProgramMap = new Map<string, DetectedProgram>();
 
-  function addScannedPrograms(
-    programs: ScannedProgram[],
+  function addProgramEntrys(
+    programs: ProgramEntry[],
     currentOptions: ProgramOption[],
   ): void {
     for (const prog of programs) {
@@ -103,7 +94,7 @@ export function createProgramDetector() {
     }
   }
 
-  function registerDetected(programs: ScannedProgram[]): void {
+  function registerDetected(programs: ProgramEntry[]): void {
     for (const prog of programs) {
       detectedProgramMap.set(prog.name, {
         path: prog.path,
@@ -115,7 +106,7 @@ export function createProgramDetector() {
     }
   }
 
-  function buildOptions(programs: ScannedProgram[]): ProgramOption[] {
+  function buildOptions(programs: ProgramEntry[]): ProgramOption[] {
     return programs.map(prog => {
       const warning = prog.type === 'updater' ? ' ⚠️ Updater' : prog.type === 'launcher' ? ' ⚠️ Launcher' : '';
       return {
@@ -142,5 +133,5 @@ export function createProgramDetector() {
     return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
   }
 
-  return { addScannedPrograms, registerDetected, buildOptions, buildProgramEntry };
+  return { addProgramEntrys, registerDetected, buildOptions, buildProgramEntry };
 }
