@@ -75,7 +75,7 @@ export interface ProgramOption {
 export function createProgramDetector() {
   const detectedProgramMap = new Map<string, DetectedProgram>();
 
-  function addProgramEntrys(
+  function addScannedPrograms(
     programs: ProgramEntry[],
     currentOptions: ProgramOption[],
   ): void {
@@ -133,5 +133,5 @@ export function createProgramDetector() {
     return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
   }
 
-  return { addProgramEntrys, registerDetected, buildOptions, buildProgramEntry };
+  return { addScannedPrograms, registerDetected, buildOptions, buildProgramEntry };
 }
