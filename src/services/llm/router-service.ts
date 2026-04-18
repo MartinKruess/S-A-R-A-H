@@ -46,6 +46,11 @@ export class RouterService implements SarahService {
       this.status = 'error';
       return;
     }
+    // Warm router model into VRAM so the first real prompt doesn't pay cold-load cost.
+    // Failures are non-fatal — status stays 'running', first real call will retry.
+    await this.routing.warmup().catch((err) => {
+      console.warn('[Router] Warmup failed (non-fatal):', err);
+    });
     this.status = 'running';
   }
 
@@ -163,6 +168,11 @@ export class RouterService implements SarahService {
       const llmConfig = this.context.parsedConfig.llm;
       await this.vramManager.unloadModel(llmConfig.workerModel);
       this.activeModel = '2b';
+      // Router was unloaded during the swap to worker — re-warm it so the
+      // next prompt doesn't pay another cold-load.
+      await this.routing.warmup().catch((err) => {
+        console.warn('[Router] Re-warmup after idle swap failed:', err);
+      });
     }, IDLE_TIMEOUT_MS);
   }
 

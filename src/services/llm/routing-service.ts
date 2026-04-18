@@ -19,10 +19,18 @@ export class RoutingService {
       { role: 'user', content: text },
     ];
     const start = performance.now();
-    const response = await chatWithTimeout(this.provider, messages, () => {});
+    const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1 });
     const tookMs = Math.round(performance.now() - start);
     const { route, feedback } = parseRouteTag(response);
     const hadTag = response.trimStart().startsWith('[ROUTE:');
     return { route, feedback, tookMs, hadTag };
+  }
+
+  async warmup(): Promise<void> {
+    await this.provider.chat(
+      [{ role: 'user', content: 'ok' }],
+      () => {},
+      { num_predict: 1, keep_alive: -1 },
+    );
   }
 }

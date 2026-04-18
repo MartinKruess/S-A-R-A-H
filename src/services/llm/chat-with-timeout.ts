@@ -1,4 +1,4 @@
-import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
+import type { LlmProvider, ChatMessage, ChatOptions } from './llm-provider.interface.js';
 
 export const STREAM_TIMEOUT_MS = 120_000;
 
@@ -6,7 +6,7 @@ export async function chatWithTimeout(
   provider: LlmProvider,
   messages: ChatMessage[],
   onChunk: (text: string) => void,
-  options?: { num_predict?: number },
+  options?: ChatOptions,
 ): Promise<string> {
   let timeoutId: ReturnType<typeof setTimeout>;
   let rejectTimeout: (err: Error) => void;

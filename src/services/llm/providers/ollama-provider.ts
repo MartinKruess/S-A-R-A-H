@@ -40,6 +40,7 @@ export class OllamaProvider implements LlmProvider {
         messages,
         stream: true,
         think: false,
+        ...(options?.keep_alive != null && { keep_alive: options.keep_alive }),
         ...(Object.keys(mergedOptions).length > 0 && { options: mergedOptions }),
       }),
     });
