@@ -65,15 +65,107 @@
 /* ── Hero ── */
 .cockpit-hero {
   grid-area: hero;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  overflow: hidden;
+  background: radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%);
+}
+
+.cockpit-hero-stage {
+  position: relative;
+  width: clamp(180px, 28vmin, 280px);
+  height: clamp(180px, 28vmin, 280px);
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%);
-  color: var(--cockpit-text-dim);
+}
+
+.cockpit-hero-planet {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 47, 209, 0.4) 0%, transparent 35%),
+    radial-gradient(circle at 70% 70%, rgba(124, 58, 237, 0.35) 0%, transparent 45%),
+    radial-gradient(circle at 50% 50%, var(--cockpit-accent-cyan) 0%, rgba(0, 229, 255, 0.6) 25%, rgba(11, 18, 32, 0.95) 70%);
+  box-shadow:
+    0 0 60px rgba(0, 229, 255, 0.35),
+    0 0 120px rgba(124, 58, 237, 0.25),
+    inset 0 0 40px rgba(5, 7, 13, 0.8);
+  animation: cockpit-hero-breathe 4s ease-in-out infinite;
+}
+
+.cockpit-hero-halo {
+  position: absolute;
+  inset: -20%;
+  z-index: 1;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(0, 229, 255, 0) 0deg,
+    rgba(0, 229, 255, 0.4) 90deg,
+    rgba(124, 58, 237, 0.35) 180deg,
+    rgba(255, 47, 209, 0.3) 270deg,
+    rgba(0, 229, 255, 0) 360deg
+  );
+  /* Mask to carve the conic gradient into a thin ring */
+  mask: radial-gradient(circle, transparent 52%, #000 54%, #000 58%, transparent 60%);
+  -webkit-mask: radial-gradient(circle, transparent 52%, #000 54%, #000 58%, transparent 60%);
+  opacity: 0.6;
+  filter: blur(2px);
+  animation: cockpit-hero-halo-spin 20s linear infinite;
+}
+
+.cockpit-hero-grid {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0.7;
+  background:
+    radial-gradient(1px 1px at 20% 30%, rgba(216, 241, 255, 0.6), transparent),
+    radial-gradient(1px 1px at 70% 60%, rgba(216, 241, 255, 0.4), transparent),
+    radial-gradient(1px 1px at 45% 75%, rgba(216, 241, 255, 0.5), transparent),
+    radial-gradient(1.5px 1.5px at 85% 25%, rgba(34, 255, 192, 0.5), transparent),
+    radial-gradient(1px 1px at 15% 80%, rgba(255, 47, 209, 0.4), transparent);
+  animation: cockpit-hero-grid-drift 30s linear infinite;
+}
+
+.cockpit-hero-caption {
   font-family: var(--cockpit-font-heading);
-  font-size: var(--cockpit-font-hud-xl);
-  letter-spacing: 0.12em;
+  font-size: var(--cockpit-font-hud-sm);
+  color: var(--cockpit-text-dim);
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  font-weight: 500;
+}
+
+@keyframes cockpit-hero-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.03); }
+}
+
+@keyframes cockpit-hero-halo-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes cockpit-hero-grid-drift {
+  0%   { transform: translate(0, 0); }
+  50%  { transform: translate(4%, -4%); }
+  100% { transform: translate(0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cockpit-hero-planet,
+  .cockpit-hero-halo,
+  .cockpit-hero-grid {
+    animation: none;
+  }
 }
 

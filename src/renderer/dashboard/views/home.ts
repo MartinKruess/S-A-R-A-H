@@ -82,7 +82,29 @@ function buildRightColumn(): HTMLElement {
 function buildHero(): HTMLElement {
   const hero = document.createElement('div');
   hero.className = 'cockpit-hero';
-  hero.textContent = 'Demnächst';
+
+  const stage = document.createElement('div');
+  stage.className = 'cockpit-hero-stage';
+
+  const grid = document.createElement('div');
+  grid.className = 'cockpit-hero-grid';
+
+  const halo = document.createElement('div');
+  halo.className = 'cockpit-hero-halo';
+
+  const planet = document.createElement('div');
+  planet.className = 'cockpit-hero-planet';
+
+  stage.appendChild(grid);
+  stage.appendChild(halo);
+  stage.appendChild(planet);
+
+  const caption = document.createElement('div');
+  caption.className = 'cockpit-hero-caption';
+  caption.textContent = 'S.A.R.A.H. · CORE ONLINE';
+
+  hero.appendChild(stage);
+  hero.appendChild(caption);
   return hero;
 }
 
