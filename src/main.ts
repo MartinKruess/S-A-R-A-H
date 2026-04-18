@@ -26,12 +26,15 @@ function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
+    minWidth: 1024,
+    minHeight: 640,
     show: false,
     backgroundColor: '#0a0a1a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 

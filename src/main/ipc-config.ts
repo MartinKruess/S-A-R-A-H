@@ -91,11 +91,14 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
     const dialogWin = new BrowserWindow({
       width: w,
       height: h,
+      minWidth: 720,
+      minHeight: 520,
       backgroundColor: '#0a0a1a',
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
 
