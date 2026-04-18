@@ -5,6 +5,8 @@ export interface ChatMessage {
 
 export interface ChatOptions {
   num_predict?: number;
+  /** Ollama keep_alive: seconds (number), duration string ("5m"), or -1 for forever. */
+  keep_alive?: number | string;
 }
 
 export interface LlmProvider {

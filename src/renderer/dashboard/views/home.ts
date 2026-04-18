@@ -1,9 +1,5 @@
 import { sarahCard } from '../../components/sarah-card.js';
-import type { SarahApi } from '../../../core/sarah-api.js';
-
-function getSarah(): SarahApi {
-  return (window as any).__sarah as SarahApi;
-}
+import { getSarah } from '../../shared/window-global.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
   const container = document.createElement('div');

@@ -4,14 +4,12 @@ import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import { buildSystemPrompt } from './prompt-builder.js';
-import { buildRoutingPrompt } from './routing-prompt.js';
-import { parseRouteTag } from './route-parser.js';
 import { VramManager } from './vram-manager.js';
-import { NUM_PREDICT_MAP } from './llm-types.js';
+import { RoutingService } from './routing-service.js';
+import { WorkerService } from './worker-service.js';
 
 const MAX_CONTEXT_TOKENS = 120_000;
 const CHARS_PER_TOKEN = 4;
-const STREAM_TIMEOUT_MS = 120_000;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -29,13 +27,17 @@ export class RouterService implements SarahService {
   private history: ChatMessage[] = [];
   private vramManager: VramManager;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private routing: RoutingService;
+  private worker: WorkerService;
 
   constructor(
     private context: AppContext,
     private routerProvider: LlmProvider,
-    private workerProvider: LlmProvider,
+    workerProvider: LlmProvider,
   ) {
     this.vramManager = new VramManager(context.parsedConfig.llm.baseUrl);
+    this.routing = new RoutingService(routerProvider);
+    this.worker = new WorkerService(workerProvider);
   }
 
   async init(): Promise<void> {
@@ -44,6 +46,11 @@ export class RouterService implements SarahService {
       this.status = 'error';
       return;
     }
+    // Warm router model into VRAM so the first real prompt doesn't pay cold-load cost.
+    // Failures are non-fatal — status stays 'running', first real call will retry.
+    await this.routing.warmup().catch((err) => {
+      console.warn('[Router] Warmup failed (non-fatal):', err);
+    });
     this.status = 'running';
   }
 
@@ -68,16 +75,15 @@ export class RouterService implements SarahService {
       return;
     }
 
-    const userMsg: ChatMessage = { role: 'user', content: text };
-    this.history.push(userMsg);
+    this.history.push({ role: 'user', content: text });
     await this.context.db.insert('messages', { conversation_id: 1, role: 'user', content: text });
 
     try {
       if (this.activeModel === '9b') {
         this.resetIdleTimer();
-        await this.sendToWorker(text, mode);
+        await this.runWorker(mode);
       } else {
-        await this.routeViaRouter(text, mode);
+        await this.routeAndRespond(text, mode);
       }
     } catch (err) {
       const errorKey = err instanceof Error && err.message === 'timeout' ? 'timeout' : 'connection';
@@ -85,108 +91,55 @@ export class RouterService implements SarahService {
     }
   }
 
-  private async routeViaRouter(text: string, mode: 'chat' | 'voice'): Promise<void> {
-    const routingPrompt = buildRoutingPrompt();
-    const messages: ChatMessage[] = [
-      { role: 'system', content: routingPrompt },
-      { role: 'user', content: text },
-    ];
+  private async routeAndRespond(text: string, mode: 'chat' | 'voice'): Promise<void> {
+    const result = await this.routing.route(text);
+    this.context.bus.emit(this.id, 'perf:timing', { label: 'router', ms: result.tookMs });
 
-    // Routing calls are NOT stored — we just need the route decision
-    const routerStart = performance.now();
-    const routerResponse = await this.chatWithTimeout(this.routerProvider, messages, () => {});
-    this.context.bus.emit(this.id, 'perf:timing', {
-      label: 'router',
-      ms: Math.round(performance.now() - routerStart),
-    });
-    const { route, feedback } = parseRouteTag(routerResponse);
-
-    // No-tag fallback: parseRouteTag returns 'self' when no tag found
-    if (!routerResponse.trimStart().startsWith('[ROUTE:')) {
+    if (!result.hadTag) {
       console.warn('[Router] No route tag in 2B response, falling back to self');
     }
 
-    if (route === 'self') {
-      // Emit feedback as the response
-      this.context.bus.emit(this.id, 'llm:chunk', { text: feedback });
-      this.context.bus.emit(this.id, 'llm:done', { fullText: feedback });
-
-      // Store in history and db
-      this.history.push({ role: 'assistant', content: feedback });
-      await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: feedback });
-    } else {
-      // Routes: 9b, backend, extern, vision — all go to 9B for now
-      // Map 'vision' to '9b' for the bus event (vision not yet a valid routing target)
-      const busTarget = route === 'vision' ? '9b' as const : route;
-      this.context.bus.emit(this.id, 'llm:routing', {
-        from: '2b',
-        to: busTarget,
-        feedback,
-      });
-
-      // Swap VRAM: unload 2B, 9B loads on next chat call
-      const llmConfig = this.context.parsedConfig.llm;
-      await this.vramManager.swapModels(llmConfig.routerModel, llmConfig.workerModel);
-      this.context.bus.emit(this.id, 'llm:model-swap', {
-        loading: llmConfig.workerModel,
-        unloading: llmConfig.routerModel,
-      });
-
-      this.activeModel = '9b';
-      this.resetIdleTimer();
-
-      await this.sendToWorker(text, mode);
+    if (result.route === 'self') {
+      this.context.bus.emit(this.id, 'llm:chunk', { text: result.feedback });
+      this.context.bus.emit(this.id, 'llm:done', { fullText: result.feedback });
+      this.history.push({ role: 'assistant', content: result.feedback });
+      await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: result.feedback });
+      return;
     }
+
+    // Routes: 9b, backend, extern, vision — all go to 9B for now
+    const busTarget = result.route === 'vision' ? '9b' as const : result.route;
+    this.context.bus.emit(this.id, 'llm:routing', {
+      from: '2b',
+      to: busTarget,
+      feedback: result.feedback,
+    });
+
+    const llmConfig = this.context.parsedConfig.llm;
+    await this.vramManager.swapModels(llmConfig.routerModel, llmConfig.workerModel);
+    this.context.bus.emit(this.id, 'llm:model-swap', {
+      loading: llmConfig.workerModel,
+      unloading: llmConfig.routerModel,
+    });
+
+    this.activeModel = '9b';
+    this.resetIdleTimer();
+    await this.runWorker(mode);
   }
 
-  private async sendToWorker(text: string, mode: 'chat' | 'voice'): Promise<void> {
+  private async runWorker(mode: 'chat' | 'voice'): Promise<void> {
     const systemPrompt = buildSystemPrompt(this.context.parsedConfig, mode);
     const messages = this.buildMessages(systemPrompt);
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
-    const numPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
 
-    const workerStart = performance.now();
-    const fullText = await this.chatWithTimeout(
-      this.workerProvider,
-      messages,
-      (chunk) => {
-        this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
-      },
-      { num_predict: numPredict },
-    );
-    this.context.bus.emit(this.id, 'perf:timing', {
-      label: 'worker',
-      ms: Math.round(performance.now() - workerStart),
+    const { fullText, tookMs } = await this.worker.stream(messages, responseStyle, (chunk) => {
+      this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
     });
+    this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
 
     this.history.push({ role: 'assistant', content: fullText });
     await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: fullText });
     this.context.bus.emit(this.id, 'llm:done', { fullText });
-  }
-
-  private async chatWithTimeout(
-    provider: LlmProvider,
-    messages: ChatMessage[],
-    onChunk: (text: string) => void,
-    options?: { num_predict?: number },
-  ): Promise<string> {
-    let timeoutId: ReturnType<typeof setTimeout>;
-    let rejectTimeout: (err: Error) => void;
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      rejectTimeout = reject;
-      timeoutId = setTimeout(() => reject(new Error('timeout')), STREAM_TIMEOUT_MS);
-    });
-
-    const chatPromise = provider.chat(messages, (chunk) => {
-      clearTimeout(timeoutId);
-      timeoutId = setTimeout(() => rejectTimeout(new Error('timeout')), STREAM_TIMEOUT_MS);
-      onChunk(chunk);
-    }, options);
-
-    const result = await Promise.race([chatPromise, timeoutPromise]);
-    clearTimeout(timeoutId!);
-    return result;
   }
 
   private buildMessages(systemPrompt: string): ChatMessage[] {
@@ -215,6 +168,11 @@ export class RouterService implements SarahService {
       const llmConfig = this.context.parsedConfig.llm;
       await this.vramManager.unloadModel(llmConfig.workerModel);
       this.activeModel = '2b';
+      // Router was unloaded during the swap to worker — re-warm it so the
+      // next prompt doesn't pay another cold-load.
+      await this.routing.warmup().catch((err) => {
+        console.warn('[Router] Re-warmup after idle swap failed:', err);
+      });
     }, IDLE_TIMEOUT_MS);
   }
 

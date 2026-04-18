@@ -7,7 +7,6 @@ export interface IpcCommands {
   'get-system-info':            { input: void; output: SystemIpcInfo };
   'get-config':                 { input: void; output: SarahConfig };
   'save-config':                { input: Partial<SarahConfig>; output: SarahConfig };
-  'is-first-run':               { input: void; output: boolean };
   'select-folder':              { input: string | undefined; output: string | null };
   'detect-programs':            { input: void; output: ProgramEntry[] };
   'scan-folder-exes':           { input: string; output: ProgramEntry[] };

@@ -62,6 +62,13 @@ export class VoiceService implements SarahService {
     this.interactionMode = mode;
   }
 
+  /** Enable one-shot TTS for a typed message, but only when in voice mode */
+  setChatSpeak(): void {
+    if (this.interactionMode === 'voice') {
+      this.interactionMode = 'chatspeak';
+    }
+  }
+
   private setState(state: VoiceState): void {
     this._voiceState = state;
     this.context.bus.emit(this.id, 'voice:state', { state });
@@ -353,8 +360,6 @@ export class VoiceService implements SarahService {
     }
 
     // Emit chat message for LLM processing
-    console.log('[Voice] transcript to LLM:', JSON.stringify(transcript));
-    console.log('[Voice] hex:', Buffer.from(transcript).toString('hex'));
     this.context.bus.emit(this.id, 'chat:message', { text: transcript, mode: 'voice' });
   }
 

@@ -67,12 +67,6 @@
   position: relative;
 }
 
-.sarah-placeholder {
-  font-size: var(--sarah-font-size-lg);
-  color: var(--sarah-text-muted);
-  letter-spacing: 0.1em;
-}
-
 /* ── Standalone dialog window ── */
 .dialog-standalone {
   width: 100%;
@@ -110,6 +104,14 @@
   gap: var(--sarah-space-md);
 }
 
+.settings-page-title {
+  margin-bottom: var(--sarah-space-xl);
+}
+
+.settings-accent-picker {
+  margin-bottom: var(--sarah-space-lg);
+}
+
 @media (max-width: 900px) {
   .settings-grid {
     grid-template-columns: 1fr;
@@ -135,6 +137,75 @@
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: var(--sarah-space-md);
 }
+
+/* ── Settings helpers ── */
+.settings-hint {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-text-muted);
+  line-height: 1.4;
+  padding: var(--sarah-space-xs) 0;
+}
+
+.settings-spacer-sm { height: var(--sarah-space-sm); }
+.settings-spacer-md { height: var(--sarah-space-md); }
+.settings-spacer-lg { height: var(--sarah-space-lg); }
+
+/* ── Slash commands (controls section) ── */
+.cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sarah-space-sm);
+  padding: var(--sarah-space-xs) var(--sarah-space-sm);
+  background: var(--sarah-bg-surface);
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+}
+
+.cmd-label {
+  color: var(--sarah-accent);
+  font-family: monospace;
+  font-size: var(--sarah-font-size-sm);
+  min-width: 120px;
+}
+
+.cmd-desc {
+  flex: 1;
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-text-secondary);
+}
+
+.cmd-delete {
+  background: none;
+  border: none;
+  color: var(--sarah-text-muted);
+  cursor: pointer;
+  font-size: var(--sarah-font-size-sm);
+  padding: 2px 6px;
+}
+
+.cmd-title {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--sarah-space-sm);
+}
+
+.cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-xs);
+}
+
+.cmd-add {
+  display: flex;
+  gap: var(--sarah-space-sm);
+  align-items: flex-end;
+  margin-top: var(--sarah-space-md);
+}
+
+.cmd-add-input { flex: 0 0 140px; }
+.cmd-add-prompt { flex: 1; }
 
 /* ── Save feedback ── */
 .save-feedback {

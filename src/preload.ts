@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { SarahApi, BootStatus } from './core/sarah-api.js';
+import type { VoiceState } from './services/voice/voice-types.js';
 
 const api: SarahApi = {
   version: process.versions.electron,
@@ -22,7 +23,6 @@ const api: SarahApi = {
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
-  isFirstRun: () => ipcRenderer.invoke('is-first-run'),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
   scanFolderExes: (folderPath) => ipcRenderer.invoke('scan-folder-exes', folderPath),
@@ -50,7 +50,7 @@ const api: SarahApi = {
   voice: {
     getState: () => ipcRenderer.invoke('voice-get-state'),
     onStateChange: (callback) => {
-      const handler = (_event: Electron.IpcRendererEvent, data: { state: string }) => callback(data as any);
+      const handler = (_event: Electron.IpcRendererEvent, data: { state: VoiceState }) => callback(data);
       ipcRenderer.on('voice:state', handler);
       return () => ipcRenderer.removeListener('voice:state', handler);
     },

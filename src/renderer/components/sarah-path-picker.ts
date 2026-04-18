@@ -1,8 +1,5 @@
 import { SarahElement } from './base.js';
-
-function getSarah(): { selectFolder: (title?: string) => Promise<string | null> } {
-  return (window as any).__sarah ?? (window as any).sarah;
-}
+import { getSarah } from '../shared/window-global.js';
 
 const CSS = `
   .path-wrapper {

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 type SegmentData = {
-  mesh: THREE.Mesh;
+  group: THREE.Group;
   baseNormal: THREE.Vector3;
   basePosition: THREE.Vector3;
   randomVec: THREE.Vector3;
@@ -232,7 +232,7 @@ export class SarahHexOrb {
       this.shellGroup.add(plateGroup);
 
       this.segments.push({
-        mesh: plateGroup as unknown as THREE.Mesh,
+        group: plateGroup,
         baseNormal: normal,
         basePosition: point.clone(),
         randomVec: new THREE.Vector3(
@@ -297,7 +297,7 @@ export class SarahHexOrb {
     this.innerAccentColor.set(color);
 
     this.segments.forEach((segment) => {
-      const group = segment.mesh as unknown as THREE.Group;
+      const group = segment.group;
       const outline = group.children[0] as THREE.Mesh;
       const mat = outline.material as THREE.MeshBasicMaterial;
       mat.color = this.outlineColor;
@@ -309,7 +309,7 @@ export class SarahHexOrb {
     this.innerIdleColor = this.shellColor.clone();
 
     this.segments.forEach((segment) => {
-      const group = segment.mesh as unknown as THREE.Group;
+      const group = segment.group;
       const plate = group.children[1] as THREE.Mesh;
       const mat = plate.material as THREE.MeshPhysicalMaterial;
       mat.color = this.shellColor;
@@ -413,7 +413,7 @@ export class SarahHexOrb {
 
     for (let i = 0; i < this.segments.length; i++) {
       const segment = this.segments[i];
-      const group = segment.mesh as unknown as THREE.Group;
+      const group = segment.group;
       const outline = group.children[0] as THREE.Mesh;
       const plate = group.children[1] as THREE.Mesh;
 
@@ -463,7 +463,7 @@ export class SarahHexOrb {
     }
 
     this.segments.forEach((segment) => {
-      const group = segment.mesh as unknown as THREE.Group;
+      const group = segment.group;
 
       group.children.forEach((child) => {
         const mesh = child as THREE.Mesh;
