@@ -36,7 +36,6 @@ export interface SarahApi {
   getSystemInfo(): Promise<SystemIpcInfo>;
   getConfig(): Promise<SarahConfig>;
   saveConfig(config: Partial<SarahConfig>): Promise<SarahConfig>;
-  isFirstRun(): Promise<boolean>;
   selectFolder(title?: string): Promise<string | null>;
   detectPrograms(): Promise<ProgramEntry[]>;
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;

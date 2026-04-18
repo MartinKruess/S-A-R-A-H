@@ -96,6 +96,19 @@ describe('RouterService', () => {
     expect(service.status).toBe('running');
   });
 
+  it('warms the router model during init with a 1-token keep_alive=-1 call', async () => {
+    await service.init();
+    expect(routerProvider.chat).toHaveBeenCalledTimes(1);
+    const [, , options] = (routerProvider.chat as any).mock.calls[0];
+    expect(options).toMatchObject({ num_predict: 1, keep_alive: -1 });
+  });
+
+  it('stays running when warmup fails (non-fatal)', async () => {
+    (routerProvider.chat as any).mockRejectedValueOnce(new Error('ollama unreachable'));
+    await service.init();
+    expect(service.status).toBe('running');
+  });
+
   it('status is error after init when router provider not available', async () => {
     (routerProvider.isAvailable as any).mockResolvedValue(false);
     await service.init();
@@ -105,6 +118,7 @@ describe('RouterService', () => {
   describe('routing to self', () => {
     it('emits feedback directly and stores messages in db', async () => {
       await service.init();
+      (routerProvider.chat as any).mockClear();
 
       const chunks: string[] = [];
       const dones: string[] = [];
@@ -170,6 +184,7 @@ describe('RouterService', () => {
 
     it('sets activeModel to 9b and subsequent messages go directly to 9B', async () => {
       await service.init();
+      (routerProvider.chat as any).mockClear();
 
       // First message — routes via 2B to 9B
       await service.handleChatMessage('Erkläre mir Quantenphysik', 'chat');

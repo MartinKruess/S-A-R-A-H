@@ -46,3 +46,7 @@
   padding: var(--sarah-space-lg) var(--sarah-space-xl);
   border-top: 1px solid var(--sarah-border);
 }
+
+.wizard-nav-spacer {
+  flex: 1;
+}
