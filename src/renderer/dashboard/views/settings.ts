@@ -10,8 +10,7 @@ export async function createSettingsView(): Promise<HTMLElement> {
   const container = document.createElement('div');
 
   const pageTitle = document.createElement('div');
-  pageTitle.className = 'home-greeting';
-  pageTitle.style.marginBottom = 'var(--sarah-space-xl)';
+  pageTitle.className = 'home-greeting settings-page-title';
   pageTitle.textContent = 'Einstellungen';
   container.appendChild(pageTitle);
 

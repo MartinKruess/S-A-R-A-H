@@ -59,7 +59,7 @@ export function createFilesSection(config: SarahConfig): HTMLElement {
   // PDF Categories
   const pdfCats: PdfCategory[] = resources.pdfCategories || [];
   const pdfContainer = document.createElement('div');
-  pdfContainer.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-md); margin-top: var(--sarah-space-md);';
+  pdfContainer.className = 'pdf-list';
 
   const onPdfUpdate = () => { resources.pdfCategories = pdfCats; save('resources', resources); showSaved(feedback); };
 

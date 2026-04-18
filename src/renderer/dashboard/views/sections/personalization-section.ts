@@ -30,7 +30,7 @@ export function createPersonalizationSection(config: SarahConfig): HTMLElement {
 
   // Accent color picker
   const accentPicker = buildAccentPicker(pers, notify);
-  accentPicker.style.marginBottom = 'var(--sarah-space-lg)';
+  accentPicker.classList.add('settings-accent-picker');
   section.appendChild(accentPicker);
 
   // First grid: voice, speech rate, chat font size, chat alignment

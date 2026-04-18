@@ -16,7 +16,7 @@ import {
 
 function createSectionHeading(text: string, first = false): HTMLElement {
   const heading = document.createElement('div');
-  heading.style.cssText = `font-size: var(--sarah-font-size-sm); color: var(--sarah-accent); text-transform: uppercase; letter-spacing: 0.08em; margin-top: ${first ? '0' : 'var(--sarah-space-lg)'}; margin-bottom: var(--sarah-space-xs);`;
+  heading.className = first ? 'pers-heading first' : 'pers-heading';
   heading.textContent = text;
   return heading;
 }

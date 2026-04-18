@@ -99,7 +99,7 @@ export class WizardController {
     }
 
     const spacer = document.createElement('div');
-    spacer.style.flex = '1';
+    spacer.className = 'wizard-nav-spacer';
     this.dom.navArea.appendChild(spacer);
 
     if (step.optional && this.currentStep < this.visibleSteps.length - 1) {

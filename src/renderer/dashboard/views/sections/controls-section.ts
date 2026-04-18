@@ -12,21 +12,21 @@ const BUILTIN_COMMANDS = [
 
 function createCommandRow(cmd: { command: string; description: string }, deletable: boolean, onDelete?: () => void): HTMLElement {
   const row = document.createElement('div');
-  row.style.cssText = 'display: flex; align-items: center; gap: var(--sarah-space-sm); padding: var(--sarah-space-xs) var(--sarah-space-sm); background: var(--sarah-bg-surface); border: 1px solid var(--sarah-border); border-radius: var(--sarah-radius-md);';
+  row.className = 'cmd-row';
 
   const cmdLabel = document.createElement('span');
-  cmdLabel.style.cssText = 'color: var(--sarah-accent); font-family: monospace; font-size: var(--sarah-font-size-sm); min-width: 120px;';
+  cmdLabel.className = 'cmd-label';
   cmdLabel.textContent = cmd.command;
   row.appendChild(cmdLabel);
 
   const desc = document.createElement('span');
-  desc.style.cssText = 'flex: 1; font-size: var(--sarah-font-size-sm); color: var(--sarah-text-secondary);';
+  desc.className = 'cmd-desc';
   desc.textContent = cmd.description;
   row.appendChild(desc);
 
   if (deletable && onDelete) {
     const delBtn = document.createElement('button');
-    delBtn.style.cssText = 'background: none; border: none; color: var(--sarah-text-muted); cursor: pointer; font-size: var(--sarah-font-size-sm); padding: 2px 6px;';
+    delBtn.className = 'cmd-delete';
     delBtn.textContent = '✕';
     delBtn.addEventListener('click', onDelete);
     row.appendChild(delBtn);
@@ -120,12 +120,12 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
 
   // Slash Commands header
   const cmdTitle = document.createElement('div');
-  cmdTitle.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-accent); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--sarah-space-sm);';
+  cmdTitle.className = 'cmd-title';
   cmdTitle.textContent = 'Slash-Commands';
   section.appendChild(cmdTitle);
 
   const cmdList = document.createElement('div');
-  cmdList.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-xs);';
+  cmdList.className = 'cmd-list';
 
   // Built-in commands
   for (const cmd of BUILTIN_COMMANDS) {
@@ -156,19 +156,19 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
 
   // Add custom command
   const addArea = document.createElement('div');
-  addArea.style.cssText = 'display: flex; gap: var(--sarah-space-sm); align-items: flex-end; margin-top: var(--sarah-space-md);';
+  addArea.className = 'cmd-add';
 
   const cmdInput = sarahInput({
     label: 'Command',
     placeholder: '/meincommand',
   });
-  cmdInput.style.flex = '0 0 140px';
+  cmdInput.classList.add('cmd-add-input');
 
   const promptInput = sarahInput({
     label: 'Prompt',
     placeholder: 'Was soll Sarah tun?',
   });
-  promptInput.style.flex = '1';
+  promptInput.classList.add('cmd-add-prompt');
 
   const addBtn = sarahButton({
     label: 'Hinzufügen',

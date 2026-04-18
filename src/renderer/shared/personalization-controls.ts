@@ -10,15 +10,15 @@ export type PersonalizationValues = Personalization;
 
 export function buildAccentPicker(pers: PersonalizationValues, onChange?: () => void): HTMLElement {
   const wrapper = document.createElement('div');
-  wrapper.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-xs);';
+  wrapper.className = 'pers-field';
 
   const label = document.createElement('div');
-  label.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-secondary); margin-bottom: var(--sarah-space-xs); letter-spacing: 0.03em;';
+  label.className = 'pers-label';
   label.textContent = 'Akzentfarbe';
   wrapper.appendChild(label);
 
   const grid = document.createElement('div');
-  grid.style.cssText = 'display: flex; gap: var(--sarah-space-sm); flex-wrap: wrap;';
+  grid.className = 'pers-grid';
 
   const setSwatchSelected = (el: HTMLElement, value: string): void => {
     el.style.borderColor = 'var(--sarah-text-primary)';
@@ -31,13 +31,12 @@ export function buildAccentPicker(pers: PersonalizationValues, onChange?: () => 
 
   for (const color of ACCENT_COLORS) {
     const swatch = document.createElement('div');
-    swatch.style.cssText = `width: 40px; height: 40px; border-radius: var(--sarah-radius-md); border: 2px solid transparent; cursor: pointer; transition: all var(--sarah-transition-fast); background-color: ${color.value};`;
+    swatch.className = 'pers-swatch';
+    swatch.style.backgroundColor = color.value;
     if (pers.accentColor === color.value) {
       setSwatchSelected(swatch, color.value);
     }
     swatch.title = color.label;
-    swatch.addEventListener('mouseenter', () => { swatch.style.transform = 'scale(1.1)'; });
-    swatch.addEventListener('mouseleave', () => { swatch.style.transform = 'scale(1)'; });
     swatch.addEventListener('click', () => {
       pers.accentColor = color.value;
       applyAccentColor(color.value);
@@ -196,11 +195,11 @@ export function buildQuirkGroup(pers: PersonalizationValues, onChange?: () => vo
     value: isCustomValue ? (pers.quirk ?? '') : '',
     onChange: (value) => { pers.quirk = value || 'custom'; onChange?.(); },
   });
+  customQuirkInput.classList.add('pers-custom-quirk');
   customQuirkInput.style.display = showCustom ? 'block' : 'none';
-  customQuirkInput.style.marginTop = 'var(--sarah-space-sm)';
 
   const quirkHint = document.createElement('div');
-  quirkHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); margin-top: var(--sarah-space-xs); line-height: 1.4;';
+  quirkHint.className = 'pers-hint';
   quirkHint.textContent = 'Beschreibe Sarahs Eigenart. Sexualisierte oder beleidigende Inhalte werden nicht akzeptiert.';
   quirkHint.style.display = showCustom ? 'block' : 'none';
 

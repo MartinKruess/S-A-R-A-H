@@ -6,11 +6,11 @@ import type { PdfCategory } from '../../core/config-schema.js';
 
 export function createPdfBlock(cat: PdfCategory, onChange?: () => void): HTMLElement {
   const block = document.createElement('div');
-  block.style.cssText = 'padding: var(--sarah-space-md); background: var(--sarah-bg-surface); border: 1px solid var(--sarah-border); border-radius: var(--sarah-radius-md); display: flex; flex-direction: column; gap: var(--sarah-space-sm);';
+  block.className = 'pdf-block';
   block.dataset.pdfTag = cat.tag;
 
   const title = document.createElement('div');
-  title.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-accent); font-weight: 500; letter-spacing: 0.03em;';
+  title.className = 'pdf-block-title';
   title.textContent = cat.tag;
   block.appendChild(title);
 
