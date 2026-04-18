@@ -25,3 +25,85 @@ body {
   outline: 1px solid var(--sarah-accent);
   outline-offset: 2px;
 }
+
+/* ── Shared: PDF blocks (wizard step-files + dashboard files-section) ── */
+.pdf-block {
+  padding: var(--sarah-space-md);
+  background: var(--sarah-bg-surface);
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-sm);
+}
+
+.pdf-block-title {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+.pdf-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-md);
+  margin-top: var(--sarah-space-md);
+}
+
+/* ── Shared: personalization controls (wizard + dashboard) ── */
+.pers-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-xs);
+}
+
+.pers-label {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-text-secondary);
+  margin-bottom: var(--sarah-space-xs);
+  letter-spacing: 0.03em;
+}
+
+.pers-grid {
+  display: flex;
+  gap: var(--sarah-space-sm);
+  flex-wrap: wrap;
+}
+
+.pers-swatch {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--sarah-radius-md);
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: all var(--sarah-transition-fast);
+}
+
+.pers-swatch:hover {
+  transform: scale(1.1);
+}
+
+.pers-custom-quirk {
+  margin-top: var(--sarah-space-sm);
+}
+
+.pers-hint {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-text-muted);
+  margin-top: var(--sarah-space-xs);
+  line-height: 1.4;
+}
+
+.pers-heading {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: var(--sarah-space-lg);
+  margin-bottom: var(--sarah-space-xs);
+}
+
+.pers-heading.first {
+  margin-top: 0;
+}

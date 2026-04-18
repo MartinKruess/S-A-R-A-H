@@ -28,13 +28,13 @@ export function save(key: string, value: Partial<SarahConfig>[keyof SarahConfig]
 
 export function createSpacer(size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {
   const spacer = document.createElement('div');
-  spacer.style.height = `var(--sarah-space-${size})`;
+  spacer.className = `settings-spacer-${size}`;
   return spacer;
 }
 
 export function createHint(text: string): HTMLElement {
   const hint = document.createElement('div');
-  hint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
+  hint.className = 'settings-hint';
   hint.textContent = text;
   return hint;
 }
