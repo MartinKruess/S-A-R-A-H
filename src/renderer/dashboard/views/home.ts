@@ -11,9 +11,12 @@ export async function createHomeView(): Promise<HTMLElement> {
   const name = config.profile.displayName || 'Nutzer';
 
   root.appendChild(buildBanner(name));
-  root.appendChild(buildLeftColumn());
+  root.appendChild(buildSysLoadPanel());
+  root.appendChild(buildVoiceIoPanel());
   root.appendChild(buildHero());
-  root.appendChild(buildRightColumn());
+  root.appendChild(buildTerminePanel());
+  root.appendChild(buildWetterPanel());
+  root.appendChild(buildMediaPanel());
 
   return root;
 }
@@ -43,51 +46,58 @@ function buildBanner(name: string): HTMLElement {
   return banner;
 }
 
-function buildLeftColumn(): HTMLElement {
-  const column = document.createElement('div');
-  column.className = 'cockpit-left';
-
+function buildSysLoadPanel(): HTMLElement {
   const systemLoad = createSystemLoadBody();
-  // `systemLoad.dispose` is intentionally not auto-wired: the dashboard view
-  // lives for the lifetime of its window. Exposed on the element for future
-  // lifecycle hooks.
   (systemLoad.el as HTMLElement & { __dispose?: () => void }).__dispose = systemLoad.dispose;
-
-  column.appendChild(sarahPanel({
+  const panel = sarahPanel({
     title: 'SYSTEM LOAD',
     accent: 'cyan',
     children: [systemLoad.el],
-  }));
+  });
+  panel.classList.add('cockpit-sysload');
+  return panel;
+}
 
+function buildVoiceIoPanel(): HTMLElement {
   const voiceIo = createVoiceIoBody();
   (voiceIo.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIo.dispose;
-
-  column.appendChild(sarahPanel({
+  const panel = sarahPanel({
     title: 'VOICE I/O',
     accent: 'mint',
     children: [voiceIo.el],
-  }));
-
-  return column;
+  });
+  panel.classList.add('cockpit-voiceio');
+  return panel;
 }
 
-function buildRightColumn(): HTMLElement {
-  const column = document.createElement('div');
-  column.className = 'cockpit-right';
-
-  column.appendChild(sarahPanel({
+function buildTerminePanel(): HTMLElement {
+  const panel = sarahPanel({
     title: 'TERMINE',
     accent: 'violet',
     children: ['Heute · Diese Woche'],
-  }));
+  });
+  panel.classList.add('cockpit-termine');
+  return panel;
+}
 
-  column.appendChild(sarahPanel({
-    title: 'WETTER & MEDIA',
+function buildWetterPanel(): HTMLElement {
+  const panel = sarahPanel({
+    title: 'WETTER',
     accent: 'pink',
     children: ['—'],
-  }));
+  });
+  panel.classList.add('cockpit-wetter');
+  return panel;
+}
 
-  return column;
+function buildMediaPanel(): HTMLElement {
+  const panel = sarahPanel({
+    title: 'MEDIA',
+    accent: 'cyan',
+    children: ['—'],
+  });
+  panel.classList.add('cockpit-media');
+  return panel;
 }
 
 function buildHero(): HTMLElement {

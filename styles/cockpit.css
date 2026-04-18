@@ -2,6 +2,7 @@
    padding + max-width from .dialog-standalone in dashboard.css */
 .dialog-standalone.view-dashboard {
   padding: 0;
+  background: var(--cockpit-bg-void);
 }
 .dialog-standalone.view-dashboard > * {
   max-width: none;
@@ -11,19 +12,32 @@
 .cockpit {
   position: relative;
   display: grid;
-  grid-template-columns: clamp(260px, 22vw, 320px) 1fr clamp(260px, 22vw, 320px);
-  grid-template-rows: 64px 1fr;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-rows: 5rem repeat(4, minmax(0, 1fr));
   grid-template-areas:
-    "banner banner banner"
-    "left   hero   right";
+    "banner  banner  banner  banner  banner  banner"
+    "sysload sysload .       .       termine termine"
+    ".       .       hero    hero    termine termine"
+    ".       .       hero    hero    wetter  media  "
+    "voiceio voiceio .       .       .       .      ";
   gap: 16px;
   padding: 20px;
   width: 100%;
-  min-height: 100vh;
-  background: var(--cockpit-bg-void);
+  height: 100vh;
+  background:
+    radial-gradient(circle 900px at 50% 35%, rgba(0, 229, 255, 0.08) 0%, transparent 55%),
+    radial-gradient(circle 700px at 50% 80%, rgba(124, 58, 237, 0.07) 0%, transparent 55%),
+    radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%),
+    var(--cockpit-bg-void);
   color: var(--cockpit-text-hud);
   font-family: var(--cockpit-font-body);
 }
+
+.cockpit-sysload { grid-area: sysload; }
+.cockpit-voiceio { grid-area: voiceio; }
+.cockpit-termine { grid-area: termine; }
+.cockpit-wetter  { grid-area: wetter; }
+.cockpit-media   { grid-area: media; }
 
 .cockpit::after {
   content: "";
@@ -69,26 +83,6 @@
   letter-spacing: 0.06em;
 }
 
-/* ── Columns ── */
-.cockpit-left {
-  grid-area: left;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.cockpit-right {
-  grid-area: right;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.cockpit-left > *,
-.cockpit-right > * {
-  flex: 1;
-}
-
 /* ── Hero ── */
 .cockpit-hero {
   grid-area: hero;
@@ -97,9 +91,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 24px;
-  overflow: hidden;
-  background: radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%);
+  gap: 16px;
+  padding: 16px;
 }
 
 .cockpit-hero-stage {
@@ -211,7 +204,11 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 0;
   color: var(--cockpit-accent-cyan);
 }
 
@@ -220,8 +217,12 @@
 .system-load-ring[data-metric="ram"] { color: var(--cockpit-accent-pink); }
 
 .system-load-svg {
-  transform: rotate(-90deg);
   overflow: visible;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  aspect-ratio: 1;
 }
 
 .ring-bg {
@@ -233,29 +234,31 @@
   transition: stroke-dashoffset 400ms ease-out;
 }
 
-.ring-label {
-  font-family: var(--cockpit-font-heading);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  color: var(--cockpit-text-dim);
-  text-transform: uppercase;
+.ring-text-value {
+  font-family: var(--cockpit-font-mono);
+  font-size: 1.35rem;
+  fill: var(--cockpit-text-hud);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
-.ring-value {
-  font-family: var(--cockpit-font-mono);
-  font-size: 0.85rem;
-  color: var(--cockpit-text-hud);
-  font-variant-numeric: tabular-nums;
+.ring-text-label {
+  font-family: var(--cockpit-font-heading);
+  font-size: 0.62rem;
+  letter-spacing: 0.2em;
+  fill: var(--cockpit-text-dim);
+  text-transform: uppercase;
 }
 
 .system-load-ring.is-high .ring-track {
   filter: drop-shadow(0 0 8px currentColor);
   animation: system-load-pulse 1.2s ease-in-out infinite;
+  transform-origin: 56px 56px;
 }
 
 @keyframes system-load-pulse {
-  0%, 100% { transform: scale(1); transform-origin: 36px 36px; }
-  50%      { transform: scale(1.04); transform-origin: 36px 36px; }
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.04); }
 }
 
 @media (prefers-reduced-motion: reduce) {
