@@ -211,7 +211,7 @@ export function createFilesStep(data: WizardData): HTMLElement {
 
   container.appendChild(form);
 
-  const makeProgramsSelect = (options: ProgramOption[]): HTMLElement => sarahTagSelect({
+  const makeProgramsSelect = (options: ProgramOption[]): ReturnType<typeof sarahTagSelect> => sarahTagSelect({
     label: 'Welche Programme nutzt du oft?',
     options,
     selected: currentSelected,
@@ -222,17 +222,21 @@ export function createFilesStep(data: WizardData): HTMLElement {
     },
   });
 
+  const mountSelect = (options: ProgramOption[]): void => {
+    const el = makeProgramsSelect(options);
+    tagSelectEl = el;
+    programsPlaceholder.replaceWith(el);
+  };
+
   getSarah().detectPrograms().then((programs: ProgramEntry[]) => {
     detector.registerDetected(programs);
     currentOptions = detector.buildOptions(programs);
     binding.currentOptions = currentOptions;
-    tagSelectEl = makeProgramsSelect(currentOptions);
-    programsPlaceholder.replaceWith(tagSelectEl);
+    mountSelect(currentOptions);
   }).catch(() => {
     currentOptions = [];
     binding.currentOptions = currentOptions;
-    tagSelectEl = makeProgramsSelect([]);
-    programsPlaceholder.replaceWith(tagSelectEl);
+    mountSelect([]);
   });
 
   return container;
