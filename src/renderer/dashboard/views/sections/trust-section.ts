@@ -1,7 +1,7 @@
 import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahToggle } from '../../../components/sarah-toggle.js';
 import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
-import { showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
+import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
 
 const EXCLUSION_OPTIONS = [
@@ -34,10 +34,7 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     },
   }));
 
-  const memoryHint = document.createElement('div');
-  memoryHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
-  memoryHint.textContent = 'Sarah merkt sich dein Verhalten und Muster, aber niemals Passwörter, Bank- oder Versicherungsdaten.';
-  section.appendChild(memoryHint);
+  section.appendChild(createHint('Sarah merkt sich dein Verhalten und Muster, aber niemals Passwörter, Bank- oder Versicherungsdaten.'));
 
   const exclusions = trust.memoryExclusions || [];
   exclusionsWrapper.appendChild(sarahTagSelect({
@@ -48,10 +45,7 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     onChange: (values) => { trust.memoryExclusions = values; save('trust', trust); showSaved(feedback); },
   }));
   section.appendChild(exclusionsWrapper);
-
-  const spacer = document.createElement('div');
-  spacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer);
+  section.appendChild(createSpacer());
 
   section.appendChild(sarahSelect({
     label: 'Dateizugriff',
@@ -64,9 +58,7 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     onChange: (val) => { trust.fileAccess = val as typeof trust.fileAccess; save('trust', trust); showSaved(feedback); },
   }));
 
-  const spacer2 = document.createElement('div');
-  spacer2.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer2);
+  section.appendChild(createSpacer());
 
   section.appendChild(sarahSelect({
     label: 'Bestätigungen',

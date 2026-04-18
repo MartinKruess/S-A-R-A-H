@@ -1,4 +1,4 @@
-import { showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
+import { showSaved, createSectionHeader, save, createSpacer } from '../../../shared/settings-utils.js';
 import {
   buildAccentPicker,
   buildVoiceSelect,
@@ -49,29 +49,13 @@ export function createPersonalizationSection(config: SarahConfig): HTMLElement {
   responseGrid.appendChild(buildResponseStyleSelect(pers, notify));
   responseGrid.appendChild(buildToneSelect(pers, notify));
   section.appendChild(responseGrid);
-
-  const responseSpacer = document.createElement('div');
-  responseSpacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(responseSpacer);
-
+  section.appendChild(createSpacer());
   section.appendChild(buildEmojisToggle(pers, notify));
-
-  const spacer = document.createElement('div');
-  spacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer);
-
+  section.appendChild(createSpacer());
   section.appendChild(buildResponseModeSelect(pers, notify));
-
-  const spacer2 = document.createElement('div');
-  spacer2.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer2);
-
+  section.appendChild(createSpacer());
   section.appendChild(buildTraitsSelect(pers, notify));
-
-  const spacer3 = document.createElement('div');
-  spacer3.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer3);
-
+  section.appendChild(createSpacer());
   section.appendChild(buildQuirkGroup(pers, notify));
 
   return section;

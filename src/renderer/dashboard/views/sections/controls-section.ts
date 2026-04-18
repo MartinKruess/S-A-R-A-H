@@ -1,7 +1,7 @@
 import { sarahInput } from '../../../components/sarah-input.js';
 import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahButton } from '../../../components/sarah-button.js';
-import { showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
+import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
 import type { SarahConfig, CustomCommand } from '../../../../core/config-schema.js';
 
 const BUILTIN_COMMANDS = [
@@ -80,10 +80,7 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
     showSaved(feedback);
   });
   section.appendChild(hotkeyWrapper);
-
-  const spacer = document.createElement('div');
-  spacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(spacer);
+  section.appendChild(createSpacer());
 
   // Quiet mode duration
   section.appendChild(sarahSelect({
@@ -97,16 +94,11 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
     value: String(controls.quietModeDuration ?? 60),
     onChange: (val) => { controls.quietModeDuration = parseInt(val, 10); save('controls', controls); showSaved(feedback); },
   }));
-  const quietHint = document.createElement('div');
-  quietHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
-  quietHint.textContent = 'Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.';
-  section.appendChild(quietHint);
+  section.appendChild(createHint('Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.'));
 
   // Performance profile
   const llm = { ...config.llm };
-  const perfSpacer = document.createElement('div');
-  perfSpacer.style.height = 'var(--sarah-space-md)';
-  section.appendChild(perfSpacer);
+  section.appendChild(createSpacer());
 
   section.appendChild(sarahSelect({
     label: 'GPU-Leistungsprofil',
@@ -123,14 +115,8 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
       showSaved(feedback);
     },
   }));
-  const perfHint = document.createElement('div');
-  perfHint.style.cssText = 'font-size: var(--sarah-font-size-sm); color: var(--sarah-text-muted); line-height: 1.4; padding: var(--sarah-space-xs) 0;';
-  perfHint.textContent = 'Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.';
-  section.appendChild(perfHint);
-
-  const spacer2 = document.createElement('div');
-  spacer2.style.height = 'var(--sarah-space-lg)';
-  section.appendChild(spacer2);
+  section.appendChild(createHint('Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.'));
+  section.appendChild(createSpacer('lg'));
 
   // Slash Commands header
   const cmdTitle = document.createElement('div');
