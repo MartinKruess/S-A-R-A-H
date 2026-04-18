@@ -33,6 +33,7 @@
   "dependencies": {
     "@picovoice/porcupine-node": "^4.0.2",
     "better-sqlite3": "^12.8.0",
+    "systeminformation": "^5.31.5",
     "three": "^0.183.2",
     "uiohook-napi": "^1.5.5",
     "zod": "^4.3.6"
