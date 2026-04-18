@@ -5,11 +5,9 @@ import { sarahPathPicker } from '../../components/sarah-path-picker.js';
 import { PDF_CATEGORY_OPTIONS } from '../../shared/pdf-constants.js';
 import { createPdfBlock } from '../../shared/pdf-block.js';
 import { createProgramDetector } from '../program-detection.js';
-import type { ScannedProgram, ProgramOption } from '../program-detection.js';
-
-function getSarah(): any {
-  return (window as any).__sarah;
-}
+import type { ProgramOption } from '../program-detection.js';
+import { getSarah } from '../../shared/settings-utils.js';
+import type { ProgramEntry } from '../../../core/config-schema.js';
 
 const GRID_CSS = `
   .folder-grid {
@@ -40,7 +38,35 @@ const GRID_CSS = `
     font-weight: 500;
     letter-spacing: 0.03em;
   }
+
+  .files-placeholder {
+    padding: 8px 0;
+    color: var(--sarah-text-muted);
+    font-size: var(--sarah-font-size-sm);
+  }
+
+  .files-scan-status {
+    padding: 4px 0;
+    color: var(--sarah-accent);
+    font-size: var(--sarah-font-size-sm);
+    min-height: 1.2em;
+  }
+
+  .pdf-blocks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sarah-space-md);
+  }
 `;
+
+type Detector = ReturnType<typeof createProgramDetector>;
+
+interface ScanBinding {
+  status: HTMLElement;
+  detector: Detector;
+  currentOptions: ProgramOption[];
+  syncTagSelect: () => void;
+}
 
 function findCategory(data: WizardData, tag: string): PdfCategory {
   let cat = data.resources.pdfCategories.find(c => c.tag === tag);
@@ -51,184 +77,161 @@ function findCategory(data: WizardData, tag: string): PdfCategory {
   return cat;
 }
 
-export function createFilesStep(data: WizardData): HTMLElement {
-  // Per-instance state — no module-level singletons
-  const detector = createProgramDetector();
-  let tagSelectEl: ReturnType<typeof sarahTagSelect> | null = null;
-  let currentOptions: ProgramOption[] = [];
-  let currentSelected: string[] = data.resources.programs.map(p => p.name);
+function runScan(binding: ScanBinding, folderPath: string, label: string): void {
+  binding.status.textContent = `Scanne ${label}...`;
+  getSarah().scanFolderExes(folderPath).then((programs: ProgramEntry[]) => {
+    binding.status.textContent = programs.length > 0
+      ? `${programs.length} ${label} gefunden in ${folderPath}`
+      : `Keine ${label} gefunden`;
+    binding.detector.addScannedPrograms(programs, binding.currentOptions);
+    binding.syncTagSelect();
+    setTimeout(() => { binding.status.textContent = ''; }, 4000);
+  }).catch(() => { binding.status.textContent = ''; });
+}
 
-  function syncTagSelect(): void {
-    if (!tagSelectEl) return;
-    tagSelectEl.setOptions(currentOptions);
-    tagSelectEl.setSelected(currentSelected);
-  }
-
-  function addScannedPrograms(programs: ScannedProgram[]): void {
-    detector.addScannedPrograms(programs, currentOptions);
-    syncTagSelect();
-  }
-
-  const container = document.createElement('div');
-
-  const style = document.createElement('style');
-  style.textContent = GRID_CSS;
-  container.appendChild(style);
-
-  const detectedFolders: Record<string, string> = (data.system.folders as unknown as Record<string, string>) || {};
-
+function createFolderGrid(data: WizardData, binding: ScanBinding): HTMLElement {
+  const grid = document.createElement('div');
+  grid.className = 'folder-grid';
   const showGames = data.profile.usagePurposes.includes('Gaming') || data.profile.hobbies.includes('Gaming');
 
-  // Placeholder shown while programs are loading
-  const programsPlaceholder = document.createElement('div');
-  programsPlaceholder.style.cssText = 'padding: 8px 0; color: var(--sarah-muted, #888); font-size: 0.9em;';
-  programsPlaceholder.textContent = 'Lade Programme...';
-
-  // Folder scan status indicator
-  const scanStatus = document.createElement('div');
-  scanStatus.style.cssText = 'padding: 4px 0; color: var(--sarah-accent, #00d4ff); font-size: 0.85em; min-height: 1.2em;';
-
-  const children: HTMLElement[] = [
-    programsPlaceholder,
-    scanStatus,
-  ];
-
-  // --- Folder grid (2-col on desktop) ---
-  const folderGrid = document.createElement('div');
-  folderGrid.className = 'folder-grid';
-
-  // Extra programs folder picker
-  folderGrid.appendChild(sarahPathPicker({
+  grid.appendChild(sarahPathPicker({
     label: 'Weitere Programme (Ordner scannen)',
     placeholder: 'z.B. E:\\ oder D:\\Programme...',
     value: data.resources.extraProgramsFolder,
     onChange: (value) => {
       data.resources.extraProgramsFolder = value;
-      if (value) {
-        scanStatus.textContent = 'Scanne Ordner...';
-        getSarah().scanFolderExes(value).then((programs: ScannedProgram[]) => {
-          scanStatus.textContent = programs.length > 0
-            ? `${programs.length} Programme gefunden in ${value}`
-            : 'Keine Programme gefunden';
-          addScannedPrograms(programs);
-          setTimeout(() => { scanStatus.textContent = ''; }, 4000);
-        }).catch(() => { scanStatus.textContent = ''; });
-      }
+      if (value) runScan(binding, value, 'Programme');
     },
   }));
 
-  // Games folder picker (only if gaming selected)
   if (showGames) {
-    folderGrid.appendChild(sarahPathPicker({
+    grid.appendChild(sarahPathPicker({
       label: 'Games-Ordner (automatisch scannen)',
       placeholder: 'z.B. D:\\Games...',
       value: data.resources.gamesFolder,
       onChange: (value) => {
         data.resources.gamesFolder = value;
-        if (value) {
-          scanStatus.textContent = 'Scanne Games-Ordner...';
-          getSarah().scanFolderExes(value).then((programs: ScannedProgram[]) => {
-            scanStatus.textContent = programs.length > 0
-              ? `${programs.length} Games gefunden in ${value}`
-              : 'Keine Games gefunden';
-            addScannedPrograms(programs);
-            setTimeout(() => { scanStatus.textContent = ''; }, 4000);
-          }).catch(() => { scanStatus.textContent = ''; });
-        }
+        if (value) runScan(binding, value, 'Games');
       },
     }));
   }
 
-  // Standard folder pickers
-  folderGrid.appendChild(sarahPathPicker({
+  grid.appendChild(sarahPathPicker({
     label: 'Wo liegen deine Bilder?',
-    placeholder: detectedFolders.pictures || 'Bilder-Ordner...',
-    value: data.resources.picturesFolder || detectedFolders.pictures || '',
+    placeholder: data.system.folders.pictures || 'Bilder-Ordner...',
+    value: data.resources.picturesFolder || data.system.folders.pictures || '',
     onChange: (value) => { data.resources.picturesFolder = value; },
   }));
 
-  folderGrid.appendChild(sarahPathPicker({
+  grid.appendChild(sarahPathPicker({
     label: 'Wo installierst du Programme?',
     placeholder: 'Installations-Ordner...',
     value: data.resources.installFolder,
     onChange: (value) => { data.resources.installFolder = value; },
   }));
 
-  children.push(folderGrid);
+  return grid;
+}
 
-  // --- PDF Categories ---
-  const pdfBlocksContainer = document.createElement('div');
-  pdfBlocksContainer.style.cssText = 'display: flex; flex-direction: column; gap: var(--sarah-space-md);';
+function createPdfSection(data: WizardData): HTMLElement[] {
+  const blocks = document.createElement('div');
+  blocks.className = 'pdf-blocks';
 
-  // Restore existing category blocks
   for (const cat of data.resources.pdfCategories) {
-    pdfBlocksContainer.appendChild(createPdfBlock(findCategory(data, cat.tag)));
+    blocks.appendChild(createPdfBlock(findCategory(data, cat.tag)));
   }
 
-  children.push(
-    sarahTagSelect({
-      label: 'Welche Arten von PDFs hast du?',
-      options: PDF_CATEGORY_OPTIONS,
-      selected: data.resources.pdfCategories.map(c => c.tag),
-      allowCustom: true,
-      onChange: (values) => {
-        // Add new blocks
-        for (const tag of values) {
-          if (!pdfBlocksContainer.querySelector(`[data-pdf-tag="${tag}"]`)) {
-            pdfBlocksContainer.appendChild(createPdfBlock(findCategory(data, tag)));
-          }
+  const tagSelect = sarahTagSelect({
+    label: 'Welche Arten von PDFs hast du?',
+    options: PDF_CATEGORY_OPTIONS,
+    selected: data.resources.pdfCategories.map(c => c.tag),
+    allowCustom: true,
+    onChange: (values) => {
+      for (const tag of values) {
+        if (!blocks.querySelector(`[data-pdf-tag="${tag}"]`)) {
+          blocks.appendChild(createPdfBlock(findCategory(data, tag)));
         }
-        // Remove deselected blocks
-        const blocks = pdfBlocksContainer.querySelectorAll<HTMLElement>('[data-pdf-tag]');
-        blocks.forEach(block => {
-          const blockTag = block.dataset.pdfTag!;
-          if (!values.includes(blockTag)) {
-            block.remove();
-            data.resources.pdfCategories = data.resources.pdfCategories.filter(c => c.tag !== blockTag);
-          }
-        });
-      },
-    }),
-    pdfBlocksContainer,
-  );
+      }
+      blocks.querySelectorAll<HTMLElement>('[data-pdf-tag]').forEach(block => {
+        const blockTag = block.dataset.pdfTag!;
+        if (!values.includes(blockTag)) {
+          block.remove();
+          data.resources.pdfCategories = data.resources.pdfCategories.filter(c => c.tag !== blockTag);
+        }
+      });
+    },
+  });
+
+  return [tagSelect, blocks];
+}
+
+export function createFilesStep(data: WizardData): HTMLElement {
+  const detector = createProgramDetector();
+  let tagSelectEl: ReturnType<typeof sarahTagSelect> | null = null;
+  let currentOptions: ProgramOption[] = [];
+  let currentSelected: string[] = data.resources.programs.map(p => p.name);
+
+  const syncTagSelect = (): void => {
+    if (!tagSelectEl) return;
+    tagSelectEl.setOptions(currentOptions);
+    tagSelectEl.setSelected(currentSelected);
+  };
+
+  const container = document.createElement('div');
+  const style = document.createElement('style');
+  style.textContent = GRID_CSS;
+  container.appendChild(style);
+
+  const programsPlaceholder = document.createElement('div');
+  programsPlaceholder.className = 'files-placeholder';
+  programsPlaceholder.textContent = 'Lade Programme...';
+
+  const scanStatus = document.createElement('div');
+  scanStatus.className = 'files-scan-status';
+
+  const binding: ScanBinding = {
+    status: scanStatus,
+    detector,
+    currentOptions,
+    syncTagSelect,
+  };
+
+  const pdfChildren = createPdfSection(data);
 
   const form = sarahForm({
     title: 'Dateien & Programme',
     description: 'Damit ich dir besser helfen kann, zeig mir wo deine wichtigen Dateien liegen. Wähle einen Ordner aus um ihn nach Programmen zu durchsuchen.',
-    children,
+    children: [
+      programsPlaceholder,
+      scanStatus,
+      createFolderGrid(data, binding),
+      ...pdfChildren,
+    ],
   });
 
   container.appendChild(form);
 
-  // Async: detect programs and replace placeholder with tag-select
-  getSarah().detectPrograms().then((programs: ScannedProgram[]) => {
+  const makeProgramsSelect = (options: ProgramOption[]): HTMLElement => sarahTagSelect({
+    label: 'Welche Programme nutzt du oft?',
+    options,
+    selected: currentSelected,
+    allowCustom: true,
+    onChange: (values) => {
+      currentSelected = values;
+      data.resources.programs = values.map(detector.buildProgramEntry);
+    },
+  });
+
+  getSarah().detectPrograms().then((programs: ProgramEntry[]) => {
     detector.registerDetected(programs);
     currentOptions = detector.buildOptions(programs);
-
-    tagSelectEl = sarahTagSelect({
-      label: 'Welche Programme nutzt du oft?',
-      options: currentOptions,
-      selected: currentSelected,
-      allowCustom: true,
-      onChange: (values) => {
-        currentSelected = values;
-        data.resources.programs = values.map(detector.buildProgramEntry);
-      },
-    });
-
+    binding.currentOptions = currentOptions;
+    tagSelectEl = makeProgramsSelect(currentOptions);
     programsPlaceholder.replaceWith(tagSelectEl);
   }).catch(() => {
     currentOptions = [];
-    tagSelectEl = sarahTagSelect({
-      label: 'Welche Programme nutzt du oft?',
-      options: [],
-      selected: currentSelected,
-      allowCustom: true,
-      onChange: (values) => {
-        currentSelected = values;
-        data.resources.programs = values.map(detector.buildProgramEntry);
-      },
-    });
+    binding.currentOptions = currentOptions;
+    tagSelectEl = makeProgramsSelect([]);
     programsPlaceholder.replaceWith(tagSelectEl);
   });
 

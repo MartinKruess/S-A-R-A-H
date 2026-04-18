@@ -99,16 +99,11 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
 
         findExes(full, 0);
         // Only accept if the exe name relates to the folder name
-        if (
-          bestExe &&
-          (bestExe as any).score >= 50 &&
-          !seen.has((bestExe as any).name.toLowerCase())
-        ) {
-          seen.add((bestExe as any).name.toLowerCase());
-          results.push({
-            name: (bestExe as any).name,
-            path: (bestExe as any).path,
-          });
+        // Cast needed: TS narrows `bestExe` to null across the closure boundary
+        const picked = bestExe as { name: string; path: string; score: number } | null;
+        if (picked && picked.score >= 50 && !seen.has(picked.name.toLowerCase())) {
+          seen.add(picked.name.toLowerCase());
+          results.push({ name: picked.name, path: picked.path });
         }
       }
 
@@ -116,6 +111,7 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
         name: p.name,
         path: p.path,
         type: classifyProgramPath(p.path),
+        source: 'detected' as const,
         verified: verifyProgramPath(p.path),
         aliases: generateAliases(p.name),
         duplicateGroup: undefined as string | undefined,
@@ -213,6 +209,7 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
         name: p.name,
         path: p.path,
         type: classifyProgramPath(p.path),
+        source: 'detected' as const,
         verified: p.path.startsWith('appx:') ? true : verifyProgramPath(p.path),
         aliases: generateAliases(p.name),
         duplicateGroup: undefined as string | undefined,
