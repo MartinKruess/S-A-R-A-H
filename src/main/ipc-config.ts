@@ -49,6 +49,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
     async (_event, config: Partial<SarahConfig>) => {
       const ctx = getAppContext();
       const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
+      const previousAudio = ctx.parsedConfig.audio;
       const merged = { ...existing, ...config };
 
       const { SarahConfigSchema } = await import('../core/config-schema.js');
@@ -59,6 +60,13 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
       if ('controls' in config) {
         await getService<VoiceService>(ctx, 'voice').applyConfig();
+      }
+
+      if (JSON.stringify(previousAudio) !== JSON.stringify(parsed.audio)) {
+        const win = getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('audio-config-changed', parsed.audio);
+        }
       }
 
       return ctx.parsedConfig;

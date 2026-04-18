@@ -99,6 +99,15 @@ export const ControlsSchema = z.object({
   customCommands: z.array(CustomCommandSchema).default([]),
 });
 
+export const AudioSchema = z.object({
+  inputDeviceId: z.string().optional(),
+  outputDeviceId: z.string().optional(),
+  inputMuted: z.boolean().default(false),
+  inputGain: z.number().min(0).max(1.5).default(1.0),
+  inputVolume: z.number().min(0).max(1).default(1.0),
+  outputVolume: z.number().min(0).max(1).default(1.0),
+});
+
 export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
   routerModel: z.string().default('phi4-mini:3.8b'),
@@ -179,6 +188,7 @@ export const SarahConfigSchema = z.preprocess(
     trust: pre(TrustSchema),
     personalization: pre(PersonalizationSchema),
     controls: pre(ControlsSchema),
+    audio: pre(AudioSchema),
     llm: pre(LlmSchema),
     integrations: pre(
       z.object({
@@ -200,5 +210,6 @@ export type Resources = z.infer<typeof ResourcesSchema>;
 export type Trust = z.infer<typeof TrustSchema>;
 export type Personalization = z.infer<typeof PersonalizationSchema>;
 export type Controls = z.infer<typeof ControlsSchema>;
+export type AudioConfig = z.infer<typeof AudioSchema>;
 export type LlmConfig = z.infer<typeof LlmSchema>;
 export type SystemInfo = z.infer<typeof SystemSchema>;

@@ -1,4 +1,4 @@
-import type { SarahConfig, ProgramEntry } from './config-schema.js';
+import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { BusEvents } from './bus-events.js';
 
@@ -36,8 +36,9 @@ export interface IpcEvents {
   'voice:interrupted': BusEvents['voice:interrupted'];
   'voice:wake':        BusEvents['voice:wake'];
   'boot-status':       BusEvents['boot:status'];
-  'system:metrics':    SystemMetrics;
-  'voice:level':       VoiceLevel;
+  'system:metrics':        SystemMetrics;
+  'voice:level':           VoiceLevel;
+  'audio-config-changed':  AudioConfig;
 }
 
 /** IPC events sent from renderer to main (one-way) */
