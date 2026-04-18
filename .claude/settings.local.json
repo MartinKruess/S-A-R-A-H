@@ -28,7 +28,8 @@
       "mcp__plugin_context7_context7__resolve-library-id",
       "mcp__plugin_context7_context7__query-docs",
       "Bash(python:*)",
-      "Bash(curl -s -X POST http://127.0.0.1:8786/shutdown)"
+      "Bash(curl -s -X POST http://127.0.0.1:8786/shutdown)",
+      "Bash(echo \"exit:$?\")"
     ]
   }
 }
