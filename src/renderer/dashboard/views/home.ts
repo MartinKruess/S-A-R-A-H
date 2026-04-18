@@ -1,3 +1,4 @@
+import { sarahPanel } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
@@ -8,9 +9,9 @@ export async function createHomeView(): Promise<HTMLElement> {
   const name = config.profile.displayName || 'Nutzer';
 
   root.appendChild(buildBanner(name));
-  root.appendChild(buildColumn('cockpit-left', 2));
+  root.appendChild(buildLeftColumn());
   root.appendChild(buildHero());
-  root.appendChild(buildColumn('cockpit-right', 2));
+  root.appendChild(buildRightColumn());
 
   return root;
 }
@@ -27,7 +28,6 @@ function buildBanner(name: string): HTMLElement {
   clock.className = 'cockpit-clock';
   clock.textContent = formatClock();
 
-  // Update clock every second. Detach listener when banner is removed from DOM.
   const intervalId = window.setInterval(() => {
     if (!clock.isConnected) {
       window.clearInterval(intervalId);
@@ -41,14 +41,41 @@ function buildBanner(name: string): HTMLElement {
   return banner;
 }
 
-function buildColumn(className: string, count: number): HTMLElement {
+function buildLeftColumn(): HTMLElement {
   const column = document.createElement('div');
-  column.className = className;
-  for (let i = 0; i < count; i++) {
-    const stub = document.createElement('div');
-    stub.className = 'cockpit-panel-stub';
-    column.appendChild(stub);
-  }
+  column.className = 'cockpit-left';
+
+  column.appendChild(sarahPanel({
+    title: 'SYSTEM LOAD',
+    accent: 'cyan',
+    children: ['CPU · GPU · RAM'],
+  }));
+
+  column.appendChild(sarahPanel({
+    title: 'VOICE I/O',
+    accent: 'mint',
+    children: ['IN · OUT'],
+  }));
+
+  return column;
+}
+
+function buildRightColumn(): HTMLElement {
+  const column = document.createElement('div');
+  column.className = 'cockpit-right';
+
+  column.appendChild(sarahPanel({
+    title: 'TERMINE',
+    accent: 'violet',
+    children: ['Heute · Diese Woche'],
+  }));
+
+  column.appendChild(sarahPanel({
+    title: 'WETTER & MEDIA',
+    accent: 'pink',
+    children: ['—'],
+  }));
+
   return column;
 }
 
@@ -71,7 +98,6 @@ function formatClock(): string {
     minute: '2-digit',
     hour12: false,
   });
-  // "Dienstag, 24. Apr." + "  " + "11:52" → upper-cased
   const datePart = dateFmt.format(now).replace('.', '');
   const timePart = timeFmt.format(now);
   return `${datePart}  ${timePart}`.toUpperCase();

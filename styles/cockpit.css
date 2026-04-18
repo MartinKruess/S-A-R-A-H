@@ -77,9 +77,3 @@
   font-weight: 500;
 }
 
-/* ── Panel stub (temporary — replaced by real panel primitive in Phase 2) ── */
-.cockpit-panel-stub {
-  background: var(--cockpit-bg-panel);
-  border: 1px solid rgba(0, 229, 255, 0.25);
-  min-height: 120px;
-}
