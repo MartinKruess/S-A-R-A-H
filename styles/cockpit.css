@@ -169,3 +169,74 @@
   }
 }
 
+/* ── System Load rings ── */
+.system-load {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-around;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+}
+
+.system-load-ring {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  color: var(--cockpit-accent-cyan);
+}
+
+.system-load-ring[data-metric="cpu"] { color: var(--cockpit-accent-cyan); }
+.system-load-ring[data-metric="gpu"] { color: var(--cockpit-accent-violet); }
+.system-load-ring[data-metric="ram"] { color: var(--cockpit-accent-pink); }
+
+.system-load-svg {
+  transform: rotate(-90deg);
+  overflow: visible;
+}
+
+.ring-bg {
+  stroke: rgba(216, 241, 255, 0.08);
+}
+
+.ring-track {
+  stroke: currentColor;
+  transition: stroke-dashoffset 400ms ease-out;
+}
+
+.ring-label {
+  font-family: var(--cockpit-font-heading);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  color: var(--cockpit-text-dim);
+  text-transform: uppercase;
+}
+
+.ring-value {
+  font-family: var(--cockpit-font-mono);
+  font-size: 0.85rem;
+  color: var(--cockpit-text-hud);
+  font-variant-numeric: tabular-nums;
+}
+
+.system-load-ring.is-high .ring-track {
+  filter: drop-shadow(0 0 8px currentColor);
+  animation: system-load-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes system-load-pulse {
+  0%, 100% { transform: scale(1); transform-origin: 36px 36px; }
+  50%      { transform: scale(1.04); transform-origin: 36px 36px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .system-load-ring.is-high .ring-track {
+    animation: none;
+  }
+  .ring-track {
+    transition: none;
+  }
+}
+

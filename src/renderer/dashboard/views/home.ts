@@ -1,5 +1,6 @@
 import { sarahPanel } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
+import { createSystemLoadBody } from './system-load.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
   const root = document.createElement('div');
@@ -45,10 +46,16 @@ function buildLeftColumn(): HTMLElement {
   const column = document.createElement('div');
   column.className = 'cockpit-left';
 
+  const systemLoad = createSystemLoadBody();
+  // `systemLoad.dispose` is intentionally not auto-wired: the dashboard view
+  // lives for the lifetime of its window. Exposed on the element for future
+  // lifecycle hooks.
+  (systemLoad.el as HTMLElement & { __dispose?: () => void }).__dispose = systemLoad.dispose;
+
   column.appendChild(sarahPanel({
     title: 'SYSTEM LOAD',
     accent: 'cyan',
-    children: ['CPU · GPU · RAM'],
+    children: [systemLoad.el],
   }));
 
   column.appendChild(sarahPanel({
