@@ -19,10 +19,6 @@ export interface BootSequenceDeps {
 export function registerBootHandlers(deps: BootSequenceDeps): void {
   const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider } = deps;
 
-  // --- Start heavy inits immediately (parallel to Phase 1) ---
-  let whisperDone = false;
-  let routerDone = false;
-
   const send = (step: string, message?: string) => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
@@ -30,46 +26,24 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     }
   };
 
-  // Fire-and-forget: Whisper init
-  whisperProvider.init()
-    .then(() => { whisperDone = true; })
-    .catch((err) => {
-      console.error('[Boot] Whisper init failed:', err);
-      whisperDone = true;
-    });
-
-  // Fire-and-forget: Router init
-  routerService.init()
-    .then(() => { routerDone = true; })
-    .catch((err) => {
-      console.error('[Boot] Router init failed:', err);
-      routerDone = true;
-    });
+  // Start heavy inits immediately, keep promise refs so boot-ready can await them.
+  const whisperReady = whisperProvider.init().catch((err) => {
+    console.error('[Boot] Whisper init failed:', err);
+  });
+  const routerReady = routerService.init().catch((err) => {
+    console.error('[Boot] Router init failed:', err);
+  });
 
   ipcMain.once('boot-ready', async () => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     try {
-      // Step 1: Whisper — show status, wait if still loading
       send('whisper', 'Spracherkennung wird aktiviert ...');
-      if (!whisperDone) {
-        await new Promise<void>((resolve) => {
-          const check = setInterval(() => {
-            if (whisperDone) { clearInterval(check); resolve(); }
-          }, 50);
-        });
-      }
+      await whisperReady;
 
-      // Step 2: Router — show status, wait if still loading
       send('router', 'Sarah Protokoll wird initialisiert ...');
-      if (!routerDone) {
-        await new Promise<void>((resolve) => {
-          const check = setInterval(() => {
-            if (routerDone) { clearInterval(check); resolve(); }
-          }, 50);
-        });
-      }
+      await routerReady;
 
       // Signal router ready — renderer starts orb reveal (even if router errored)
       send('router-ready');
