@@ -50,13 +50,13 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
       const ctx = getAppContext();
       const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
       const merged = { ...existing, ...config };
-      await ctx.config.set('root', merged);
 
-      // Re-parse merged config
       const { SarahConfigSchema } = await import('../core/config-schema.js');
-      ctx.parsedConfig = SarahConfigSchema.parse(merged);
+      const parsed = SarahConfigSchema.parse(merged);
 
-      // Apply voice config changes live when controls section is saved
+      await ctx.config.set('root', merged);
+      ctx.parsedConfig = parsed;
+
       if ('controls' in config) {
         await getService<VoiceService>(ctx, 'voice').applyConfig();
       }
