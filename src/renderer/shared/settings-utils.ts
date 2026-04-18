@@ -1,9 +1,7 @@
-import type { SarahApi } from '../../core/sarah-api.js';
 import type { SarahConfig } from '../../core/config-schema.js';
+import { getSarah } from './window-global.js';
 
-export function getSarah(): SarahApi {
-  return (window as any).__sarah as SarahApi;
-}
+export { getSarah };
 
 export function showSaved(feedback: HTMLElement): void {
   feedback.classList.add('visible');

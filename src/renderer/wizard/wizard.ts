@@ -9,6 +9,7 @@ import { createTrustStep } from './steps/step-trust.js';
 import { createPersonalizationStep } from './steps/step-personalization.js';
 import { createFinishStep } from './steps/step-finish.js';
 import { WizardController, type StepDef } from './wizard-controller.js';
+import { installSarah } from '../shared/window-global.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 import type { SarahConfig } from '../../core/config-schema.js';
@@ -17,7 +18,7 @@ import type { ProgramEntry } from '../../core/config-schema.js';
 export type ProgramType = ProgramEntry['type'];
 
 declare const sarah: SarahApi;
-(window as any).__sarah = sarah;
+installSarah(sarah);
 
 registerComponents();
 

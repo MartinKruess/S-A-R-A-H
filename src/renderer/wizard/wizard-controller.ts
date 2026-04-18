@@ -1,5 +1,6 @@
 import { sarahStepper } from '../components/sarah-stepper.js';
 import { sarahButton } from '../components/sarah-button.js';
+import { SarahInput } from '../components/sarah-input.js';
 import type { WizardData } from './wizard.js';
 import type { SarahApi } from '../../core/sarah-api.js';
 
@@ -61,10 +62,10 @@ export class WizardController {
       return false;
     }
 
-    const inputs = this.dom.slideArea.querySelectorAll('sarah-input[required]');
+    const inputs = this.dom.slideArea.querySelectorAll<SarahInput>('sarah-input[required]');
     let valid = true;
     inputs.forEach(input => {
-      if (!(input as any).validate()) valid = false;
+      if (!input.validate()) valid = false;
     });
     return valid;
   }
