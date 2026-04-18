@@ -1,0 +1,85 @@
+/* ── Cockpit root grid ── */
+.cockpit {
+  display: grid;
+  grid-template-columns: clamp(260px, 22vw, 320px) 1fr clamp(260px, 22vw, 320px);
+  grid-template-rows: 64px 1fr;
+  grid-template-areas:
+    "banner banner banner"
+    "left   hero   right";
+  gap: 16px;
+  padding: 20px;
+  min-height: 100%;
+  background: var(--cockpit-bg-void);
+  color: var(--cockpit-text-hud);
+  font-family: var(--cockpit-font-body);
+}
+
+/* ── Banner ── */
+.cockpit-banner {
+  grid-area: banner;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.cockpit-greeting {
+  display: flex;
+  align-items: center;
+  font-family: var(--cockpit-font-heading);
+  font-size: var(--cockpit-font-hud-lg);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+
+.cockpit-clock {
+  font-family: var(--cockpit-font-mono);
+  font-size: var(--cockpit-font-hud-md);
+  color: var(--cockpit-text-dim);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
+/* ── Columns ── */
+.cockpit-left {
+  grid-area: left;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cockpit-right {
+  grid-area: right;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cockpit-left > *,
+.cockpit-right > * {
+  flex: 1;
+}
+
+/* ── Hero ── */
+.cockpit-hero {
+  grid-area: hero;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%);
+  color: var(--cockpit-text-dim);
+  font-family: var(--cockpit-font-heading);
+  font-size: var(--cockpit-font-hud-xl);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 500;
+}
+
+/* ── Panel stub (temporary — replaced by real panel primitive in Phase 2) ── */
+.cockpit-panel-stub {
+  background: var(--cockpit-bg-panel);
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  min-height: 120px;
+}

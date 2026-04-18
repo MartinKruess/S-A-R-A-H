@@ -68,4 +68,25 @@
   --sarah-font-size-lg: 1.25rem;
   --sarah-font-size-xl: 2rem;
   --sarah-font-size-xxl: 3rem;
+
+  /* Cockpit palette (frozen — independent of user accent) */
+  --cockpit-bg-void: #05070d;
+  --cockpit-bg-deep: #0b1220;
+  --cockpit-bg-panel: rgba(11, 18, 32, 0.72);
+  --cockpit-accent-cyan: #00e5ff;
+  --cockpit-accent-violet: #7c3aed;
+  --cockpit-accent-pink: #ff2fd1;
+  --cockpit-accent-mint: #22ffc0;
+  --cockpit-accent-red: #ff3b3b;
+  --cockpit-text-hud: #d8f1ff;
+  --cockpit-text-dim: #7b86b8;
+  --cockpit-border-glow: linear-gradient(135deg, #00e5ff 0%, #7c3aed 50%, #ff2fd1 100%);
+  --cockpit-font-heading: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --cockpit-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --cockpit-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  --cockpit-font-hud-xs: 0.7rem;
+  --cockpit-font-hud-sm: 0.85rem;
+  --cockpit-font-hud-md: 1.05rem;
+  --cockpit-font-hud-lg: 1.6rem;
+  --cockpit-font-hud-xl: 2.4rem;
 }
