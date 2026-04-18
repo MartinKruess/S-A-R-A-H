@@ -1,5 +1,5 @@
 import { registerComponents } from '../components/index.js';
-import { applyAccentColor } from './accent.js';
+import { applyAccentColor } from '../shared/accent.js';
 import { AudioBridge } from '../services/audio-bridge.js';
 import { startBootSequence } from './boot-sequence.js';
 import { orb } from './orb-scene.js';

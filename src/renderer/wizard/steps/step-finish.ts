@@ -1,4 +1,12 @@
 import type { WizardData } from '../wizard.js';
+import {
+  FONT_SIZE_LABELS,
+  ALIGN_LABELS,
+  MODE_LABELS,
+  QUIRK_LABELS,
+  FILE_ACCESS_LABELS,
+  CONFIRM_LABELS,
+} from '../../shared/label-maps.js';
 
 const FINISH_CSS = `
   .finish {
@@ -162,16 +170,10 @@ export function createFinishStep(data: WizardData): HTMLElement {
   }
 
   // Trust
-  const fileAccessLabels: Record<string, string> = {
-    all: 'Alle Dateien', 'specific-folders': 'Nur bestimmte Ordner', none: 'Kein Zugriff',
-  };
-  const confirmLabels: Record<string, string> = {
-    minimal: 'Minimal', standard: 'Standard', maximal: 'Maximal',
-  };
   const trustRows: [string, string][] = [
     ['Memory', data.trust.memoryAllowed ? 'Erlaubt' : 'Nicht erlaubt'],
-    ['Dateizugriff', fileAccessLabels[data.trust.fileAccess] ?? data.trust.fileAccess],
-    ['Bestätigungen', confirmLabels[data.trust.confirmationLevel] ?? 'Standard'],
+    ['Dateizugriff', FILE_ACCESS_LABELS[data.trust.fileAccess] ?? data.trust.fileAccess],
+    ['Bestätigungen', CONFIRM_LABELS[data.trust.confirmationLevel] ?? 'Standard'],
   ];
   if (data.trust.memoryExclusions.length > 0) {
     trustRows.push(['Ausnahmen', data.trust.memoryExclusions.join(', ')]);
@@ -181,60 +183,29 @@ export function createFinishStep(data: WizardData): HTMLElement {
   addSection(finish, 'Vertrauen', trustRows);
 
   // Personalization
-  const fontSizeLabels: Record<string, string> = { small: 'Klein', default: 'Standard', large: 'Groß' };
-  const alignLabels: Record<string, string> = { stacked: 'Untereinander', bubbles: 'Bubbles' };
-  const modeLabels: Record<string, string> = { normal: 'Normal', spontaneous: 'Spontan', thoughtful: 'Nachdenklich' };
-  const quirkLabels: Record<string, string> = {
-    miauz: 'Miauz Genau!', gamertalk: 'Gamertalk', nerd: 'Prof. Dr. Dr.',
-    oldschool: 'Oldschool', altertum: 'Altertum', pirat: 'Pirat',
-  };
+  const accentValue = document.createElement('span');
+  accentValue.textContent = data.personalization.accentColor;
+  const dot = document.createElement('span');
+  dot.className = 'accent-preview';
+  dot.style.backgroundColor = data.personalization.accentColor;
+  dot.style.color = data.personalization.accentColor;
+  accentValue.appendChild(dot);
 
-  const persRows: [string, string][] = [
-    ['Akzentfarbe', data.personalization.accentColor],
-    ['Chat-Schrift', fontSizeLabels[data.personalization.chatFontSize] ?? 'Standard'],
-    ['Chat-Ausrichtung', alignLabels[data.personalization.chatAlignment] ?? 'Untereinander'],
+  const persRows: [string, string | HTMLElement][] = [
+    ['Akzentfarbe', accentValue],
+    ['Chat-Schrift', FONT_SIZE_LABELS[data.personalization.chatFontSize] ?? 'Standard'],
+    ['Chat-Ausrichtung', ALIGN_LABELS[data.personalization.chatAlignment] ?? 'Untereinander'],
     ['Smileys', data.personalization.emojisEnabled ? 'An' : 'Aus'],
-    ['Antwortmodus', modeLabels[data.personalization.responseMode] ?? 'Normal'],
+    ['Antwortmodus', MODE_LABELS[data.personalization.responseMode] ?? 'Normal'],
   ];
   if (data.personalization.characterTraits.length > 0) {
     persRows.push(['Charakter', data.personalization.characterTraits.join(', ')]);
   }
   if (data.personalization.quirk) {
-    const quirkDisplay = quirkLabels[data.personalization.quirk] ?? data.personalization.quirk;
+    const quirkDisplay = QUIRK_LABELS[data.personalization.quirk] ?? data.personalization.quirk;
     persRows.push(['Eigenart', quirkDisplay]);
   }
-
-  const persSection2 = document.createElement('div');
-  persSection2.className = 'summary-section';
-  const persHeading2 = document.createElement('div');
-  persHeading2.className = 'summary-heading';
-  persHeading2.textContent = 'Personalisierung';
-  persSection2.appendChild(persHeading2);
-
-  const persSummary2 = document.createElement('div');
-  persSummary2.className = 'summary';
-  for (const [label, value] of persRows) {
-    const row = document.createElement('div');
-    row.className = 'summary-row';
-    const l = document.createElement('span');
-    l.className = 'summary-label';
-    l.textContent = label;
-    const v = document.createElement('span');
-    v.className = 'summary-value';
-    v.textContent = value;
-    if (label === 'Akzentfarbe') {
-      const dot = document.createElement('span');
-      dot.className = 'accent-preview';
-      dot.style.backgroundColor = data.personalization.accentColor;
-      dot.style.color = data.personalization.accentColor;
-      v.appendChild(dot);
-    }
-    row.appendChild(l);
-    row.appendChild(v);
-    persSummary2.appendChild(row);
-  }
-  persSection2.appendChild(persSummary2);
-  finish.appendChild(persSection2);
+  addSection(finish, 'Personalisierung', persRows);
 
   // System
   addSection(finish, 'System', [
@@ -247,7 +218,7 @@ export function createFinishStep(data: WizardData): HTMLElement {
   return container;
 }
 
-function addSection(parent: HTMLElement, heading: string, rows: [string, string][]): void {
+function addSection(parent: HTMLElement, heading: string, rows: [string, string | HTMLElement][]): void {
   const section = document.createElement('div');
   section.className = 'summary-section';
 
@@ -267,7 +238,11 @@ function addSection(parent: HTMLElement, heading: string, rows: [string, string]
     l.textContent = label;
     const v = document.createElement('span');
     v.className = 'summary-value';
-    v.textContent = value;
+    if (typeof value === 'string') {
+      v.textContent = value;
+    } else {
+      v.appendChild(value);
+    }
     row.appendChild(l);
     row.appendChild(v);
     summary.appendChild(row);
