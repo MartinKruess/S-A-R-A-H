@@ -124,6 +124,42 @@ app.whenReady().then(async () => {
     piperProvider,
   });
 
+  ipcMain.once('boot-done', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+
+    const { screen } = require('electron');
+    const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+    const targetW = Math.round(screenH * 0.3);
+    const targetH = Math.round(screenH * 0.33);
+    const targetX = 0;
+    const targetY = 0;
+
+    const startBounds = mainWindow.getBounds();
+    const duration = 1500;
+    const startTime = Date.now();
+
+    mainWindow.webContents.send('transition-start');
+
+    const interval = setInterval(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        clearInterval(interval);
+        return;
+      }
+      const elapsed = Date.now() - startTime;
+      const p = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+
+      mainWindow.setBounds({
+        x: Math.round(startBounds.x + (targetX - startBounds.x) * eased),
+        y: Math.round(startBounds.y + (targetY - startBounds.y) * eased),
+        width: Math.round(startBounds.width + (targetW - startBounds.width) * eased),
+        height: Math.round(startBounds.height + (targetH - startBounds.height) * eased),
+      });
+
+      if (p >= 1) clearInterval(interval);
+    }, 16);
+  });
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
