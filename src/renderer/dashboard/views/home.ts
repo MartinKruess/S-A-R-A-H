@@ -1,6 +1,7 @@
 import { sarahPanel } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 import { createSystemLoadBody } from './system-load.js';
+import { createVoiceIoBody } from './voice-io.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
   const root = document.createElement('div');
@@ -58,10 +59,13 @@ function buildLeftColumn(): HTMLElement {
     children: [systemLoad.el],
   }));
 
+  const voiceIo = createVoiceIoBody();
+  (voiceIo.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIo.dispose;
+
   column.appendChild(sarahPanel({
     title: 'VOICE I/O',
     accent: 'mint',
-    children: ['IN · OUT'],
+    children: [voiceIo.el],
   }));
 
   return column;

@@ -240,3 +240,56 @@
   }
 }
 
+/* ── Voice I/O meter ── */
+.voice-io {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.voice-io-state {
+  font-family: var(--cockpit-font-heading);
+  font-size: var(--cockpit-font-hud-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--cockpit-text-dim);
+  transition: color 200ms ease-out;
+}
+
+.voice-io-state[data-state="idle"]      { color: var(--cockpit-text-dim); }
+.voice-io-state[data-state="listening"] { color: var(--cockpit-accent-mint); }
+.voice-io-state[data-state="processing"]{ color: var(--cockpit-accent-violet); }
+.voice-io-state[data-state="speaking"]  { color: var(--cockpit-accent-cyan); }
+
+.voice-io-bars {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  justify-content: center;
+  align-items: flex-end;
+  height: 60px;
+}
+
+.voice-io-bar {
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(to top, var(--cockpit-accent-mint), var(--cockpit-accent-cyan));
+  border-radius: 2px;
+  transform: scaleY(var(--v, 0.05));
+  transform-origin: bottom;
+  transition: transform 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-io-bar {
+    transition: none;
+  }
+  .voice-io-state {
+    transition: none;
+  }
+}
+
