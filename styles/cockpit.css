@@ -1,3 +1,12 @@
+/* Dashboard view uses the full dialog — override the settings-scoped
+   padding + max-width from .dialog-standalone in dashboard.css */
+.dialog-standalone.view-dashboard {
+  padding: 0;
+}
+.dialog-standalone.view-dashboard > * {
+  max-width: none;
+}
+
 /* ── Cockpit root grid ── */
 .cockpit {
   position: relative;
@@ -9,7 +18,8 @@
     "left   hero   right";
   gap: 16px;
   padding: 20px;
-  min-height: 100%;
+  width: 100%;
+  min-height: 100vh;
   background: var(--cockpit-bg-void);
   color: var(--cockpit-text-hud);
   font-family: var(--cockpit-font-body);
