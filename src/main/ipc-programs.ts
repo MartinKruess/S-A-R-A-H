@@ -9,6 +9,31 @@ import {
   markDuplicateGroups,
 } from './program-utils.js';
 
+interface ProgramScanResult {
+  name: string;
+  path: string;
+}
+
+interface ProgramOption {
+  name: string;
+  path: string;
+  type: ReturnType<typeof classifyProgramPath>;
+  source: 'detected';
+  verified: boolean;
+  aliases: ReturnType<typeof generateAliases>;
+  duplicateGroup: string | undefined;
+}
+
+const mapProgramResult = (result: ProgramScanResult): ProgramOption => ({
+  name: result.name,
+  path: result.path,
+  type: classifyProgramPath(result.path),
+  source: 'detected',
+  verified: result.path.startsWith('appx:') ? true : verifyProgramPath(result.path),
+  aliases: generateAliases(result.name),
+  duplicateGroup: undefined,
+});
+
 export function registerProgramHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
     try {
@@ -107,15 +132,7 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
         }
       }
 
-      const mapped = results.map((p) => ({
-        name: p.name,
-        path: p.path,
-        type: classifyProgramPath(p.path),
-        source: 'detected' as const,
-        verified: verifyProgramPath(p.path),
-        aliases: generateAliases(p.name),
-        duplicateGroup: undefined as string | undefined,
-      }));
+      const mapped = results.map(mapProgramResult);
       markDuplicateGroups(mapped);
       return mapped;
     } catch {
@@ -205,15 +222,7 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
             p !== null && p.name.length > 0,
         );
 
-      const mapped = raw.map((p) => ({
-        name: p.name,
-        path: p.path,
-        type: classifyProgramPath(p.path),
-        source: 'detected' as const,
-        verified: p.path.startsWith('appx:') ? true : verifyProgramPath(p.path),
-        aliases: generateAliases(p.name),
-        duplicateGroup: undefined as string | undefined,
-      }));
+      const mapped = raw.map(mapProgramResult);
       markDuplicateGroups(mapped);
       return mapped;
     } catch {
