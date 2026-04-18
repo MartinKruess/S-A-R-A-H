@@ -159,7 +159,8 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     const ctx = getAppContext();
     const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
-      voiceService.setInteractionMode('chatspeak');
+      // Only enable one-shot TTS when user types in voice mode, not in chat mode
+      voiceService.setChatSpeak();
     }
     ctx.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
   });

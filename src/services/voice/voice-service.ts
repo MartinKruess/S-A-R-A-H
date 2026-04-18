@@ -62,6 +62,13 @@ export class VoiceService implements SarahService {
     this.interactionMode = mode;
   }
 
+  /** Enable one-shot TTS for a typed message, but only when in voice mode */
+  setChatSpeak(): void {
+    if (this.interactionMode === 'voice') {
+      this.interactionMode = 'chatspeak';
+    }
+  }
+
   private setState(state: VoiceState): void {
     this._voiceState = state;
     this.context.bus.emit(this.id, 'voice:state', { state });
