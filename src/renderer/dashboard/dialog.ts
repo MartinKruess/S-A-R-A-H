@@ -2,12 +2,13 @@ import { registerComponents } from '../components/index.js';
 import { applyAccentColor } from '../shared/accent.js';
 import { createHomeView } from './views/home.js';
 import { createSettingsView } from './views/settings.js';
+import { installSarah } from '../shared/window-global.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 
 declare const sarah: SarahApi;
 
-(window as any).__sarah = sarah;
+installSarah(sarah);
 
 registerComponents();
 

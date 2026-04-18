@@ -1,11 +1,7 @@
 import type { WizardData } from '../wizard.js';
-import type { SarahApi } from '../../../core/sarah-api.js';
 import { sarahCard } from '../../components/sarah-card.js';
 import { sarahProgress } from '../../components/sarah-progress.js';
-
-function getSarah(): SarahApi {
-  return (window as any).__sarah as SarahApi;
-}
+import { getSarah } from '../../shared/window-global.js';
 
 const SCAN_CSS = `
   .scan {
