@@ -38,8 +38,9 @@ export function decideCaptureReset(
 
 /**
  * Determine whether two AudioConfig slices are effectively identical from the
- * capture path's perspective. Output-only fields are ignored (Phase 6 handles
- * those separately). Used to make `applyAudioConfig` idempotent.
+ * capture path's perspective. Output-only fields are ignored — the playback
+ * side uses {@link isPlaybackConfigEqual}. Used to make `applyAudioConfig`
+ * idempotent for capture reactions.
  */
 export function isCaptureConfigEqual(
   a: AudioConfig | undefined,
@@ -51,5 +52,22 @@ export function isCaptureConfigEqual(
     a.inputMuted === b.inputMuted &&
     a.inputGain === b.inputGain &&
     a.inputVolume === b.inputVolume
+  );
+}
+
+/**
+ * Determine whether two AudioConfig slices are identical from the playback
+ * path's perspective. Input-only fields are ignored — the capture side uses
+ * {@link isCaptureConfigEqual}. Kept symmetric so `applyAudioConfig` can
+ * short-circuit the playback branch independently.
+ */
+export function isPlaybackConfigEqual(
+  a: AudioConfig | undefined,
+  b: AudioConfig,
+): boolean {
+  if (!a) return false;
+  return (
+    a.outputDeviceId === b.outputDeviceId &&
+    a.outputVolume === b.outputVolume
   );
 }

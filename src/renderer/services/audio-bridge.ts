@@ -6,7 +6,18 @@ import {
   computeEffectiveGain,
   decideCaptureReset,
   isCaptureConfigEqual,
+  isPlaybackConfigEqual,
 } from './audio-bridge-logic.js';
+import {
+  OUTPUT_BAR_COUNT,
+  OUTPUT_DECAY_FACTOR,
+  OUTPUT_DECAY_THRESHOLD,
+  allBelow,
+  barsFromTimeDomain,
+  computeRms,
+  decayBars,
+  type AudioOutputLevelEventDetail,
+} from './audio-output-level.js';
 
 declare const sarah: SarahApi;
 
@@ -15,8 +26,32 @@ const CAPTURE_SAMPLE_RATE = 16_000;
 /** Time-constant for GainNode ramps. 15ms keeps mute/unmute click-free. */
 const GAIN_RAMP_TIME_CONSTANT = 0.015;
 
+/** FFT size for the output analyser — fixed by Phase 6 spec. 256 → 128 bins. */
+const OUTPUT_ANALYSER_FFT_SIZE = 256;
+
 /** Path to the capture AudioWorklet module, relative to the renderer root. */
 const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
+
+/**
+ * Feature-detect `HTMLAudioElement.setSinkId`. Electron on current Chromium
+ * has it, but older Electron builds or unusual sandboxing may not — without
+ * this, `outputDeviceId` silently falls back to the system default.
+ */
+function hasSetSinkIdSupport(): boolean {
+  return (
+    typeof HTMLAudioElement !== 'undefined' &&
+    'setSinkId' in HTMLAudioElement.prototype
+  );
+}
+
+/**
+ * Narrow interface for the non-standard `setSinkId` method. Typed separately
+ * so we can stay off `any` while still talking to a method the lib.dom type
+ * for `HTMLAudioElement` doesn't yet expose.
+ */
+interface SinkIdCapable {
+  setSinkId(sinkId: string): Promise<void>;
+}
 
 export class AudioBridge {
   private captureCtx: AudioContext | null = null;
@@ -29,6 +64,28 @@ export class AudioBridge {
 
   private playbackCtx: AudioContext | null = null;
   private currentPlaybackSource: AudioBufferSourceNode | null = null;
+  /** Analyser node tapping the output graph pre-gain. Lives for the lifetime
+   *  of `playbackCtx` so RAF sampling doesn't re-allocate per utterance. */
+  private outputAnalyser: AnalyserNode | null = null;
+  /** Post-analyser GainNode carrying `outputVolume`. Post-analyser so a user
+   *  muting via volume still sees VU activity (Lücke #8). */
+  private outputGain: GainNode | null = null;
+  /** Optional element the Path-B route plays through at a specific sinkId. */
+  private outputAudioElement: HTMLAudioElement | null = null;
+  /** MediaStreamDestination that feeds `outputAudioElement` when Path B is
+   *  active. Kept null on Path A. */
+  private outputStreamDest: MediaStreamAudioDestinationNode | null = null;
+  /** Active RAF handle for the VU meter loop. */
+  private outputLevelRAF: number | null = null;
+  /** `performance.now()` captured when the current playback source ended.
+   *  Null while playback is in flight; drives the decay window. */
+  private outputPlaybackEndedAt: number | null = null;
+  /** Reused scratch buffers so the RAF loop doesn't allocate per frame.
+   *  Typed with the explicit `ArrayBuffer` generic so TS 6 doesn't widen to
+   *  `ArrayBufferLike` on later assignment, which `AnalyserNode.getFloat*`
+   *  refuses. */
+  private outputTimeBuffer: Float32Array<ArrayBuffer> | null = null;
+  private outputBarsBuffer: Float32Array<ArrayBuffer> = new Float32Array(OUTPUT_BAR_COUNT);
 
   private unsubState: (() => void) | null = null;
   private unsubPlayAudio: (() => void) | null = null;
@@ -38,6 +95,10 @@ export class AudioBridge {
   private currentAudio: AudioConfig | undefined = undefined;
   /** Mirror of `currentAudio.inputDeviceId` for fast device-change checks. */
   private currentInputDeviceId: string | undefined = undefined;
+  /** Mirror of `currentAudio.outputDeviceId`. A change during playback is
+   *  honoured on the NEXT `playAudio` — in-flight playback finishes on the
+   *  device it started on. Abrupt cross-fade is out of scope for Phase 6. */
+  private currentOutputDeviceId: string | undefined = undefined;
   /** Mirror of `currentAudio.inputMuted`; short-circuits IPC push (Lücke #13). */
   private muted = false;
   /** `start()` must finish before audio-config events are processed, otherwise
@@ -59,6 +120,7 @@ export class AudioBridge {
       const initialConfig = await sarah.getConfig();
       this.currentAudio = initialConfig.audio;
       this.currentInputDeviceId = initialConfig.audio.inputDeviceId;
+      this.currentOutputDeviceId = initialConfig.audio.outputDeviceId;
       this.muted = initialConfig.audio.inputMuted;
     } catch (err) {
       console.warn('[AudioBridge] initial config fetch failed:', err);
@@ -97,6 +159,8 @@ export class AudioBridge {
 
     this.stopCapture();
     this.stopPlayback();
+    this.stopOutputLevelLoop();
+    this.teardownPlaybackGraph();
     this.unsubState?.();
     this.unsubPlayAudio?.();
     this.unsubAudioConfig?.();
@@ -127,10 +191,11 @@ export class AudioBridge {
   // ── Audio-Config reactions ──
 
   /**
-   * React to a new persisted audio config. Idempotent — no-op if the capture
-   * slice is unchanged. Device changes re-init the AudioContext (and reset
-   * `workletLoaded`), gain/mute changes ramp the GainNode without tearing
-   * anything down.
+   * React to a new persisted audio config. Idempotent — no-op if neither the
+   * capture slice nor the playback slice changed. Capture device changes
+   * re-init the AudioContext (and reset `workletLoaded`), gain/mute changes
+   * ramp the GainNode without tearing anything down. Playback-side changes
+   * (volume/device) update the live gain and stored sink id.
    *
    * Calls are serialized via `applyPromise`: two rapid device switches run
    * in order, so the second reads the first's committed state instead of
@@ -157,14 +222,35 @@ export class AudioBridge {
       return;
     }
 
-    if (isCaptureConfigEqual(this.currentAudio, audio)) return;
+    const captureEqual = isCaptureConfigEqual(this.currentAudio, audio);
+    const playbackEqual = isPlaybackConfigEqual(this.currentAudio, audio);
+    if (captureEqual && playbackEqual) return;
 
     // Read prevDeviceId INSIDE the serialized section so a queued call B sees
     // call A's committed state, not the state that was live when B was queued.
     const prevDeviceId = this.currentInputDeviceId;
+    const prevOutputVolume = this.currentAudio?.outputVolume;
     this.currentAudio = audio;
     this.currentInputDeviceId = audio.inputDeviceId;
+    this.currentOutputDeviceId = audio.outputDeviceId;
     this.muted = audio.inputMuted;
+
+    // ── Playback-side reactions (no graph rebuild, just live updates) ──
+    if (!playbackEqual) {
+      // outputDeviceId change: stored id is already updated above. If a
+      // playback is in flight we intentionally let it finish on the old
+      // device — switching sinkId mid-stream risks an abrupt silence drop,
+      // and cross-fade is out of scope for Phase 6. The NEXT playAudio will
+      // pick up the new id.
+      if (prevOutputVolume !== audio.outputVolume) {
+        this.rampOutputVolume();
+      }
+    }
+
+    if (captureEqual) {
+      // Only playback-side changed — capture graph stays untouched.
+      return;
+    }
 
     const decision = decideCaptureReset(prevDeviceId, audio.inputDeviceId, this.capturing);
 
@@ -194,6 +280,15 @@ export class AudioBridge {
     const target = computeEffectiveGain(this.currentAudio);
     const now = this.captureCtx.currentTime;
     this.captureGain.gain.setTargetAtTime(target, now, GAIN_RAMP_TIME_CONSTANT);
+  }
+
+  /** Ramp the output GainNode to the stored `outputVolume`. Only takes effect
+   *  once a playback graph exists. */
+  private rampOutputVolume(): void {
+    if (!this.outputGain || !this.playbackCtx || !this.currentAudio) return;
+    const target = this.currentAudio.outputVolume;
+    const now = this.playbackCtx.currentTime;
+    this.outputGain.gain.setTargetAtTime(target, now, GAIN_RAMP_TIME_CONSTANT);
   }
 
   // ── Capture ──
@@ -304,30 +399,185 @@ export class AudioBridge {
 
   // ── Playback ──
 
+  /**
+   * Build (or rebuild on demand) the stable nodes of the playback graph
+   * attached to `this.playbackCtx`: analyser tap → gain → (destination | path-B
+   * stream dest). Called lazily from `playAudio` because we don't know the
+   * TTS `sampleRate` until the first utterance, and re-created with a new
+   * context if the sample rate changes.
+   *
+   * Path choice (Phase 6 — Lücke #1):
+   *   Path A — no specific outputDeviceId OR `HTMLAudioElement.setSinkId`
+   *            unsupported: gain → playbackCtx.destination. Default sink.
+   *   Path B — outputDeviceId set AND setSinkId supported: gain →
+   *            MediaStreamDestination → <audio>.srcObject, <audio>.setSinkId.
+   *            The <audio> plays through the chosen sink; analyser still sees
+   *            the pre-gain signal via the shared graph so VU meters work.
+   */
+  private async ensurePlaybackGraph(sampleRate: number): Promise<void> {
+    // Rebuild if sample rate changed (mismatched context would up-sample and
+    // distort the analyser tap) or if the context was closed/lost.
+    const needsNewCtx =
+      !this.playbackCtx ||
+      this.playbackCtx.sampleRate !== sampleRate ||
+      this.playbackCtx.state === 'closed';
+
+    if (needsNewCtx) {
+      this.teardownPlaybackGraph();
+      if (this.playbackCtx) {
+        await this.playbackCtx.close().catch(() => {
+          /* ignore */
+        });
+        this.playbackCtx = null;
+      }
+      this.playbackCtx = new AudioContext({ sampleRate });
+    }
+    const ctx = this.playbackCtx;
+    if (!ctx) return; // satisfy narrowing; can't happen after the new above
+
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
+    }
+
+    // Build the analyser + gain once per context. Subsequent playAudio() calls
+    // reuse them — only the BufferSource is transient.
+    if (!this.outputAnalyser) {
+      this.outputAnalyser = ctx.createAnalyser();
+      this.outputAnalyser.fftSize = OUTPUT_ANALYSER_FFT_SIZE;
+      this.outputTimeBuffer = new Float32Array(this.outputAnalyser.fftSize);
+    }
+    if (!this.outputGain) {
+      this.outputGain = ctx.createGain();
+      this.outputGain.gain.value = this.currentAudio?.outputVolume ?? 1;
+      // analyser feeds gain; both endpoints are wired below depending on path.
+      this.outputAnalyser.connect(this.outputGain);
+    }
+
+    // Choose routing path. We rebuild the tail whenever the desired path
+    // differs from the live one, e.g. after an outputDeviceId config change
+    // between utterances.
+    const desiredDeviceId = this.currentOutputDeviceId;
+    const wantPathB = !!desiredDeviceId && hasSetSinkIdSupport();
+    const havePathB = !!this.outputAudioElement;
+
+    if (wantPathB !== havePathB) {
+      this.outputGain.disconnect();
+      if (this.outputStreamDest) {
+        try {
+          this.outputStreamDest.disconnect();
+        } catch {
+          /* already disconnected */
+        }
+        this.outputStreamDest = null;
+      }
+      if (this.outputAudioElement) {
+        this.outputAudioElement.pause();
+        this.outputAudioElement.srcObject = null;
+        this.outputAudioElement = null;
+      }
+    }
+
+    if (wantPathB) {
+      if (!this.outputStreamDest) {
+        // MediaStreamDestination feeds an <audio> element we route via
+        // setSinkId. We picked this over a WAV-blob roundtrip because the
+        // Float32 buffer chain stays intact and we avoid per-utterance
+        // encoding + ObjectURL lifecycle.
+        this.outputStreamDest = ctx.createMediaStreamDestination();
+        this.outputGain.connect(this.outputStreamDest);
+      }
+      if (!this.outputAudioElement) {
+        const audioEl = new Audio();
+        audioEl.autoplay = true;
+        audioEl.srcObject = this.outputStreamDest.stream;
+        this.outputAudioElement = audioEl;
+      }
+      // setSinkId may reject on invalid ids — fall back to default sink.
+      if (desiredDeviceId) {
+        const sinkEl = this.outputAudioElement as HTMLAudioElement & SinkIdCapable;
+        try {
+          await sinkEl.setSinkId(desiredDeviceId);
+        } catch (err) {
+          console.warn(
+            `[AudioBridge] setSinkId("${desiredDeviceId}") failed, using default sink:`,
+            err,
+          );
+        }
+      }
+    } else if (!wantPathB) {
+      // Path A: gain → destination. Idempotent connect (disconnect above
+      // when switching paths means we only ever connect once per path).
+      this.outputGain.connect(ctx.destination);
+    }
+  }
+
+  /** Tear down just the playback nodes — leaves `playbackCtx` itself alone
+   *  so the caller can close it in the right order. */
+  private teardownPlaybackGraph(): void {
+    if (this.outputAudioElement) {
+      this.outputAudioElement.pause();
+      this.outputAudioElement.srcObject = null;
+      this.outputAudioElement = null;
+    }
+    if (this.outputStreamDest) {
+      try {
+        this.outputStreamDest.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.outputStreamDest = null;
+    }
+    if (this.outputGain) {
+      try {
+        this.outputGain.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.outputGain = null;
+    }
+    if (this.outputAnalyser) {
+      try {
+        this.outputAnalyser.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.outputAnalyser = null;
+    }
+    this.outputTimeBuffer = null;
+  }
+
   private async playAudio(audio: number[], sampleRate: number): Promise<void> {
     try {
-      if (!this.playbackCtx) {
-        this.playbackCtx = new AudioContext({ sampleRate });
-      }
-      if (this.playbackCtx.state === 'suspended') {
-        await this.playbackCtx.resume();
+      await this.ensurePlaybackGraph(sampleRate);
+      const ctx = this.playbackCtx;
+      const analyser = this.outputAnalyser;
+      if (!ctx || !analyser) {
+        // ensurePlaybackGraph should always set these up; if it didn't,
+        // the error branch below already called playbackDone().
+        sarah.voice.playbackDone();
+        return;
       }
 
-      const buffer = this.playbackCtx.createBuffer(1, audio.length, sampleRate);
+      const buffer = ctx.createBuffer(1, audio.length, sampleRate);
       buffer.getChannelData(0).set(audio);
 
-      const source = this.playbackCtx.createBufferSource();
+      const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(this.playbackCtx.destination);
+      source.connect(analyser);
 
       this.currentPlaybackSource = source;
+      this.outputPlaybackEndedAt = null;
 
       source.onended = () => {
         this.currentPlaybackSource = null;
+        // Mark decay start. The RAF loop keeps running until bars fade out,
+        // then emits a zero frame and stops. Prevents frozen mid-sentence bars.
+        this.outputPlaybackEndedAt = performance.now();
         sarah.voice.playbackDone();
       };
 
       source.start();
+      this.startOutputLevelLoop();
     } catch (err) {
       console.error('[AudioBridge] Playback failed:', err);
       sarah.voice.playbackDone();
@@ -343,6 +593,77 @@ export class AudioBridge {
       }
       this.currentPlaybackSource = null;
     }
+  }
+
+  // ── Output VU meter ──
+
+  private startOutputLevelLoop(): void {
+    if (this.outputLevelRAF !== null) return; // already running
+    if (typeof requestAnimationFrame !== 'function') return; // test env without RAF
+    const tick = () => {
+      this.outputLevelRAF = null;
+      if (this.destroyed) return;
+      this.sampleOutputLevel();
+      if (this.outputAnalyser) {
+        this.outputLevelRAF = requestAnimationFrame(tick);
+      }
+    };
+    this.outputLevelRAF = requestAnimationFrame(tick);
+  }
+
+  private stopOutputLevelLoop(): void {
+    if (this.outputLevelRAF !== null) {
+      cancelAnimationFrame(this.outputLevelRAF);
+      this.outputLevelRAF = null;
+    }
+  }
+
+  /**
+   * One RAF tick: read the analyser, compute bars, apply decay if we're in
+   * the post-playback fade window, dispatch the `audio:output-level` event,
+   * and stop the loop once fully decayed.
+   *
+   * Decay is frame-based (multiply by 0.85 per tick). We considered time-
+   * based decay using `performance.now()` deltas, but frame-based is simpler
+   * and the RAF cadence is stable enough on modern Chromium that the visible
+   * difference is negligible.
+   */
+  private sampleOutputLevel(): void {
+    const analyser = this.outputAnalyser;
+    const timeBuf = this.outputTimeBuffer;
+    if (!analyser || !timeBuf) return;
+
+    const decaying = this.outputPlaybackEndedAt !== null;
+
+    if (decaying) {
+      // During decay we don't sample fresh audio — the source is gone, so the
+      // analyser would just read zeros and we'd lose the smooth fade. Apply
+      // the decay factor to the bars we already have.
+      decayBars(this.outputBarsBuffer, OUTPUT_DECAY_FACTOR);
+      // RMS is a scalar mirror of the bars so external observers can still use
+      // it for e.g. panel-accent glows without recomputing.
+      const rms = computeRms(this.outputBarsBuffer);
+      this.dispatchOutputLevel(rms, this.outputBarsBuffer);
+      if (allBelow(this.outputBarsBuffer, OUTPUT_DECAY_THRESHOLD)) {
+        // Final zero frame so subscribers snap back to idle cleanly.
+        this.outputBarsBuffer.fill(0);
+        this.dispatchOutputLevel(0, this.outputBarsBuffer);
+        this.outputPlaybackEndedAt = null;
+        this.stopOutputLevelLoop();
+      }
+      return;
+    }
+
+    analyser.getFloatTimeDomainData(timeBuf);
+    const rms = computeRms(timeBuf);
+    barsFromTimeDomain(timeBuf, OUTPUT_BAR_COUNT, this.outputBarsBuffer);
+    this.dispatchOutputLevel(rms, this.outputBarsBuffer);
+  }
+
+  private dispatchOutputLevel(rms: number, bars: Float32Array): void {
+    if (typeof window === 'undefined') return;
+    const detail: AudioOutputLevelEventDetail = { rms, bars };
+    window.dispatchEvent(new CustomEvent('audio:output-level', { detail }));
   }
 }
 

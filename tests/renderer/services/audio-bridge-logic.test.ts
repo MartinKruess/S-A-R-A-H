@@ -5,6 +5,7 @@ import {
   computeEffectiveGain,
   decideCaptureReset,
   isCaptureConfigEqual,
+  isPlaybackConfigEqual,
 } from '../../../src/renderer/services/audio-bridge-logic.js';
 
 function makeAudio(overrides: Partial<AudioConfig> = {}): AudioConfig {
@@ -81,5 +82,35 @@ describe('isCaptureConfigEqual', () => {
     expect(isCaptureConfigEqual(base, makeAudio({ inputDeviceId: 'mic-a', inputMuted: true }))).toBe(false);
     expect(isCaptureConfigEqual(base, makeAudio({ inputDeviceId: 'mic-a', inputGain: 1.2 }))).toBe(false);
     expect(isCaptureConfigEqual(base, makeAudio({ inputDeviceId: 'mic-a', inputVolume: 0.5 }))).toBe(false);
+  });
+});
+
+describe('isPlaybackConfigEqual', () => {
+  it('returns false when previous is undefined', () => {
+    expect(isPlaybackConfigEqual(undefined, makeAudio())).toBe(false);
+  });
+
+  it('returns true for identical playback-relevant fields', () => {
+    const a = makeAudio({ outputDeviceId: 'out-a', outputVolume: 0.7 });
+    const b = makeAudio({ outputDeviceId: 'out-a', outputVolume: 0.7 });
+    expect(isPlaybackConfigEqual(a, b)).toBe(true);
+  });
+
+  it('ignores input-only fields', () => {
+    const a = makeAudio({ inputDeviceId: 'mic-a', inputGain: 1.2, inputMuted: true, inputVolume: 0.1 });
+    const b = makeAudio({ inputDeviceId: 'mic-b', inputGain: 0.5, inputMuted: false, inputVolume: 1 });
+    expect(isPlaybackConfigEqual(a, b)).toBe(true);
+  });
+
+  it('detects outputDeviceId changes', () => {
+    const base = makeAudio({ outputDeviceId: 'out-a' });
+    expect(isPlaybackConfigEqual(base, makeAudio({ outputDeviceId: 'out-b' }))).toBe(false);
+    expect(isPlaybackConfigEqual(base, makeAudio({ outputDeviceId: undefined }))).toBe(false);
+  });
+
+  it('detects outputVolume changes', () => {
+    const base = makeAudio({ outputVolume: 1 });
+    expect(isPlaybackConfigEqual(base, makeAudio({ outputVolume: 0.5 }))).toBe(false);
+    expect(isPlaybackConfigEqual(base, makeAudio({ outputVolume: 0 }))).toBe(false);
   });
 });

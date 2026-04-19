@@ -1,6 +1,7 @@
 import type { AudioConfig } from '../../../core/config-schema.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudVSlider } from '../../components/index.js';
+import type { AudioOutputLevelEventDetail } from '../../services/audio-output-level.js';
 import { getSarah } from '../../shared/window-global.js';
 import { createAudioSync, near } from './voice-audio-sync.js';
 
@@ -51,11 +52,13 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   const barsRow = document.createElement('div');
   barsRow.className = 'voice-io-bars';
 
+  const bars: HTMLSpanElement[] = [];
   for (let i = 0; i < BAR_COUNT; i++) {
     const bar = document.createElement('span');
     bar.className = 'voice-io-bar';
     bar.style.setProperty('--v', String(FLOOR));
     barsRow.appendChild(bar);
+    bars.push(bar);
   }
 
   meter.appendChild(stateEl);
@@ -82,6 +85,18 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   el.appendChild(meter);
   el.appendChild(sliders);
 
+  const applyLevel = (evt: CustomEvent<AudioOutputLevelEventDetail>): void => {
+    const incoming = evt.detail.bars;
+    const n = Math.min(bars.length, incoming.length);
+    for (let i = 0; i < n; i++) {
+      // FLOOR keeps a visible resting bar even when the analyser reads 0,
+      // matching voice-in.ts' convention so both panels sit at the same idle
+      // height visually.
+      const v = Math.max(FLOOR, Math.min(1, incoming[i]));
+      bars[i].style.setProperty('--v', v.toFixed(3));
+    }
+  };
+
   const applyState = (payload: { state: VoiceState }): void => {
     stateEl.dataset.state = payload.state;
     stateEl.textContent = labelFor(payload.state);
@@ -98,6 +113,7 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   const audioSync = createAudioSync('VoiceOut', applyAudio);
 
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
+  window.addEventListener('audio:output-level', applyLevel);
 
   sarah.voice
     .getState()
@@ -111,6 +127,7 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
       unsubState();
       unsubState = null;
     }
+    window.removeEventListener('audio:output-level', applyLevel);
     audioSync.dispose();
   };
 

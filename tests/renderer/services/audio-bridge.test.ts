@@ -15,11 +15,33 @@ function createMockAudioContext() {
     value: 1,
     setTargetAtTime: vi.fn(),
   };
-  const mockGainNode = {
-    gain: gainParam,
+  // createGain is called for both capture AND output paths. Give every call
+  // a fresh node so the test can reason about whichever branch it cares about.
+  const makeGainNode = () => ({
+    gain: { value: 1, setTargetAtTime: vi.fn() },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  });
+  const mockGainNode = { gain: gainParam, connect: vi.fn(), disconnect: vi.fn() };
+  const mockAnalyserNode = {
+    fftSize: 256,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    getFloatTimeDomainData: vi.fn(),
+  };
+  const mockStreamDest = {
+    stream: { id: 'mock-stream' },
     connect: vi.fn(),
     disconnect: vi.fn(),
   };
+
+  let gainCallCount = 0;
+  const createGainFn = vi.fn().mockImplementation(() => {
+    gainCallCount++;
+    // First createGain call on this ctx maps to the capture gain the existing
+    // tests inspect. Subsequent calls (output gain) get a fresh isolated node.
+    return gainCallCount === 1 ? mockGainNode : makeGainNode();
+  });
 
   return {
     state: 'running' as string,
@@ -29,7 +51,9 @@ function createMockAudioContext() {
     close: vi.fn().mockResolvedValue(undefined),
     audioWorklet: { addModule: workletAddModule },
     createMediaStreamSource: vi.fn().mockReturnValue(mockSourceNode),
-    createGain: vi.fn().mockReturnValue(mockGainNode),
+    createGain: createGainFn,
+    createAnalyser: vi.fn().mockReturnValue(mockAnalyserNode),
+    createMediaStreamDestination: vi.fn().mockReturnValue(mockStreamDest),
     createBuffer: vi.fn().mockReturnValue({
       getChannelData: vi.fn().mockReturnValue(new Float32Array(100)),
     }),
@@ -44,6 +68,8 @@ function createMockAudioContext() {
     _sourceNode: mockSourceNode,
     _workletNode: mockWorkletNode,
     _gainNode: mockGainNode,
+    _analyserNode: mockAnalyserNode,
+    _streamDest: mockStreamDest,
     _workletAddModule: workletAddModule,
   };
 }
