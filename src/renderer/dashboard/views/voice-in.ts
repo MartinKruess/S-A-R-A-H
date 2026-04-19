@@ -19,9 +19,28 @@ function labelFor(state: string): string {
   return state.toUpperCase();
 }
 
-export function createVoiceIoBody(): { el: HTMLElement; dispose: () => void } {
+export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   const el = document.createElement('div');
-  el.className = 'voice-io';
+  el.className = 'voice-panel voice-panel--in';
+
+  const controls = document.createElement('div');
+  controls.className = 'voice-panel-controls';
+
+  const muteBtn = document.createElement('span');
+  muteBtn.className = 'voice-panel-btn-stub';
+  muteBtn.dataset.variant = 'mute';
+  muteBtn.textContent = 'MUTE';
+
+  const devicePicker = document.createElement('span');
+  devicePicker.className = 'voice-panel-btn-stub';
+  devicePicker.dataset.variant = 'picker';
+  devicePicker.textContent = 'Mikrofon: System-Standard';
+
+  controls.appendChild(muteBtn);
+  controls.appendChild(devicePicker);
+
+  const meter = document.createElement('div');
+  meter.className = 'voice-panel-meter';
 
   const stateEl = document.createElement('div');
   stateEl.className = 'voice-io-state';
@@ -40,8 +59,26 @@ export function createVoiceIoBody(): { el: HTMLElement; dispose: () => void } {
     bars.push(bar);
   }
 
-  el.appendChild(stateEl);
-  el.appendChild(barsRow);
+  meter.appendChild(stateEl);
+  meter.appendChild(barsRow);
+
+  const sliders = document.createElement('div');
+  sliders.className = 'voice-panel-sliders';
+
+  const volStub = document.createElement('div');
+  volStub.className = 'voice-panel-slider-stub';
+  volStub.dataset.label = 'VOL';
+
+  const gainStub = document.createElement('div');
+  gainStub.className = 'voice-panel-slider-stub';
+  gainStub.dataset.label = 'GAIN';
+
+  sliders.appendChild(volStub);
+  sliders.appendChild(gainStub);
+
+  el.appendChild(controls);
+  el.appendChild(meter);
+  el.appendChild(sliders);
 
   const applyLevel = (data: VoiceLevel): void => {
     const n = Math.min(bars.length, data.bars.length);
@@ -64,7 +101,7 @@ export function createVoiceIoBody(): { el: HTMLElement; dispose: () => void } {
     .getState()
     .then((state) => applyState({ state }))
     .catch((err: Error) => {
-      console.warn('[VoiceIO] initial voice state fetch failed:', err);
+      console.warn('[VoiceIn] initial voice state fetch failed:', err);
     });
 
   const dispose = (): void => {

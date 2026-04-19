@@ -1,7 +1,8 @@
 import { sarahPanel } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 import { createSystemLoadBody } from './system-load.js';
-import { createVoiceIoBody } from './voice-io.js';
+import { createVoiceInBody } from './voice-in.js';
+import { createVoiceOutBody } from './voice-out.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
   const root = document.createElement('div');
@@ -12,7 +13,8 @@ export async function createHomeView(): Promise<HTMLElement> {
 
   root.appendChild(buildBanner(name));
   root.appendChild(buildSysLoadPanel());
-  root.appendChild(buildVoiceIoPanel());
+  root.appendChild(buildVoiceInPanel());
+  root.appendChild(buildVoiceOutPanel());
   root.appendChild(buildHero());
   root.appendChild(buildTerminePanel());
   root.appendChild(buildWetterPanel());
@@ -58,15 +60,27 @@ function buildSysLoadPanel(): HTMLElement {
   return panel;
 }
 
-function buildVoiceIoPanel(): HTMLElement {
-  const voiceIo = createVoiceIoBody();
-  (voiceIo.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIo.dispose;
+function buildVoiceInPanel(): HTMLElement {
+  const voiceIn = createVoiceInBody();
+  (voiceIn.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIn.dispose;
   const panel = sarahPanel({
-    title: 'VOICE I/O',
+    title: 'VOICE IN',
     accent: 'mint',
-    children: [voiceIo.el],
+    children: [voiceIn.el],
   });
-  panel.classList.add('cockpit-voiceio');
+  panel.classList.add('cockpit-voicein');
+  return panel;
+}
+
+function buildVoiceOutPanel(): HTMLElement {
+  const voiceOut = createVoiceOutBody();
+  (voiceOut.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceOut.dispose;
+  const panel = sarahPanel({
+    title: 'VOICE OUT',
+    accent: 'cyan',
+    children: [voiceOut.el],
+  });
+  panel.classList.add('cockpit-voiceout');
   return panel;
 }
 
