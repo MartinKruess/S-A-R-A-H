@@ -12,6 +12,8 @@ import { SarahToggle } from './sarah-toggle.js';
 import { SarahPathPicker } from './sarah-path-picker.js';
 import { SarahSvg } from './sarah-svg.js';
 import { HudSelect } from './hud-select.js';
+import { HudToggle } from './hud-toggle.js';
+import { HudVSlider } from './hud-vslider.js';
 
 export { SarahButton, sarahButton } from './sarah-button.js';
 export { SarahInput, sarahInput } from './sarah-input.js';
@@ -31,6 +33,9 @@ export { SarahPathPicker, sarahPathPicker } from './sarah-path-picker.js';
 export { SarahSvg, sarahSvg } from './sarah-svg.js';
 export { HudSelect, hudSelect, toDeviceOptions } from './hud-select.js';
 export type { HudSelectKind, HudSelectOption, DeviceInfoLike } from './hud-select.js';
+export { HudToggle, hudToggle } from './hud-toggle.js';
+export { HudVSlider, hudVSlider, formatVSliderValueText, computeMarkerPosition } from './hud-vslider.js';
+export type { HudVSliderUnit } from './hud-vslider.js';
 export { SarahElement, createElement, type ChildrenProp } from './base.js';
 
 /** Register all custom elements. Call once at app startup. */
@@ -49,4 +54,6 @@ export function registerComponents(): void {
   customElements.define('sarah-path-picker', SarahPathPicker);
   customElements.define('sarah-svg', SarahSvg);
   customElements.define('hud-select', HudSelect);
+  customElements.define('hud-toggle', HudToggle);
+  customElements.define('hud-vslider', HudVSlider);
 }

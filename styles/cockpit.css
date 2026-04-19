@@ -367,58 +367,12 @@
   padding-left: 4px;
 }
 
-.voice-panel-slider-stub {
-  width: 4px;
-  min-height: 100px;
-  background: linear-gradient(
-    to top,
-    rgba(216, 241, 255, 0.08),
-    var(--panel-accent-color, var(--cockpit-accent-cyan)) 50%,
-    rgba(216, 241, 255, 0.08)
-  );
-  border-radius: 2px;
-  opacity: 0.55;
-  position: relative;
-}
-
-.voice-panel-slider-stub[data-label]::after {
-  content: attr(data-label);
-  position: absolute;
-  bottom: -14px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--cockpit-font-heading);
-  font-size: 0.6rem;
-  letter-spacing: 0.15em;
-  color: var(--cockpit-text-dim);
-}
-
-.voice-panel-btn-stub {
-  font-family: var(--cockpit-font-heading);
-  font-size: 0.68rem;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--cockpit-text-hud);
-  background: rgba(216, 241, 255, 0.04);
-  border: 1px solid rgba(216, 241, 255, 0.14);
-  border-radius: 999px;
-  padding: 4px 12px;
-  opacity: 0.75;
-  cursor: default;
-  user-select: none;
-}
-
-.voice-panel-btn-stub[data-variant="mute"] {
-  border-color: rgba(34, 255, 192, 0.35);
-  color: var(--cockpit-accent-mint);
-}
-
-/* ── Voice panel — hud-select ──
-   The device picker is a custom element (<hud-select>) with its internal
-   styles scoped to its shadow DOM. The popup uses position:fixed and reads
-   --panel-accent-color so the hover-glow matches the surrounding panel. We
-   expose a light tweak at the host level (max-width) so the pill sits flush
-   next to MUTE and never overflows the controls row. */
+/* ── Voice panel — HUD custom elements ──
+   The device picker (<hud-select>), mute button (<hud-toggle>) and vertical
+   sliders (<hud-vslider>) are custom elements with their internal styles
+   scoped to their shadow DOMs. They all read --panel-accent-color so hover
+   glows and accents match the surrounding panel. We expose a light tweak at
+   the host level (max-width) so pills stay flush within the controls row. */
 hud-select {
   max-width: 100%;
 }

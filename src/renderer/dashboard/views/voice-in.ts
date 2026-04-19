@@ -1,7 +1,7 @@
 import type { AudioConfig } from '../../../core/config-schema.js';
 import type { VoiceLevel } from '../../../core/ipc-contract.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
-import { hudSelect } from '../../components/index.js';
+import { hudSelect, hudToggle, hudVSlider } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 
 const BAR_COUNT = 16;
@@ -28,22 +28,35 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   const controls = document.createElement('div');
   controls.className = 'voice-panel-controls';
 
-  const muteBtn = document.createElement('span');
-  muteBtn.className = 'voice-panel-btn-stub';
-  muteBtn.dataset.variant = 'mute';
-  muteBtn.textContent = 'MUTE';
-
   const sarah = getSarah();
+
+  const persistAudio = async (patch: Partial<AudioConfig>): Promise<void> => {
+    try {
+      const cfg = await sarah.getConfig();
+      await sarah.saveConfig({ audio: { ...cfg.audio, ...patch } });
+    } catch (err) {
+      console.warn('[VoiceIn] failed to persist audio config:', err);
+    }
+  };
+
+  const muteToggle = hudToggle({
+    label: 'MUTE',
+    pressed: false,
+    ariaLabel: 'Mikrofon stummschalten',
+    onChange: (muted) => {
+      void persistAudio({ inputMuted: muted });
+    },
+  });
 
   const picker = hudSelect({
     kind: 'audioinput',
     value: '',
     onChange: (id) => {
-      void persistInputDevice(id);
+      void persistAudio({ inputDeviceId: id || undefined });
     },
   });
 
-  controls.appendChild(muteBtn);
+  controls.appendChild(muteToggle);
   controls.appendChild(picker);
 
   const meter = document.createElement('div');
@@ -72,16 +85,33 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   const sliders = document.createElement('div');
   sliders.className = 'voice-panel-sliders';
 
-  const volStub = document.createElement('div');
-  volStub.className = 'voice-panel-slider-stub';
-  volStub.dataset.label = 'VOL';
+  const volSlider = hudVSlider({
+    label: 'VOL',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 1,
+    unit: 'percent',
+    onChange: (v) => {
+      void persistAudio({ inputVolume: v });
+    },
+  });
 
-  const gainStub = document.createElement('div');
-  gainStub.className = 'voice-panel-slider-stub';
-  gainStub.dataset.label = 'GAIN';
+  const gainSlider = hudVSlider({
+    label: 'GAIN',
+    min: 0,
+    max: 1.5,
+    step: 0.01,
+    value: 1,
+    defaultMarker: 1.0,
+    unit: 'multiplier',
+    onChange: (v) => {
+      void persistAudio({ inputGain: v });
+    },
+  });
 
-  sliders.appendChild(volStub);
-  sliders.appendChild(gainStub);
+  sliders.appendChild(volSlider);
+  sliders.appendChild(gainSlider);
 
   el.appendChild(controls);
   el.appendChild(meter);
@@ -101,22 +131,18 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   };
 
   const applyAudio = (audio: AudioConfig): void => {
-    const next = audio.inputDeviceId ?? '';
-    if (picker.value !== next) picker.value = next;
-  };
-
-  async function persistInputDevice(id: string): Promise<void> {
-    try {
-      const cfg = await sarah.getConfig();
-      const nextAudio = {
-        ...cfg.audio,
-        inputDeviceId: id || undefined,
-      };
-      await sarah.saveConfig({ audio: nextAudio });
-    } catch (err) {
-      console.warn('[VoiceIn] failed to persist inputDeviceId:', err);
+    const nextDevice = audio.inputDeviceId ?? '';
+    if (picker.value !== nextDevice) picker.value = nextDevice;
+    if (muteToggle.pressed !== audio.inputMuted) {
+      muteToggle.setPressedSilent(audio.inputMuted);
     }
-  }
+    if (volSlider.value !== audio.inputVolume) {
+      volSlider.setValueSilent(audio.inputVolume);
+    }
+    if (gainSlider.value !== audio.inputGain) {
+      gainSlider.setValueSilent(audio.inputGain);
+    }
+  };
 
   let unsubLevel: (() => void) | null = sarah.onVoiceLevel(applyLevel);
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
