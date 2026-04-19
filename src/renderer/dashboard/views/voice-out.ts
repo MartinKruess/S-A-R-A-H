@@ -2,13 +2,14 @@ import type { AudioConfig } from '../../../core/config-schema.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudVSlider } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
+import { createAudioSync, near } from './voice-audio-sync.js';
 
 const BAR_COUNT = 16;
 const FLOOR = 0.05;
 
 const STATE_LABELS: Record<VoiceState, string> = {
   idle: 'IDLE',
-  listening: 'IDLE',
+  listening: 'IDLE', // Output panel ignores mic-listening state — no "HÖRT ZU" here.
   processing: 'DENKT',
   speaking: 'SPRICHT',
 };
@@ -29,20 +30,11 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
 
   const sarah = getSarah();
 
-  const persistAudio = async (patch: Partial<AudioConfig>): Promise<void> => {
-    try {
-      const cfg = await sarah.getConfig();
-      await sarah.saveConfig({ audio: { ...cfg.audio, ...patch } });
-    } catch (err) {
-      console.warn('[VoiceOut] failed to persist audio config:', err);
-    }
-  };
-
   const picker = hudSelect({
     kind: 'audiooutput',
     value: '',
     onChange: (id) => {
-      void persistAudio({ outputDeviceId: id || undefined });
+      void audioSync.persist({ outputDeviceId: id || undefined });
     },
   });
 
@@ -80,7 +72,7 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
     value: 1,
     unit: 'percent',
     onChange: (v) => {
-      void persistAudio({ outputVolume: v });
+      void audioSync.persist({ outputVolume: v });
     },
   });
 
@@ -98,13 +90,14 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   const applyAudio = (audio: AudioConfig): void => {
     const nextDevice = audio.outputDeviceId ?? '';
     if (picker.value !== nextDevice) picker.value = nextDevice;
-    if (volSlider.value !== audio.outputVolume) {
+    if (!near(volSlider.value, audio.outputVolume)) {
       volSlider.setValueSilent(audio.outputVolume);
     }
   };
 
+  const audioSync = createAudioSync('VoiceOut', applyAudio);
+
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
-  let unsubAudio: (() => void) | null = sarah.onAudioConfigChanged(applyAudio);
 
   sarah.voice
     .getState()
@@ -113,22 +106,12 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
       console.warn('[VoiceOut] initial voice state fetch failed:', err);
     });
 
-  sarah
-    .getConfig()
-    .then((cfg) => applyAudio(cfg.audio))
-    .catch((err: Error) => {
-      console.warn('[VoiceOut] initial audio config fetch failed:', err);
-    });
-
   const dispose = (): void => {
     if (unsubState) {
       unsubState();
       unsubState = null;
     }
-    if (unsubAudio) {
-      unsubAudio();
-      unsubAudio = null;
-    }
+    audioSync.dispose();
   };
 
   return { el, dispose };

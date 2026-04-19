@@ -3,6 +3,7 @@ import type { VoiceLevel } from '../../../core/ipc-contract.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudToggle, hudVSlider } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
+import { createAudioSync, near } from './voice-audio-sync.js';
 
 const BAR_COUNT = 16;
 const FLOOR = 0.05;
@@ -30,21 +31,12 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
 
   const sarah = getSarah();
 
-  const persistAudio = async (patch: Partial<AudioConfig>): Promise<void> => {
-    try {
-      const cfg = await sarah.getConfig();
-      await sarah.saveConfig({ audio: { ...cfg.audio, ...patch } });
-    } catch (err) {
-      console.warn('[VoiceIn] failed to persist audio config:', err);
-    }
-  };
-
   const muteToggle = hudToggle({
     label: 'MUTE',
     pressed: false,
     ariaLabel: 'Mikrofon stummschalten',
     onChange: (muted) => {
-      void persistAudio({ inputMuted: muted });
+      void audioSync.persist({ inputMuted: muted });
     },
   });
 
@@ -52,7 +44,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     kind: 'audioinput',
     value: '',
     onChange: (id) => {
-      void persistAudio({ inputDeviceId: id || undefined });
+      void audioSync.persist({ inputDeviceId: id || undefined });
     },
   });
 
@@ -93,7 +85,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     value: 1,
     unit: 'percent',
     onChange: (v) => {
-      void persistAudio({ inputVolume: v });
+      void audioSync.persist({ inputVolume: v });
     },
   });
 
@@ -106,7 +98,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     defaultMarker: 1.0,
     unit: 'multiplier',
     onChange: (v) => {
-      void persistAudio({ inputGain: v });
+      void audioSync.persist({ inputGain: v });
     },
   });
 
@@ -136,30 +128,24 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     if (muteToggle.pressed !== audio.inputMuted) {
       muteToggle.setPressedSilent(audio.inputMuted);
     }
-    if (volSlider.value !== audio.inputVolume) {
+    if (!near(volSlider.value, audio.inputVolume)) {
       volSlider.setValueSilent(audio.inputVolume);
     }
-    if (gainSlider.value !== audio.inputGain) {
+    if (!near(gainSlider.value, audio.inputGain)) {
       gainSlider.setValueSilent(audio.inputGain);
     }
   };
 
+  const audioSync = createAudioSync('VoiceIn', applyAudio);
+
   let unsubLevel: (() => void) | null = sarah.onVoiceLevel(applyLevel);
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
-  let unsubAudio: (() => void) | null = sarah.onAudioConfigChanged(applyAudio);
 
   sarah.voice
     .getState()
     .then((state) => applyState({ state }))
     .catch((err: Error) => {
       console.warn('[VoiceIn] initial voice state fetch failed:', err);
-    });
-
-  sarah
-    .getConfig()
-    .then((cfg) => applyAudio(cfg.audio))
-    .catch((err: Error) => {
-      console.warn('[VoiceIn] initial audio config fetch failed:', err);
     });
 
   const dispose = (): void => {
@@ -171,10 +157,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
       unsubState();
       unsubState = null;
     }
-    if (unsubAudio) {
-      unsubAudio();
-      unsubAudio = null;
-    }
+    audioSync.dispose();
   };
 
   return { el, dispose };

@@ -44,7 +44,6 @@ const CSS = `
        -webkit-appearance: slider-vertical. */
     writing-mode: vertical-lr;
     direction: rtl;
-    appearance: slider-vertical; /* tolerated by Chromium; harmless fallback */
     width: 18px;
     height: 100%;
     margin: 0;
@@ -131,6 +130,8 @@ export class HudVSlider extends SarahElement {
   private _rafHandle: number | null = null;
   private _pendingInputValue: number | null = null;
   private _suppressEvents = false;
+  private _interacting = false;
+  private _pendingSilentValue: number | null = null;
 
   connectedCallback(): void {
     this.injectStyles(CSS);
@@ -178,6 +179,9 @@ export class HudVSlider extends SarahElement {
 
     this.input.addEventListener('input', this.onInputEvent);
     this.input.addEventListener('change', this.onChangeEvent);
+    this.input.addEventListener('pointerdown', this.onPointerDown);
+    this.input.addEventListener('pointerup', this.onPointerEnd);
+    this.input.addEventListener('pointercancel', this.onPointerEnd);
 
     this.root.appendChild(wrap);
     this.root.appendChild(this.labelEl);
@@ -189,8 +193,13 @@ export class HudVSlider extends SarahElement {
       this._rafHandle = null;
     }
     this._pendingInputValue = null;
+    this._pendingSilentValue = null;
+    this._interacting = false;
     this.input?.removeEventListener('input', this.onInputEvent);
     this.input?.removeEventListener('change', this.onChangeEvent);
+    this.input?.removeEventListener('pointerdown', this.onPointerDown);
+    this.input?.removeEventListener('pointerup', this.onPointerEnd);
+    this.input?.removeEventListener('pointercancel', this.onPointerEnd);
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -240,8 +249,16 @@ export class HudVSlider extends SarahElement {
    * Set `value` without dispatching `input`/`change`. Used by parents that
    * receive a config-echo event and want to sync the UI without looping back
    * into `saveConfig`.
+   *
+   * If the user is mid-drag (pointer down), the write is deferred until the
+   * pointer is released. Otherwise a stale IPC echo arriving during a fresh
+   * gesture would snap the thumb under the user's finger.
    */
   setValueSilent(v: number): void {
+    if (this._interacting) {
+      this._pendingSilentValue = v;
+      return;
+    }
     this._suppressEvents = true;
     try {
       this.value = v;
@@ -283,6 +300,19 @@ export class HudVSlider extends SarahElement {
         composed: true,
       }));
     });
+  };
+
+  private onPointerDown = (): void => {
+    this._interacting = true;
+  };
+
+  private onPointerEnd = (): void => {
+    this._interacting = false;
+    if (this._pendingSilentValue !== null) {
+      const v = this._pendingSilentValue;
+      this._pendingSilentValue = null;
+      this.setValueSilent(v);
+    }
   };
 
   private onChangeEvent = (): void => {
