@@ -1,5 +1,7 @@
+import type { AudioConfig } from '../../../core/config-schema.js';
 import type { VoiceLevel } from '../../../core/ipc-contract.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
+import { hudSelect } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 
 const BAR_COUNT = 16;
@@ -31,13 +33,18 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   muteBtn.dataset.variant = 'mute';
   muteBtn.textContent = 'MUTE';
 
-  const devicePicker = document.createElement('span');
-  devicePicker.className = 'voice-panel-btn-stub';
-  devicePicker.dataset.variant = 'picker';
-  devicePicker.textContent = 'Mikrofon: System-Standard';
+  const sarah = getSarah();
+
+  const picker = hudSelect({
+    kind: 'audioinput',
+    value: '',
+    onChange: (id) => {
+      void persistInputDevice(id);
+    },
+  });
 
   controls.appendChild(muteBtn);
-  controls.appendChild(devicePicker);
+  controls.appendChild(picker);
 
   const meter = document.createElement('div');
   meter.className = 'voice-panel-meter';
@@ -93,15 +100,40 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     stateEl.textContent = labelFor(payload.state);
   };
 
-  const sarah = getSarah();
+  const applyAudio = (audio: AudioConfig): void => {
+    const next = audio.inputDeviceId ?? '';
+    if (picker.value !== next) picker.value = next;
+  };
+
+  async function persistInputDevice(id: string): Promise<void> {
+    try {
+      const cfg = await sarah.getConfig();
+      const nextAudio = {
+        ...cfg.audio,
+        inputDeviceId: id || undefined,
+      };
+      await sarah.saveConfig({ audio: nextAudio });
+    } catch (err) {
+      console.warn('[VoiceIn] failed to persist inputDeviceId:', err);
+    }
+  }
+
   let unsubLevel: (() => void) | null = sarah.onVoiceLevel(applyLevel);
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
+  let unsubAudio: (() => void) | null = sarah.onAudioConfigChanged(applyAudio);
 
   sarah.voice
     .getState()
     .then((state) => applyState({ state }))
     .catch((err: Error) => {
       console.warn('[VoiceIn] initial voice state fetch failed:', err);
+    });
+
+  sarah
+    .getConfig()
+    .then((cfg) => applyAudio(cfg.audio))
+    .catch((err: Error) => {
+      console.warn('[VoiceIn] initial audio config fetch failed:', err);
     });
 
   const dispose = (): void => {
@@ -112,6 +144,10 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     if (unsubState) {
       unsubState();
       unsubState = null;
+    }
+    if (unsubAudio) {
+      unsubAudio();
+      unsubAudio = null;
     }
   };
 

@@ -413,10 +413,21 @@
   color: var(--cockpit-accent-mint);
 }
 
-.voice-panel-btn-stub[data-variant="picker"] {
-  font-family: var(--cockpit-font-mono);
-  text-transform: none;
-  letter-spacing: 0.04em;
-  font-size: 0.72rem;
+/* ── Voice panel — hud-select ──
+   The device picker is a custom element (<hud-select>) with its internal
+   styles scoped to its shadow DOM. The popup uses position:fixed and reads
+   --panel-accent-color so the hover-glow matches the surrounding panel. We
+   expose a light tweak at the host level (max-width) so the pill sits flush
+   next to MUTE and never overflows the controls row. */
+hud-select {
+  max-width: 100%;
 }
+
+/* Surface the surrounding panel's accent colour as a CSS custom property so
+   <hud-select> (and the slider stubs) inherit the right hue. CSS custom
+   properties pierce shadow DOM, so this reaches hud-select automatically. */
+sarah-panel[accent="cyan"]   { --panel-accent-color: var(--cockpit-accent-cyan); }
+sarah-panel[accent="violet"] { --panel-accent-color: var(--cockpit-accent-violet); }
+sarah-panel[accent="pink"]   { --panel-accent-color: var(--cockpit-accent-pink); }
+sarah-panel[accent="mint"]   { --panel-accent-color: var(--cockpit-accent-mint); }
 

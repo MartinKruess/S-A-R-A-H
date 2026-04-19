@@ -1,4 +1,6 @@
+import type { AudioConfig } from '../../../core/config-schema.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
+import { hudSelect } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
 
 const BAR_COUNT = 16;
@@ -25,12 +27,17 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   const controls = document.createElement('div');
   controls.className = 'voice-panel-controls';
 
-  const devicePicker = document.createElement('span');
-  devicePicker.className = 'voice-panel-btn-stub';
-  devicePicker.dataset.variant = 'picker';
-  devicePicker.textContent = 'Ausgabe: System-Standard';
+  const sarah = getSarah();
 
-  controls.appendChild(devicePicker);
+  const picker = hudSelect({
+    kind: 'audiooutput',
+    value: '',
+    onChange: (id) => {
+      void persistOutputDevice(id);
+    },
+  });
+
+  controls.appendChild(picker);
 
   const meter = document.createElement('div');
   meter.className = 'voice-panel-meter';
@@ -71,8 +78,26 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
     stateEl.textContent = labelFor(payload.state);
   };
 
-  const sarah = getSarah();
+  const applyAudio = (audio: AudioConfig): void => {
+    const next = audio.outputDeviceId ?? '';
+    if (picker.value !== next) picker.value = next;
+  };
+
+  async function persistOutputDevice(id: string): Promise<void> {
+    try {
+      const cfg = await sarah.getConfig();
+      const nextAudio = {
+        ...cfg.audio,
+        outputDeviceId: id || undefined,
+      };
+      await sarah.saveConfig({ audio: nextAudio });
+    } catch (err) {
+      console.warn('[VoiceOut] failed to persist outputDeviceId:', err);
+    }
+  }
+
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
+  let unsubAudio: (() => void) | null = sarah.onAudioConfigChanged(applyAudio);
 
   sarah.voice
     .getState()
@@ -81,10 +106,21 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
       console.warn('[VoiceOut] initial voice state fetch failed:', err);
     });
 
+  sarah
+    .getConfig()
+    .then((cfg) => applyAudio(cfg.audio))
+    .catch((err: Error) => {
+      console.warn('[VoiceOut] initial audio config fetch failed:', err);
+    });
+
   const dispose = (): void => {
     if (unsubState) {
       unsubState();
       unsubState = null;
+    }
+    if (unsubAudio) {
+      unsubAudio();
+      unsubAudio = null;
     }
   };
 
