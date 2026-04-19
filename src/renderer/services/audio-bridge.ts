@@ -29,6 +29,10 @@ const GAIN_RAMP_TIME_CONSTANT = 0.015;
 /** FFT size for the output analyser — fixed by Phase 6 spec. 256 → 128 bins. */
 const OUTPUT_ANALYSER_FFT_SIZE = 256;
 
+/** Timeout guarding `HTMLAudioElement.setSinkId` so an unplugged USB sink
+ *  can't freeze the TTS pipeline. On timeout we fall back to the default sink. */
+const SET_SINK_ID_TIMEOUT_MS = 2000;
+
 /** Path to the capture AudioWorklet module, relative to the renderer root. */
 const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
 
@@ -99,6 +103,10 @@ export class AudioBridge {
    *  honoured on the NEXT `playAudio` — in-flight playback finishes on the
    *  device it started on. Abrupt cross-fade is out of scope for Phase 6. */
   private currentOutputDeviceId: string | undefined = undefined;
+  /** Last device id for which we logged the "setSinkId unsupported" warning.
+   *  Keeps the log out of the per-utterance hot path while still surfacing
+   *  the misconfiguration once per device change. */
+  private lastLoggedUnsupportedDevice: string | undefined = undefined;
   /** Mirror of `currentAudio.inputMuted`; short-circuits IPC push (Lücke #13). */
   private muted = false;
   /** `start()` must finish before audio-config events are processed, otherwise
@@ -457,8 +465,24 @@ export class AudioBridge {
     // differs from the live one, e.g. after an outputDeviceId config change
     // between utterances.
     const desiredDeviceId = this.currentOutputDeviceId;
-    const wantPathB = !!desiredDeviceId && hasSetSinkIdSupport();
+    const setSinkIdSupported = hasSetSinkIdSupport();
+    const wantPathB = !!desiredDeviceId && setSinkIdSupported;
     const havePathB = !!this.outputAudioElement;
+
+    // Log once per unique device-id when the caller asked for a specific
+    // sink but the platform lacks setSinkId (old Electron, sandboxed contexts).
+    // Guarded by `lastLoggedUnsupportedDevice` so the hot path stays quiet.
+    if (desiredDeviceId && !setSinkIdSupported) {
+      if (this.lastLoggedUnsupportedDevice !== desiredDeviceId) {
+        console.warn(
+          `[AudioBridge] outputDeviceId="${desiredDeviceId}" set but setSinkId unsupported; using default sink`,
+        );
+        this.lastLoggedUnsupportedDevice = desiredDeviceId;
+      }
+    } else if (!desiredDeviceId) {
+      // Device cleared — allow a future re-set to log again.
+      this.lastLoggedUnsupportedDevice = undefined;
+    }
 
     if (wantPathB !== havePathB) {
       this.outputGain.disconnect();
@@ -471,8 +495,12 @@ export class AudioBridge {
         this.outputStreamDest = null;
       }
       if (this.outputAudioElement) {
+        // Explicit srcObject=null + load() forces the media pipeline to drop
+        // the MediaStream so the GC doesn't keep the old graph pinned via
+        // the element's internal reference.
         this.outputAudioElement.pause();
         this.outputAudioElement.srcObject = null;
+        this.outputAudioElement.load();
         this.outputAudioElement = null;
       }
     }
@@ -490,19 +518,33 @@ export class AudioBridge {
         const audioEl = new Audio();
         audioEl.autoplay = true;
         audioEl.srcObject = this.outputStreamDest.stream;
+        // Surface pipeline errors (codec, decode, network) to the console
+        // instead of silently hanging. Listener lives for the element's
+        // lifetime — simpler than one-shot cleanup.
+        audioEl.addEventListener('error', () => {
+          console.warn('[AudioBridge] <audio> element error:', audioEl.error?.message);
+        });
         this.outputAudioElement = audioEl;
       }
-      // setSinkId may reject on invalid ids — fall back to default sink.
+      // setSinkId may reject on invalid ids OR hang on an unplugged sink —
+      // wrap in a timeout race and fall back to default sink in either case.
       if (desiredDeviceId) {
         const sinkEl = this.outputAudioElement as HTMLAudioElement & SinkIdCapable;
-        try {
-          await sinkEl.setSinkId(desiredDeviceId);
-        } catch (err) {
+        await Promise.race([
+          sinkEl.setSinkId(desiredDeviceId),
+          new Promise<void>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('setSinkId timeout')),
+              SET_SINK_ID_TIMEOUT_MS,
+            ),
+          ),
+        ]).catch((err) => {
           console.warn(
-            `[AudioBridge] setSinkId("${desiredDeviceId}") failed, using default sink:`,
+            `[AudioBridge] setSinkId("${desiredDeviceId}") failed/timed out, falling back:`,
             err,
           );
-        }
+          // Don't rethrow — let playback continue on the default sink.
+        });
       }
     } else if (!wantPathB) {
       // Path A: gain → destination. Idempotent connect (disconnect above
@@ -517,6 +559,9 @@ export class AudioBridge {
     if (this.outputAudioElement) {
       this.outputAudioElement.pause();
       this.outputAudioElement.srcObject = null;
+      // Force the pipeline to drop the MediaStream so GC can collect the
+      // upstream graph nodes (mirrors the path-flip cleanup above).
+      this.outputAudioElement.load();
       this.outputAudioElement = null;
     }
     if (this.outputStreamDest) {
@@ -570,9 +615,12 @@ export class AudioBridge {
 
       source.onended = () => {
         this.currentPlaybackSource = null;
-        // Mark decay start. The RAF loop keeps running until bars fade out,
-        // then emits a zero frame and stops. Prevents frozen mid-sentence bars.
-        this.outputPlaybackEndedAt = performance.now();
+        // Idempotent: stopPlayback() may have primed decay synchronously before
+        // `onended` fired (mid-sentence interrupt). In that case, keep the
+        // earlier timestamp so the decay window started exactly at the cut.
+        if (this.outputPlaybackEndedAt === null) {
+          this.outputPlaybackEndedAt = performance.now();
+        }
         sarah.voice.playbackDone();
       };
 
@@ -586,12 +634,20 @@ export class AudioBridge {
 
   private stopPlayback(): void {
     if (this.currentPlaybackSource) {
+      // Prime decay SYNCHRONOUSLY so the next RAF tick sees the decay branch
+      // even if `source.onended` hasn't fired yet (it may be queued on a
+      // macrotask). Without this, a mid-sentence interrupt would keep sampling
+      // a disconnected analyser and dispatch genuine zeros abruptly. The
+      // onended handler is now idempotent and preserves this earlier timestamp.
+      this.outputPlaybackEndedAt = performance.now();
       try {
         this.currentPlaybackSource.stop();
       } catch {
         // Already stopped
       }
       this.currentPlaybackSource = null;
+      // Leave the RAF loop running — it self-terminates via the decay branch
+      // (allBelow → stopOutputLevelLoop) for a smooth fade-out.
     }
   }
 
