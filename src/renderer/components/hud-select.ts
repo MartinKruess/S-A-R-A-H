@@ -125,6 +125,15 @@ const CSS = `
   }
 `;
 
+/**
+ * Popup sizing constants. The CSS in this file is the source of truth — these
+ * values mirror the `.listbox` rule above and are used by `positionPopup()` for
+ * flip/clamp math. Keep in sync when editing the CSS block.
+ */
+const POPUP_MAX_HEIGHT = 260; // must match .listbox max-height in CSS above
+const POPUP_MIN_WIDTH = 220;  // must match .listbox min-width in CSS above
+const POPUP_GAP = 6;          // gap between trigger and popup
+
 /** Lightweight id counter so every listbox/option has a stable DOM id. */
 let uidCounter = 0;
 function nextUid(prefix: string): string {
@@ -154,6 +163,7 @@ export class HudSelect extends SarahElement {
   private _devicesListener: (() => void) | null = null;
   private _windowListeners: Array<{ target: EventTarget; type: string; fn: EventListener }> = [];
   private _listboxId: string = '';
+  private _refreshInFlight: Promise<void> | null = null;
 
   connectedCallback(): void {
     this.injectStyles(CSS);
@@ -243,8 +253,25 @@ export class HudSelect extends SarahElement {
     this.syncOptionSelection();
   }
 
-  /** Explicitly re-enumerate devices. Public so parents can force a refresh. */
-  async refreshDevices(requestPermissionIfNeeded: boolean): Promise<void> {
+  /**
+   * Explicitly re-enumerate devices. Public so parents can force a refresh.
+   *
+   * Concurrent callers (e.g. rapid open/close firing both the initial
+   * enumeration and the on-open permission refresh) share a single in-flight
+   * promise — this prevents two parallel `setOptions()` calls from racing.
+   */
+  refreshDevices(requestPermissionIfNeeded: boolean): Promise<void> {
+    if (this._refreshInFlight !== null) {
+      return this._refreshInFlight;
+    }
+    const p = this.doRefreshDevices(requestPermissionIfNeeded).finally(() => {
+      this._refreshInFlight = null;
+    });
+    this._refreshInFlight = p;
+    return p;
+  }
+
+  private async doRefreshDevices(requestPermissionIfNeeded: boolean): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) {
       return;
     }
@@ -413,21 +440,34 @@ export class HudSelect extends SarahElement {
 
   private positionPopup(): void {
     const rect = this.trigger.getBoundingClientRect();
-    const gap = 6;
-    // Prefer below; if not enough space, flip above.
     const viewportH = window.innerHeight;
-    const popupMaxH = 260;
-    const spaceBelow = viewportH - rect.bottom;
-    const placeAbove = spaceBelow < popupMaxH + gap && rect.top > spaceBelow;
+    const viewportW = window.innerWidth;
 
-    this.listbox.style.left = `${rect.left}px`;
-    this.listbox.style.minWidth = `${Math.max(rect.width, 220)}px`;
+    // If the trigger has scrolled fully out of the viewport, close the popup
+    // rather than pinning it to an invisible anchor.
+    if (rect.bottom < 0 || rect.top > viewportH) {
+      this.closePopup();
+      return;
+    }
+
+    // Prefer below; if not enough space, flip above.
+    const spaceBelow = viewportH - rect.bottom;
+    const placeAbove = spaceBelow < POPUP_MAX_HEIGHT + POPUP_GAP && rect.top > spaceBelow;
+
+    // Horizontal: align to trigger's left edge, but clamp so the popup fits
+    // within the viewport (accounting for its effective width).
+    const effectiveWidth = Math.max(this.listbox.offsetWidth, rect.width, POPUP_MIN_WIDTH);
+    const maxLeft = viewportW - effectiveWidth - POPUP_GAP;
+    const clampedLeft = Math.min(Math.max(POPUP_GAP, rect.left), Math.max(POPUP_GAP, maxLeft));
+
+    this.listbox.style.left = `${clampedLeft}px`;
+    this.listbox.style.minWidth = `${Math.max(rect.width, POPUP_MIN_WIDTH)}px`;
     if (placeAbove) {
       this.listbox.style.top = '';
-      this.listbox.style.bottom = `${viewportH - rect.top + gap}px`;
+      this.listbox.style.bottom = `${viewportH - rect.top + POPUP_GAP}px`;
     } else {
       this.listbox.style.bottom = '';
-      this.listbox.style.top = `${rect.bottom + gap}px`;
+      this.listbox.style.top = `${rect.bottom + POPUP_GAP}px`;
     }
   }
 
