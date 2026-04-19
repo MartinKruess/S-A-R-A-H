@@ -362,6 +362,93 @@ describe('AudioBridge', () => {
     expect(call[0].audio.deviceId.exact).toBe('mic-xyz');
   });
 
+  it('serializes rapid applyAudioConfig calls — last deviceId wins', async () => {
+    // Start with mic-a capturing, so decideCaptureReset() returns 'reset'
+    // for each queued call (state='listening' + device change).
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-a' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    getUserMediaMock.mockClear();
+
+    // Two rapid applies: B must see A's committed state, not stale mic-a.
+    const pA = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-b' }));
+    const pB = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-c' }));
+    await Promise.all([pA, pB]);
+
+    // Both calls reached startCapture → two new getUserMedia calls, in order.
+    expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    expect(getUserMediaMock.mock.calls[0][0].audio.deviceId.exact).toBe('mic-b');
+    expect(getUserMediaMock.mock.calls[1][0].audio.deviceId.exact).toBe('mic-c');
+
+    // Final constraint — the call that "wins" for the live graph — is mic-c.
+    const lastCall = getUserMediaMock.mock.calls.at(-1);
+    expect(lastCall?.[0]?.audio?.deviceId?.exact).toBe('mic-c');
+  });
+
+  it('destroy() mid-apply does not leave a live mic stream or worklet behind', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-a' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    // Freeze getUserMedia so the rebuild below is still in-flight when destroy hits.
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    let release!: (value: typeof mockStream) => void;
+    const pending = new Promise<typeof mockStream>((resolve) => {
+      release = resolve;
+    });
+    getUserMediaMock.mockClear();
+    // mic-b triggers a reset → stopCapture, close ctx, then startCapture whose
+    // getUserMedia hangs on `pending`. mic-a from the initial startCapture was
+    // already stopped by that reset; mockTrack.stop resets can confirm the
+    // second teardown (from destroy) does its job.
+    getUserMediaMock.mockReturnValueOnce(pending);
+
+    // Kick off a device-switch apply; it will await the pending getUserMedia
+    // inside startCapture, which itself runs inside _applyAudioConfigSerial.
+    const applying = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-b' }));
+
+    // Wait until the in-flight startCapture has reached the pending
+    // getUserMedia — that's the moment apply is mid-flight.
+    await vi.waitFor(() => {
+      expect(getUserMediaMock).toHaveBeenCalled();
+    });
+
+    // Clear counters: we care about teardown effects AFTER destroy latches.
+    // The reset path already stopped the mic-a stream & disconnected that
+    // graph; those calls aren't what we're validating here.
+    mockTrack.stop.mockClear();
+    captureCtxInstance._workletNode.disconnect.mockClear();
+
+    // Now destroy while apply is pending. destroy awaits applyPromise before
+    // tearing down, so it blocks until we release the pending stream.
+    const destroying = bridge.destroy();
+
+    // Release the stream so the in-flight startCapture can finish, then apply
+    // resolves, then destroy proceeds to its own stopCapture + context close.
+    release(mockStream);
+
+    await applying;
+    await destroying;
+
+    // After destroy resolves: no live tracks, worklet disconnected.
+    expect(mockTrack.stop).toHaveBeenCalled();
+    expect(captureCtxInstance._workletNode.disconnect).toHaveBeenCalled();
+  });
+
   it('falls back to default mic on OverconstrainedError', async () => {
     sarahMock.getConfig.mockResolvedValue({
       audio: makeAudioConfig({ inputDeviceId: 'mic-gone' }),

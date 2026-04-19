@@ -15,6 +15,9 @@ const CAPTURE_SAMPLE_RATE = 16_000;
 /** Time-constant for GainNode ramps. 15ms keeps mute/unmute click-free. */
 const GAIN_RAMP_TIME_CONSTANT = 0.015;
 
+/** Path to the capture AudioWorklet module, relative to the renderer root. */
+const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
+
 export class AudioBridge {
   private captureCtx: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -40,6 +43,14 @@ export class AudioBridge {
   /** `start()` must finish before audio-config events are processed, otherwise
    * the initial capture runs at default gain. */
   private started = false;
+  /** Latched once `destroy()` begins, so in-flight operations can bail before
+   * they allocate new resources the caller won't reach to tear down. */
+  private destroyed = false;
+
+  /** Chain of pending `applyAudioConfig` runs. Each new call appends, so two
+   * rapid device changes execute in order — the second reads the committed
+   * state of the first instead of racing on `currentInputDeviceId`. */
+  private applyPromise: Promise<void> = Promise.resolve();
 
   async start(): Promise<void> {
     // Seed audio config first so the initial handleStateChange picks up
@@ -73,6 +84,17 @@ export class AudioBridge {
   }
 
   async destroy(): Promise<void> {
+    // Latch FIRST so any in-flight apply/startCapture bails before allocating
+    // a new stream or worklet that we'd leak past teardown.
+    this.destroyed = true;
+
+    // Let any queued applyAudioConfig run to completion — it'll see `destroyed`
+    // and early-return without grabbing new resources. Swallow its rejection;
+    // we're tearing down anyway.
+    await this.applyPromise.catch(() => {
+      /* ignore */
+    });
+
     this.stopCapture();
     this.stopPlayback();
     this.unsubState?.();
@@ -109,8 +131,24 @@ export class AudioBridge {
    * slice is unchanged. Device changes re-init the AudioContext (and reset
    * `workletLoaded`), gain/mute changes ramp the GainNode without tearing
    * anything down.
+   *
+   * Calls are serialized via `applyPromise`: two rapid device switches run
+   * in order, so the second reads the first's committed state instead of
+   * both seeing the same stale `currentInputDeviceId`.
    */
-  async applyAudioConfig(audio: AudioConfig): Promise<void> {
+  applyAudioConfig(audio: AudioConfig): Promise<void> {
+    this.applyPromise = this.applyPromise.then(
+      () => this._applyAudioConfigSerial(audio),
+      () => this._applyAudioConfigSerial(audio),
+    );
+    return this.applyPromise;
+  }
+
+  private async _applyAudioConfigSerial(audio: AudioConfig): Promise<void> {
+    // Guard against teardown landing between queued calls — we don't want to
+    // grab a new mic stream just to have the caller tear down around us.
+    if (this.destroyed) return;
+
     if (!this.started) {
       // Avoid racing with start(): the initial getConfig() seed will supply the
       // right values when capture kicks off. Log so we can spot unexpected
@@ -121,6 +159,8 @@ export class AudioBridge {
 
     if (isCaptureConfigEqual(this.currentAudio, audio)) return;
 
+    // Read prevDeviceId INSIDE the serialized section so a queued call B sees
+    // call A's committed state, not the state that was live when B was queued.
     const prevDeviceId = this.currentInputDeviceId;
     this.currentAudio = audio;
     this.currentInputDeviceId = audio.inputDeviceId;
@@ -159,6 +199,9 @@ export class AudioBridge {
   // ── Capture ──
 
   private async startCapture(): Promise<void> {
+    // Teardown races: destroy() latches first, so a startCapture scheduled
+    // from an in-flight apply must not allocate a new graph behind it.
+    if (this.destroyed) return;
     if (this.capturing) return;
     this.capturing = true;
 
@@ -173,9 +216,7 @@ export class AudioBridge {
 
       // Load worklet processor (only once per AudioContext instance)
       if (!this.workletLoaded) {
-        await this.captureCtx.audioWorklet.addModule(
-          'dist/renderer/services/audio-worklet-processor.js'
-        );
+        await this.captureCtx.audioWorklet.addModule(WORKLET_MODULE_URL);
         this.workletLoaded = true;
       }
 
@@ -230,7 +271,7 @@ export class AudioBridge {
           audio: { ...baseConstraints, deviceId: { exact: deviceId } },
         });
       } catch (err) {
-        if (isOverconstrained(err)) {
+        if (isDeviceUnavailableError(err)) {
           console.warn(
             `[AudioBridge] inputDeviceId="${deviceId}" unavailable, falling back to default mic`,
           );
@@ -305,7 +346,7 @@ export class AudioBridge {
   }
 }
 
-function isOverconstrained(err: unknown): boolean {
+function isDeviceUnavailableError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
   const name = (err as { name?: string }).name;
   return name === 'OverconstrainedError' || name === 'NotFoundError';

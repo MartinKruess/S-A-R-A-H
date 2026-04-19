@@ -108,6 +108,24 @@ export const AudioSchema = z.object({
   outputVolume: z.number().min(0).max(1).default(1.0),
 });
 
+/**
+ * Field-by-field equality check for AudioConfig. Used by the main-process
+ * save-config handler to decide whether to emit `audio-config-changed`.
+ * Prefer this over `JSON.stringify` diffs — avoids fragile key-ordering
+ * coupling, and each field is typed so forgetting one at schema-extension
+ * time is a type error, not a silent equality bug.
+ */
+export function isAudioConfigEqual(a: AudioConfig, b: AudioConfig): boolean {
+  return (
+    a.inputDeviceId === b.inputDeviceId &&
+    a.outputDeviceId === b.outputDeviceId &&
+    a.inputMuted === b.inputMuted &&
+    a.inputGain === b.inputGain &&
+    a.inputVolume === b.inputVolume &&
+    a.outputVolume === b.outputVolume
+  );
+}
+
 export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
   routerModel: z.string().default('phi4-mini:3.8b'),

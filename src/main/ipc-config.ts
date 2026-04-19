@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
+import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 
@@ -62,7 +63,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         await getService<VoiceService>(ctx, 'voice').applyConfig();
       }
 
-      if (JSON.stringify(previousAudio) !== JSON.stringify(parsed.audio)) {
+      if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
         const win = getMainWindow();
         if (win && !win.isDestroyed()) {
           win.webContents.send('audio-config-changed', parsed.audio);
