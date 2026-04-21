@@ -34,27 +34,13 @@ erscheint weder im Datenfluss-Block noch in einem anderen Code-Ausschnitt des Pl
 
 ---
 
-## Lücke 2 — Timing: `hud-select` value-Set vor `connectedCallback`
+## ~~Lücke 2 — Timing: `hud-select` value-Set vor `connectedCallback`~~ ✅ Nicht zutreffend
 
-**Schwere:** Mittel — potenziell stille Fehlfunktion bei erstem Öffnen
-
-Der Datenfluss beschreibt:
-
-```ts
-const inputEl = document.createElement('hud-select');
-section.appendChild(inputEl);
-inputEl.value = audio.inputDeviceId ?? '';
-```
-
-Zum Zeitpunkt dieses Aufrufs ist `section` noch **nicht** im Live-DOM (der Plan-Mount passiert in `settings.ts` nach `return`). Damit hat `connectedCallback` von `HudSelect` noch nicht gefeuert, d. h. `enumerateDevices()` ist noch nicht gelaufen und die Options-Liste ist leer. Der value-Setter ruft `syncOptionSelection()` auf — aber ohne Optionen findet er nichts und setzt keinen visuellen Zustand.
-
-**Kritische Frage:** Syncronisiert `HudSelect` den gesetzten Wert nach der Device-Enumeration automatisch nach? Wenn ja (z. B. durch erneuten `syncOptionSelection()`-Call am Ende von `connectedCallback`/`loadDevices()`), ist es kein Bug. Wenn nicht, zeigt der Picker beim ersten Öffnen immer "System-Standard", selbst wenn ein gespeichertes Gerät existiert.
-
-Der Plan schweigt dazu vollständig. Das sollte explizit verifiziert und dokumentiert werden, idealerweise durch Blick auf `HudSelect.connectedCallback`/`loadDevices` im Quellcode.
+Verifiziert: `setOptions()` ruft intern immer `syncTriggerLabel()` + `syncOptionSelection()` auf. Nach `refreshDevices()` → `setOptions()` wird `this._value` korrekt in der neuen Options-Liste gefunden. Der vorher gesetzte Wert wird automatisch re-synced — kein Bug.
 
 ---
 
-## Lücke 3 — Falsche Prämisse: hud-select-Tests aus Phase 3
+## Lücke 2 — Falsche Prämisse: hud-select-Tests aus Phase 3
 
 **Schwere:** Gering — irreführende Aussage, kein funktionaler Fehler
 
