@@ -68,13 +68,18 @@ const CSS = `
     transform: rotate(180deg);
   }
 
+  /* Uses the native Popover API so the listbox renders in the top layer,
+     escaping the sarah-panel's clip-path / backdrop-filter containing block.
+     Default popover UA styles (inset: 0, margin: auto, border, background)
+     need to be neutralised so positionPopup() can anchor via top/left/bottom. */
   .listbox {
     position: fixed;
+    inset: unset;
+    margin: 0;
     min-width: 220px;
     max-width: 360px;
     max-height: 260px;
     overflow-y: auto;
-    margin: 0;
     padding: 4px;
     list-style: none;
     background: rgba(11, 18, 32, 0.96);
@@ -85,12 +90,6 @@ const CSS = `
     box-shadow:
       0 12px 40px rgba(0, 0, 0, 0.55),
       0 0 22px color-mix(in srgb, var(--panel-accent-color, var(--cockpit-accent-cyan)) 30%, transparent);
-    z-index: 1000;
-    display: none;
-  }
-
-  :host([open]) .listbox {
-    display: block;
   }
 
   .option {
@@ -202,6 +201,7 @@ export class HudSelect extends SarahElement {
     this.listbox.className = 'listbox';
     this.listbox.id = this._listboxId;
     this.listbox.setAttribute('role', 'listbox');
+    this.listbox.setAttribute('popover', 'manual');
     this.listbox.tabIndex = -1;
 
     this.root.appendChild(this.trigger);
@@ -384,6 +384,7 @@ export class HudSelect extends SarahElement {
     this._open = true;
     this.setAttribute('open', '');
     this.trigger.setAttribute('aria-expanded', 'true');
+    this.showListbox();
     this.positionPopup();
     // Start active index on the currently selected option, or first.
     const selIdx = this.options.findIndex((o) => o.value === this._value);
@@ -422,7 +423,34 @@ export class HudSelect extends SarahElement {
     this.trigger.removeAttribute('aria-activedescendant');
     for (const el of this.optionEls) el.classList.remove('is-active');
     this._activeIndex = -1;
+    this.hideListbox();
     this.removeWindowListeners();
+  }
+
+  private showListbox(): void {
+    const el = this.listbox as HTMLElement & { showPopover?: () => void };
+    if (typeof el.showPopover === 'function') {
+      try {
+        el.showPopover();
+        return;
+      } catch (err) {
+        console.warn('[hud-select] showPopover failed, using fallback display', err);
+      }
+    }
+    this.listbox.style.display = 'block';
+  }
+
+  private hideListbox(): void {
+    const el = this.listbox as HTMLElement & { hidePopover?: () => void; matches: (sel: string) => boolean };
+    if (typeof el.hidePopover === 'function') {
+      try {
+        if (el.matches(':popover-open')) el.hidePopover();
+        return;
+      } catch (err) {
+        console.warn('[hud-select] hidePopover failed, using fallback display', err);
+      }
+    }
+    this.listbox.style.display = 'none';
   }
 
   private removeWindowListeners(): void {
