@@ -12,10 +12,6 @@ import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
 
-try {
-  require('electron-reloader')(module);
-} catch {}
-
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
 const dialogWindows = new Map<string, BrowserWindow>();
@@ -67,8 +63,11 @@ app.whenReady().then(async () => {
 
   // --- Preload: create providers (fast, no activation) ---
   const { llm: llmConfig } = appContext.parsedConfig;
-  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, { ...llmConfig.options, num_ctx: 2048 });
   const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
+  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, {
+    ...llmConfig.options,
+    num_ctx: 2048,
+  });
   const workerOptions = {
     ...llmConfig.options,
     num_ctx: llmConfig.workerOptions.num_ctx,

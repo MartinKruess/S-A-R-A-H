@@ -12,7 +12,8 @@
     "isolatedModules": true,
     "moduleResolution": "node",
     "ignoreDeprecations": "6.0",
-    "declaration": false
+    "declaration": false,
+    "noEmit": true
   },
   "include": ["src/renderer/**/*", "src/core/*.ts", "src/services/voice/voice-types.ts"],
   "exclude": ["node_modules", "dist", "src/renderer/dashboard/dashboard.ts", "src/renderer/dashboard/orb-scene.ts", "src/renderer/dashboard/boot-sequence.ts", "src/renderer/dashboard/dialog.ts", "src/renderer/services/audio-worklet-processor.ts"]
