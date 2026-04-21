@@ -5,6 +5,7 @@ import { createFilesSection } from './sections/files-section.js';
 import { createTrustSection } from './sections/trust-section.js';
 import { createPersonalizationSection } from './sections/personalization-section.js';
 import { createControlsSection } from './sections/controls-section.js';
+import { createAudioSection } from './sections/audio-section.js';
 
 export async function createSettingsView(): Promise<HTMLElement> {
   const container = document.createElement('div');
@@ -21,6 +22,7 @@ export async function createSettingsView(): Promise<HTMLElement> {
   container.appendChild(createTrustSection(config));
   container.appendChild(createPersonalizationSection(config));
   container.appendChild(createControlsSection(config));
+  container.appendChild(createAudioSection(config));
 
   // Wizard re-run button
   const wizardSection = document.createElement('div');

@@ -1,10 +1,11 @@
-import type { SarahConfig, ProgramEntry } from './config-schema.js';
+import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { BusEvents } from './bus-events.js';
 
 /** IPC channels using ipcMain.handle / ipcRenderer.invoke (request-response) */
 export interface IpcCommands {
   'get-system-info':            { input: void; output: SystemIpcInfo };
+  'get-system-metrics':         { input: void; output: SystemMetrics };
   'get-config':                 { input: void; output: SarahConfig };
   'save-config':                { input: Partial<SarahConfig>; output: SarahConfig };
   'select-folder':              { input: string | undefined; output: string | null };
@@ -35,6 +36,9 @@ export interface IpcEvents {
   'voice:interrupted': BusEvents['voice:interrupted'];
   'voice:wake':        BusEvents['voice:wake'];
   'boot-status':       BusEvents['boot:status'];
+  'system:metrics':        SystemMetrics;
+  'voice:level':           VoiceLevel;
+  'audio-config-changed':  AudioConfig;
 }
 
 /** IPC events sent from renderer to main (one-way) */
@@ -42,6 +46,21 @@ export interface IpcSendEvents {
   'splash-done':  void;
   'boot-ready':   void;
   'reveal-done':  void;
+}
+
+/** Live system load metrics pushed via `system:metrics`. Values are fractions 0..1. */
+export interface SystemMetrics {
+  cpu: number;
+  ram: number;
+  gpu: number | null;
+  ts: number;
+}
+
+/** Live voice input level pushed via `voice:level`. `bars` is a rolling FIFO window, oldest → newest. */
+export interface VoiceLevel {
+  rms: number;
+  bars: number[];
+  ts: number;
 }
 
 /** System info returned by get-system-info IPC channel */

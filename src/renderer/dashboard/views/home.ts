@@ -1,37 +1,161 @@
-import { sarahCard } from '../../components/sarah-card.js';
+import { sarahPanel } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
+import { createSystemLoadBody } from './system-load.js';
+import { createVoiceInBody } from './voice-in.js';
+import { createVoiceOutBody } from './voice-out.js';
 
 export async function createHomeView(): Promise<HTMLElement> {
-  const container = document.createElement('div');
+  const root = document.createElement('div');
+  root.className = 'cockpit';
 
   const config = await getSarah().getConfig();
-  const { profile, resources } = config;
+  const name = config.profile.displayName || 'Nutzer';
 
-  // Greeting
+  root.appendChild(buildBanner(name));
+  root.appendChild(buildSysLoadPanel());
+  root.appendChild(buildVoiceInPanel());
+  root.appendChild(buildVoiceOutPanel());
+  root.appendChild(buildHero());
+  root.appendChild(buildTerminePanel());
+  root.appendChild(buildWetterPanel());
+  root.appendChild(buildMediaPanel());
+
+  return root;
+}
+
+function buildBanner(name: string): HTMLElement {
+  const banner = document.createElement('div');
+  banner.className = 'cockpit-banner';
+
   const greeting = document.createElement('div');
-  greeting.className = 'home-greeting';
-  const name = profile.displayName || 'Nutzer';
-  greeting.textContent = `Hallo, ${name}!`;
-  container.appendChild(greeting);
+  greeting.className = 'cockpit-greeting';
+  greeting.textContent = `Willkommen, ${name}`;
 
-  const subtitle = document.createElement('div');
-  subtitle.className = 'home-subtitle';
-  subtitle.textContent = 'Willkommen zurück bei S.A.R.A.H.';
-  container.appendChild(subtitle);
+  const clock = document.createElement('div');
+  clock.className = 'cockpit-clock';
+  clock.textContent = formatClock();
 
-  // Summary cards
-  const cards = document.createElement('div');
-  cards.className = 'home-cards';
+  const intervalId = window.setInterval(() => {
+    if (!clock.isConnected) {
+      window.clearInterval(intervalId);
+      return;
+    }
+    clock.textContent = formatClock();
+  }, 1000);
 
-  const programCount = Array.isArray(resources.programs) ? resources.programs.length : 0;
-  const folderCount = Array.isArray(resources.importantFolders) ? resources.importantFolders.filter((f: string) => f).length : 0;
+  banner.appendChild(greeting);
+  banner.appendChild(clock);
+  return banner;
+}
 
-  cards.appendChild(sarahCard({ icon: '📦', label: 'Programme', value: String(programCount) }));
-  cards.appendChild(sarahCard({ icon: '📁', label: 'Ordner', value: String(folderCount) }));
-  cards.appendChild(sarahCard({ icon: '🎨', label: 'Akzentfarbe', value: config.personalization?.accentColor || '#00d4ff' }));
-  cards.appendChild(sarahCard({ icon: '🔒', label: 'Dateizugriff', value: config.trust?.fileAccess || 'Nicht gesetzt' }));
+function buildSysLoadPanel(): HTMLElement {
+  const systemLoad = createSystemLoadBody();
+  (systemLoad.el as HTMLElement & { __dispose?: () => void }).__dispose = systemLoad.dispose;
+  const panel = sarahPanel({
+    title: 'SYSTEM LOAD',
+    accent: 'cyan',
+    children: [systemLoad.el],
+  });
+  panel.classList.add('cockpit-sysload');
+  return panel;
+}
 
-  container.appendChild(cards);
+function buildVoiceInPanel(): HTMLElement {
+  const voiceIn = createVoiceInBody();
+  (voiceIn.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIn.dispose;
+  const panel = sarahPanel({
+    title: 'VOICE IN',
+    accent: 'mint',
+    children: [voiceIn.el],
+  });
+  panel.classList.add('cockpit-voicein');
+  return panel;
+}
 
-  return container;
+function buildVoiceOutPanel(): HTMLElement {
+  const voiceOut = createVoiceOutBody();
+  (voiceOut.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceOut.dispose;
+  const panel = sarahPanel({
+    title: 'VOICE OUT',
+    accent: 'cyan',
+    children: [voiceOut.el],
+  });
+  panel.classList.add('cockpit-voiceout');
+  return panel;
+}
+
+function buildTerminePanel(): HTMLElement {
+  const panel = sarahPanel({
+    title: 'TERMINE',
+    accent: 'violet',
+    children: ['Heute · Diese Woche'],
+  });
+  panel.classList.add('cockpit-termine');
+  return panel;
+}
+
+function buildWetterPanel(): HTMLElement {
+  const panel = sarahPanel({
+    title: 'WETTER',
+    accent: 'pink',
+    children: ['—'],
+  });
+  panel.classList.add('cockpit-wetter');
+  return panel;
+}
+
+function buildMediaPanel(): HTMLElement {
+  const panel = sarahPanel({
+    title: 'MEDIA',
+    accent: 'cyan',
+    children: ['—'],
+  });
+  panel.classList.add('cockpit-media');
+  return panel;
+}
+
+function buildHero(): HTMLElement {
+  const hero = document.createElement('div');
+  hero.className = 'cockpit-hero';
+
+  const stage = document.createElement('div');
+  stage.className = 'cockpit-hero-stage';
+
+  const grid = document.createElement('div');
+  grid.className = 'cockpit-hero-grid';
+
+  const halo = document.createElement('div');
+  halo.className = 'cockpit-hero-halo';
+
+  const planet = document.createElement('div');
+  planet.className = 'cockpit-hero-planet';
+
+  stage.appendChild(grid);
+  stage.appendChild(halo);
+  stage.appendChild(planet);
+
+  const caption = document.createElement('div');
+  caption.className = 'cockpit-hero-caption';
+  caption.textContent = 'S.A.R.A.H. · CORE ONLINE';
+
+  hero.appendChild(stage);
+  hero.appendChild(caption);
+  return hero;
+}
+
+function formatClock(): string {
+  const now = new Date();
+  const dateFmt = new Intl.DateTimeFormat('de-DE', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'short',
+  });
+  const timeFmt = new Intl.DateTimeFormat('de-DE', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const datePart = dateFmt.format(now).replace('.', '');
+  const timePart = timeFmt.format(now);
+  return `${datePart}  ${timePart}`.toUpperCase();
 }

@@ -7,10 +7,11 @@ import { getService } from './ipc-helpers.js';
 
 export interface VoiceHandlerDeps {
   getAppContext: () => AppContext;
+  onChunk?: (chunk: Float32Array) => void;
 }
 
 export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps): void {
-  const { getAppContext } = deps;
+  const { getAppContext, onChunk } = deps;
 
   ipcMain.handle('voice-get-state', () => {
     return getService<VoiceService>(getAppContext(), 'voice').voiceState;
@@ -21,7 +22,9 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   });
 
   ipcMain.handle('voice-audio-chunk', (_event, chunk: number[]) => {
-    getService<VoiceService>(getAppContext(), 'voice').feedAudioChunk(new Float32Array(chunk));
+    const samples = new Float32Array(chunk);
+    getService<VoiceService>(getAppContext(), 'voice').feedAudioChunk(samples);
+    if (onChunk) onChunk(samples);
   });
 
   ipcMain.handle('voice-set-interaction-mode', (_event, mode: string) => {

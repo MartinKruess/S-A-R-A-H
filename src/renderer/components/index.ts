@@ -3,6 +3,7 @@ import { SarahInput } from './sarah-input.js';
 import { SarahSelect } from './sarah-select.js';
 import { SarahForm } from './sarah-form.js';
 import { SarahCard } from './sarah-card.js';
+import { SarahPanel } from './sarah-panel.js';
 import { SarahProgress } from './sarah-progress.js';
 import { SarahStepper } from './sarah-stepper.js';
 import { SarahSlide } from './sarah-slide.js';
@@ -10,6 +11,9 @@ import { SarahTagSelect } from './sarah-tag-select.js';
 import { SarahToggle } from './sarah-toggle.js';
 import { SarahPathPicker } from './sarah-path-picker.js';
 import { SarahSvg } from './sarah-svg.js';
+import { HudSelect } from './hud-select.js';
+import { HudToggle } from './hud-toggle.js';
+import { HudVSlider } from './hud-vslider.js';
 
 export { SarahButton, sarahButton } from './sarah-button.js';
 export { SarahInput, sarahInput } from './sarah-input.js';
@@ -17,6 +21,7 @@ export { SarahSelect, sarahSelect } from './sarah-select.js';
 export type { SelectOption } from './sarah-select.js';
 export { SarahForm, sarahForm } from './sarah-form.js';
 export { SarahCard, sarahCard } from './sarah-card.js';
+export { SarahPanel, sarahPanel } from './sarah-panel.js';
 export { SarahProgress, sarahProgress } from './sarah-progress.js';
 export { SarahStepper, sarahStepper } from './sarah-stepper.js';
 export type { StepperStep } from './sarah-stepper.js';
@@ -26,6 +31,11 @@ export type { TagOption } from './sarah-tag-select.js';
 export { SarahToggle, sarahToggle } from './sarah-toggle.js';
 export { SarahPathPicker, sarahPathPicker } from './sarah-path-picker.js';
 export { SarahSvg, sarahSvg } from './sarah-svg.js';
+export { HudSelect, hudSelect, toDeviceOptions } from './hud-select.js';
+export type { HudSelectKind, HudSelectOption, DeviceInfoLike } from './hud-select.js';
+export { HudToggle, hudToggle } from './hud-toggle.js';
+export { HudVSlider, hudVSlider, formatVSliderValueText, computeMarkerPosition } from './hud-vslider.js';
+export type { HudVSliderUnit } from './hud-vslider.js';
 export { SarahElement, createElement, type ChildrenProp } from './base.js';
 
 /** Register all custom elements. Call once at app startup. */
@@ -35,6 +45,7 @@ export function registerComponents(): void {
   customElements.define('sarah-select', SarahSelect);
   customElements.define('sarah-form', SarahForm);
   customElements.define('sarah-card', SarahCard);
+  customElements.define('sarah-panel', SarahPanel);
   customElements.define('sarah-progress', SarahProgress);
   customElements.define('sarah-stepper', SarahStepper);
   customElements.define('sarah-slide', SarahSlide);
@@ -42,4 +53,7 @@ export function registerComponents(): void {
   customElements.define('sarah-toggle', SarahToggle);
   customElements.define('sarah-path-picker', SarahPathPicker);
   customElements.define('sarah-svg', SarahSvg);
+  customElements.define('hud-select', HudSelect);
+  customElements.define('hud-toggle', HudToggle);
+  customElements.define('hud-vslider', HudVSlider);
 }

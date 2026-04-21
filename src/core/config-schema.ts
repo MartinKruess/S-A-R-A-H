@@ -99,6 +99,33 @@ export const ControlsSchema = z.object({
   customCommands: z.array(CustomCommandSchema).default([]),
 });
 
+export const AudioSchema = z.object({
+  inputDeviceId: z.string().optional(),
+  outputDeviceId: z.string().optional(),
+  inputMuted: z.boolean().default(false),
+  inputGain: z.number().min(0).max(1.5).default(1.0),
+  inputVolume: z.number().min(0).max(1).default(1.0),
+  outputVolume: z.number().min(0).max(1).default(1.0),
+});
+
+/**
+ * Field-by-field equality check for AudioConfig. Used by the main-process
+ * save-config handler to decide whether to emit `audio-config-changed`.
+ * Prefer this over `JSON.stringify` diffs — avoids fragile key-ordering
+ * coupling, and each field is typed so forgetting one at schema-extension
+ * time is a type error, not a silent equality bug.
+ */
+export function isAudioConfigEqual(a: AudioConfig, b: AudioConfig): boolean {
+  return (
+    a.inputDeviceId === b.inputDeviceId &&
+    a.outputDeviceId === b.outputDeviceId &&
+    a.inputMuted === b.inputMuted &&
+    a.inputGain === b.inputGain &&
+    a.inputVolume === b.inputVolume &&
+    a.outputVolume === b.outputVolume
+  );
+}
+
 export const LlmSchema = z.object({
   baseUrl: z.string().default('http://localhost:11434'),
   routerModel: z.string().default('phi4-mini:3.8b'),
@@ -179,6 +206,7 @@ export const SarahConfigSchema = z.preprocess(
     trust: pre(TrustSchema),
     personalization: pre(PersonalizationSchema),
     controls: pre(ControlsSchema),
+    audio: pre(AudioSchema),
     llm: pre(LlmSchema),
     integrations: pre(
       z.object({
@@ -200,5 +228,6 @@ export type Resources = z.infer<typeof ResourcesSchema>;
 export type Trust = z.infer<typeof TrustSchema>;
 export type Personalization = z.infer<typeof PersonalizationSchema>;
 export type Controls = z.infer<typeof ControlsSchema>;
+export type AudioConfig = z.infer<typeof AudioSchema>;
 export type LlmConfig = z.infer<typeof LlmSchema>;
 export type SystemInfo = z.infer<typeof SystemSchema>;

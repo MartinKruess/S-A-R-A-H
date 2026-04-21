@@ -11,14 +11,49 @@ function createMockAudioContext() {
     connect: vi.fn(),
     disconnect: vi.fn(),
   };
+  const gainParam = {
+    value: 1,
+    setTargetAtTime: vi.fn(),
+  };
+  // createGain is called for both capture AND output paths. Give every call
+  // a fresh node so the test can reason about whichever branch it cares about.
+  const makeGainNode = () => ({
+    gain: { value: 1, setTargetAtTime: vi.fn() },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  });
+  const mockGainNode = { gain: gainParam, connect: vi.fn(), disconnect: vi.fn() };
+  const mockAnalyserNode = {
+    fftSize: 256,
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    getFloatTimeDomainData: vi.fn(),
+  };
+  const mockStreamDest = {
+    stream: { id: 'mock-stream' },
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+
+  let gainCallCount = 0;
+  const createGainFn = vi.fn().mockImplementation(() => {
+    gainCallCount++;
+    // First createGain call on this ctx maps to the capture gain the existing
+    // tests inspect. Subsequent calls (output gain) get a fresh isolated node.
+    return gainCallCount === 1 ? mockGainNode : makeGainNode();
+  });
 
   return {
     state: 'running' as string,
     sampleRate: 16_000,
+    currentTime: 0,
     resume: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     audioWorklet: { addModule: workletAddModule },
     createMediaStreamSource: vi.fn().mockReturnValue(mockSourceNode),
+    createGain: createGainFn,
+    createAnalyser: vi.fn().mockReturnValue(mockAnalyserNode),
+    createMediaStreamDestination: vi.fn().mockReturnValue(mockStreamDest),
     createBuffer: vi.fn().mockReturnValue({
       getChannelData: vi.fn().mockReturnValue(new Float32Array(100)),
     }),
@@ -29,9 +64,36 @@ function createMockAudioContext() {
       stop: vi.fn(),
       onended: null as (() => void) | null,
     }),
+    destination: {},
     _sourceNode: mockSourceNode,
     _workletNode: mockWorkletNode,
+    _gainNode: mockGainNode,
+    _analyserNode: mockAnalyserNode,
+    _streamDest: mockStreamDest,
     _workletAddModule: workletAddModule,
+  };
+}
+
+type MockAudioCtx = ReturnType<typeof createMockAudioContext>;
+
+interface AudioConfigFields {
+  inputDeviceId?: string;
+  outputDeviceId?: string;
+  inputMuted: boolean;
+  inputGain: number;
+  inputVolume: number;
+  outputVolume: number;
+}
+
+function makeAudioConfig(overrides: Partial<AudioConfigFields> = {}): AudioConfigFields {
+  return {
+    inputDeviceId: undefined,
+    outputDeviceId: undefined,
+    inputMuted: false,
+    inputGain: 1.0,
+    inputVolume: 1.0,
+    outputVolume: 1.0,
+    ...overrides,
   };
 }
 
@@ -40,8 +102,9 @@ const mockStream = { getTracks: () => [mockTrack] };
 
 // ── Global stubs ──
 
-let captureCtxInstance: ReturnType<typeof createMockAudioContext>;
-let playbackCtxInstance: ReturnType<typeof createMockAudioContext>;
+let captureCtxInstance: MockAudioCtx;
+let playbackCtxInstance: MockAudioCtx;
+let extraCtxInstances: MockAudioCtx[] = [];
 let ctxCallCount: number;
 
 const sarahVoiceMock = {
@@ -53,12 +116,27 @@ const sarahVoiceMock = {
   sendAudioChunk: vi.fn().mockResolvedValue(undefined),
 };
 
-(globalThis as Record<string, unknown>).sarah = { voice: sarahVoiceMock };
+const sarahMock = {
+  voice: sarahVoiceMock,
+  getConfig: vi.fn().mockResolvedValue({ audio: makeAudioConfig() }),
+  onAudioConfigChanged: vi.fn().mockReturnValue(vi.fn()),
+};
+
+(globalThis as Record<string, unknown>).sarah = sarahMock;
 
 // AudioContext must be a real constructor function (not arrow)
 vi.stubGlobal('AudioContext', function MockAudioContext(this: Record<string, unknown>) {
   ctxCallCount++;
-  const instance = ctxCallCount === 1 ? captureCtxInstance : playbackCtxInstance;
+  let instance: MockAudioCtx;
+  if (ctxCallCount === 1) {
+    instance = captureCtxInstance;
+  } else if (ctxCallCount === 2) {
+    instance = playbackCtxInstance;
+  } else {
+    const extra = createMockAudioContext();
+    extraCtxInstances.push(extra);
+    instance = extra;
+  }
   Object.assign(this, instance);
   return this;
 });
@@ -75,6 +153,63 @@ vi.stubGlobal('navigator', {
   },
 });
 
+// ── <audio> element mock for Path-B (setSinkId) tests ──
+//
+// Node's test env has no DOM, so we expose a bare-bones HTMLAudioElement
+// constructor with the surface the AudioBridge touches: srcObject, autoplay,
+// pause, load, addEventListener('error'), and a `setSinkId` mock on the
+// prototype so feature detection sees it.
+
+interface MockAudioEl {
+  autoplay: boolean;
+  srcObject: unknown;
+  error: { message: string } | null;
+  pause: ReturnType<typeof vi.fn>;
+  load: ReturnType<typeof vi.fn>;
+  addEventListener: ReturnType<typeof vi.fn>;
+  setSinkId: ReturnType<typeof vi.fn>;
+  _errorListeners: Array<() => void>;
+}
+
+let lastAudioEl: MockAudioEl | null = null;
+const audioElInstances: MockAudioEl[] = [];
+
+/** setSinkId implementation injected per test. Reset in beforeEach. */
+let setSinkIdImpl: (sinkId: string) => Promise<void> = () => Promise.resolve();
+
+function populateMockAudioEl(target: Record<string, unknown>): MockAudioEl {
+  const listeners: Array<() => void> = [];
+  const addEventListener = vi.fn((evt: string, cb: () => void) => {
+    if (evt === 'error') listeners.push(cb);
+  });
+  target.autoplay = false;
+  target.srcObject = null;
+  target.error = null;
+  target.pause = vi.fn();
+  target.load = vi.fn();
+  target.addEventListener = addEventListener;
+  target.setSinkId = vi.fn((sinkId: string) => setSinkIdImpl(sinkId));
+  target._errorListeners = listeners;
+  return target as unknown as MockAudioEl;
+}
+
+function MockAudio(this: Record<string, unknown>) {
+  const el = populateMockAudioEl(this);
+  audioElInstances.push(el);
+  lastAudioEl = el;
+  return this;
+}
+// Expose setSinkId on the prototype so `'setSinkId' in HTMLAudioElement.prototype`
+// returns true for the feature-detect helper in audio-bridge.
+(MockAudio as unknown as { prototype: Record<string, unknown> }).prototype = {
+  setSinkId: function stubSetSinkId() {
+    return Promise.resolve();
+  },
+};
+
+vi.stubGlobal('Audio', MockAudio);
+vi.stubGlobal('HTMLAudioElement', MockAudio);
+
 // Must import AFTER globals are set up
 const { AudioBridge } = await import('../../../src/renderer/services/audio-bridge.js');
 
@@ -83,12 +218,18 @@ describe('AudioBridge', () => {
   let stateChangeCb: (data: { state: string }) => void;
   let playAudioCb: (data: { audio: number[]; sampleRate: number }) => void;
 
+  let audioCfgCb: (audio: AudioConfigFields) => void;
+
   beforeEach(() => {
     vi.clearAllMocks();
     ctxCallCount = 0;
+    extraCtxInstances = [];
     captureCtxInstance = createMockAudioContext();
     playbackCtxInstance = createMockAudioContext();
     mockTrack.stop.mockClear();
+    audioElInstances.length = 0;
+    lastAudioEl = null;
+    setSinkIdImpl = () => Promise.resolve();
 
     sarahVoiceMock.onStateChange.mockImplementation((cb: (data: { state: string }) => void) => {
       stateChangeCb = cb;
@@ -96,6 +237,11 @@ describe('AudioBridge', () => {
     });
     sarahVoiceMock.onPlayAudio.mockImplementation((cb: (data: { audio: number[]; sampleRate: number }) => void) => {
       playAudioCb = cb;
+      return vi.fn();
+    });
+    sarahMock.getConfig.mockResolvedValue({ audio: makeAudioConfig() });
+    sarahMock.onAudioConfigChanged.mockImplementation((cb: (audio: AudioConfigFields) => void) => {
+      audioCfgCb = cb;
       return vi.fn();
     });
 
@@ -167,5 +313,412 @@ describe('AudioBridge', () => {
     await vi.waitFor(() => {
       expect(sarahVoiceMock.playbackDone).toHaveBeenCalled();
     });
+  });
+
+  it('inserts a GainNode between source and worklet on capture', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputGain: 1.2, inputVolume: 0.5 }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalledOnce();
+    });
+
+    // source → gain, gain → worklet, worklet → destination
+    expect(captureCtxInstance._sourceNode.connect).toHaveBeenCalledWith(captureCtxInstance._gainNode);
+    expect(captureCtxInstance._gainNode.connect).toHaveBeenCalledWith(captureCtxInstance._workletNode);
+    // GainNode seeded with effective gain (1.2 * 0.5 = 0.6)
+    expect(captureCtxInstance._gainNode.gain.value).toBeCloseTo(0.6);
+  });
+
+  it('short-circuits IPC send when muted', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputMuted: true }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance._workletNode.port.onmessage).not.toBeNull();
+    });
+
+    // Simulate worklet posting samples — mute should drop them
+    const port = captureCtxInstance._workletNode.port;
+    const samples = new Float32Array([0, 0, 0]);
+    port.onmessage?.({ data: { samples } } as MessageEvent);
+    expect(sarahVoiceMock.sendAudioChunk).not.toHaveBeenCalled();
+  });
+
+  it('forwards IPC chunks when not muted', async () => {
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance._workletNode.port.onmessage).not.toBeNull();
+    });
+
+    const port = captureCtxInstance._workletNode.port;
+    const samples = new Float32Array([0.1, 0.2]);
+    port.onmessage?.({ data: { samples } } as MessageEvent);
+    expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledOnce();
+  });
+
+  it('ramps gain via setTargetAtTime on config change', async () => {
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    const setTargetAtTime = captureCtxInstance._gainNode.gain.setTargetAtTime;
+    setTargetAtTime.mockClear();
+
+    await audioCfgCb(makeAudioConfig({ inputGain: 1.5, inputVolume: 0.8 }));
+
+    // 1.5 * 0.8 = 1.2 at the mocked currentTime (0) with 15ms constant
+    expect(setTargetAtTime).toHaveBeenCalledTimes(1);
+    const [target, atTime, tc] = setTargetAtTime.mock.calls[0];
+    expect(target).toBeCloseTo(1.2);
+    expect(atTime).toBe(0);
+    expect(tc).toBe(0.015);
+  });
+
+  it('is idempotent when audio config is unchanged', async () => {
+    const cfg = makeAudioConfig({ inputGain: 1.1 });
+    sarahMock.getConfig.mockResolvedValue({ audio: cfg });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    const setTargetAtTime = captureCtxInstance._gainNode.gain.setTargetAtTime;
+    setTargetAtTime.mockClear();
+
+    // Same slice arrives — should be a no-op, no ramp triggered
+    await audioCfgCb({ ...cfg });
+    expect(setTargetAtTime).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds capture graph when inputDeviceId changes while capturing', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-a' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    const firstCtx = captureCtxInstance;
+    (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mockClear();
+
+    await audioCfgCb(makeAudioConfig({ inputDeviceId: 'mic-b' }));
+    await vi.waitFor(() => {
+      expect((navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    // Old stream stopped, old context closed, new context created
+    expect(mockTrack.stop).toHaveBeenCalled();
+    expect(firstCtx.close).toHaveBeenCalled();
+    // A third AudioContext was constructed (capture1, playback-unused, capture2) or (capture1, capture2, ...)
+    expect(ctxCallCount).toBeGreaterThanOrEqual(2);
+    // New getUserMedia call passed the exact device constraint
+    const lastCall = (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    expect(lastCall?.[0]?.audio?.deviceId?.exact).toBe('mic-b');
+  });
+
+  it('passes deviceId constraint to getUserMedia when configured', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-xyz' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect((navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    });
+
+    const call = (navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call[0].audio.deviceId.exact).toBe('mic-xyz');
+  });
+
+  it('serializes rapid applyAudioConfig calls — last deviceId wins', async () => {
+    // Start with mic-a capturing, so decideCaptureReset() returns 'reset'
+    // for each queued call (state='listening' + device change).
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-a' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    getUserMediaMock.mockClear();
+
+    // Two rapid applies: B must see A's committed state, not stale mic-a.
+    const pA = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-b' }));
+    const pB = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-c' }));
+    await Promise.all([pA, pB]);
+
+    // Both calls reached startCapture → two new getUserMedia calls, in order.
+    expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    expect(getUserMediaMock.mock.calls[0][0].audio.deviceId.exact).toBe('mic-b');
+    expect(getUserMediaMock.mock.calls[1][0].audio.deviceId.exact).toBe('mic-c');
+
+    // Final constraint — the call that "wins" for the live graph — is mic-c.
+    const lastCall = getUserMediaMock.mock.calls.at(-1);
+    expect(lastCall?.[0]?.audio?.deviceId?.exact).toBe('mic-c');
+  });
+
+  it('destroy() mid-apply does not leave a live mic stream or worklet behind', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-a' }),
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+
+    // Freeze getUserMedia so the rebuild below is still in-flight when destroy hits.
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    let release!: (value: typeof mockStream) => void;
+    const pending = new Promise<typeof mockStream>((resolve) => {
+      release = resolve;
+    });
+    getUserMediaMock.mockClear();
+    // mic-b triggers a reset → stopCapture, close ctx, then startCapture whose
+    // getUserMedia hangs on `pending`. mic-a from the initial startCapture was
+    // already stopped by that reset; mockTrack.stop resets can confirm the
+    // second teardown (from destroy) does its job.
+    getUserMediaMock.mockReturnValueOnce(pending);
+
+    // Kick off a device-switch apply; it will await the pending getUserMedia
+    // inside startCapture, which itself runs inside _applyAudioConfigSerial.
+    const applying = bridge.applyAudioConfig(makeAudioConfig({ inputDeviceId: 'mic-b' }));
+
+    // Wait until the in-flight startCapture has reached the pending
+    // getUserMedia — that's the moment apply is mid-flight.
+    await vi.waitFor(() => {
+      expect(getUserMediaMock).toHaveBeenCalled();
+    });
+
+    // Clear counters: we care about teardown effects AFTER destroy latches.
+    // The reset path already stopped the mic-a stream & disconnected that
+    // graph; those calls aren't what we're validating here.
+    mockTrack.stop.mockClear();
+    captureCtxInstance._workletNode.disconnect.mockClear();
+
+    // Now destroy while apply is pending. destroy awaits applyPromise before
+    // tearing down, so it blocks until we release the pending stream.
+    const destroying = bridge.destroy();
+
+    // Release the stream so the in-flight startCapture can finish, then apply
+    // resolves, then destroy proceeds to its own stopCapture + context close.
+    release(mockStream);
+
+    await applying;
+    await destroying;
+
+    // After destroy resolves: no live tracks, worklet disconnected.
+    expect(mockTrack.stop).toHaveBeenCalled();
+    expect(captureCtxInstance._workletNode.disconnect).toHaveBeenCalled();
+  });
+
+  it('falls back to default mic on OverconstrainedError', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ inputDeviceId: 'mic-gone' }),
+    });
+
+    const overconstrained = Object.assign(new Error('no such device'), { name: 'OverconstrainedError' });
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+    getUserMediaMock
+      .mockRejectedValueOnce(overconstrained)
+      .mockResolvedValueOnce(mockStream);
+
+    await bridge.start();
+    stateChangeCb({ state: 'listening' });
+
+    await vi.waitFor(() => {
+      expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    });
+
+    // First call had the exact deviceId, retry had no deviceId constraint
+    expect(getUserMediaMock.mock.calls[0][0].audio.deviceId.exact).toBe('mic-gone');
+    expect(getUserMediaMock.mock.calls[1][0].audio.deviceId).toBeUndefined();
+  });
+
+  // ── Path-B (setSinkId) playback routing ──
+
+  it('routes playback through <audio>.setSinkId when outputDeviceId is set', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ outputDeviceId: 'out-a' }),
+    });
+    await bridge.start();
+
+    playAudioCb({ audio: [0.1, 0.2, 0.3], sampleRate: 22_050 });
+
+    await vi.waitFor(() => {
+      expect(lastAudioEl).not.toBeNull();
+      expect(lastAudioEl?.setSinkId).toHaveBeenCalled();
+    });
+
+    // No capture triggered — the playback ctx is ctx #1 (captureCtxInstance).
+    // An <audio> element was created, wired to the MediaStreamDestination, and
+    // its setSinkId was called with the configured device id.
+    expect(lastAudioEl?.setSinkId).toHaveBeenCalledWith('out-a');
+    expect(lastAudioEl?.autoplay).toBe(true);
+    expect(lastAudioEl?.srcObject).toBe(captureCtxInstance._streamDest.stream);
+  });
+
+  it('falls back gracefully when setSinkId rejects', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ outputDeviceId: 'out-a' }),
+    });
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    setSinkIdImpl = () => Promise.reject(new Error('invalid sink'));
+
+    await bridge.start();
+    playAudioCb({ audio: [0.1, 0.2, 0.3], sampleRate: 22_050 });
+
+    await vi.waitFor(() => {
+      expect(lastAudioEl).not.toBeNull();
+      expect(lastAudioEl?.setSinkId).toHaveBeenCalled();
+      // The catch handler must have run and warned.
+      expect(warnSpy).toHaveBeenCalled();
+    });
+
+    // Fallback message format.
+    const sinkWarnCalls = warnSpy.mock.calls.filter((c) =>
+      typeof c[0] === 'string' && c[0].includes('setSinkId("out-a") failed/timed out'),
+    );
+    expect(sinkWarnCalls.length).toBeGreaterThanOrEqual(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it('flips Path A → Path B when outputDeviceId becomes set between utterances', async () => {
+    // First utterance: no outputDeviceId → Path A (ctx.destination). Since we
+    // never triggered capture, the playback AudioContext is ctx #1, which our
+    // stub maps to captureCtxInstance.
+    await bridge.start();
+    playAudioCb({ audio: [0.1], sampleRate: 22_050 });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createBufferSource).toHaveBeenCalled();
+    });
+    // No <audio> element on Path A.
+    expect(lastAudioEl).toBeNull();
+    // createMediaStreamDestination was NOT used on Path A.
+    expect(captureCtxInstance.createMediaStreamDestination).not.toHaveBeenCalled();
+
+    // Apply config — switch to a specific sink. Use the bridge directly so
+    // we can await the apply to settle (the onAudioConfigChanged callback is
+    // fire-and-forget, await'ing it returns immediately).
+    await bridge.applyAudioConfig(makeAudioConfig({ outputDeviceId: 'out-b' }));
+
+    // Second utterance: now Path B. Still same ctx (sampleRate unchanged).
+    playAudioCb({ audio: [0.1], sampleRate: 22_050 });
+
+    await vi.waitFor(() => {
+      expect(lastAudioEl).not.toBeNull();
+    });
+    expect(lastAudioEl?.setSinkId).toHaveBeenCalledWith('out-b');
+    // The same ctx (#1) is still live — createMediaStreamDestination is on it.
+    const activeCtx = ctxCallCount === 1 ? captureCtxInstance :
+                      ctxCallCount === 2 ? playbackCtxInstance :
+                      extraCtxInstances[extraCtxInstances.length - 1];
+    expect(activeCtx.createMediaStreamDestination).toHaveBeenCalled();
+  });
+
+  it('warns and uses default sink when setSinkId is unsupported', async () => {
+    // Remove setSinkId from HTMLAudioElement.prototype so hasSetSinkIdSupport()
+    // returns false on this run. Restore after the test.
+    const origMockAudio = (globalThis as { Audio: typeof MockAudio }).Audio;
+    const origProto = (origMockAudio as unknown as { prototype: Record<string, unknown> }).prototype;
+    const protoCopy = { ...origProto };
+    delete (protoCopy as { setSinkId?: unknown }).setSinkId;
+    (origMockAudio as unknown as { prototype: Record<string, unknown> }).prototype = protoCopy;
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig({ outputDeviceId: 'out-unsupported' }),
+    });
+    await bridge.start();
+    playAudioCb({ audio: [0.1], sampleRate: 22_050 });
+
+    // No capture was triggered — playback AudioContext is the first one, which
+    // the stub maps to captureCtxInstance.
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createBufferSource).toHaveBeenCalled();
+    });
+
+    // No <audio> element — Path A fallback.
+    expect(lastAudioEl).toBeNull();
+    // Warning surfaced about unsupported setSinkId.
+    const unsupportedWarns = warnSpy.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && c[0].includes('setSinkId unsupported'),
+    );
+    expect(unsupportedWarns.length).toBeGreaterThanOrEqual(1);
+
+    // Restore original prototype
+    (origMockAudio as unknown as { prototype: Record<string, unknown> }).prototype = origProto;
+    warnSpy.mockRestore();
+  });
+
+  // ── stopPlayback / decay priming (C1) ──
+
+  it('stopPlayback() with no active playback is a no-op', async () => {
+    await bridge.start();
+    // Directly invoke via state change to 'listening' — handleStateChange
+    // calls stopPlayback() even without a playback in flight.
+    expect(() => stateChangeCb({ state: 'listening' })).not.toThrow();
+  });
+
+  it('stopPlayback() primes decay synchronously before onended fires', async () => {
+    // Start, kick off a playback so a BufferSource is live. No capture here,
+    // so the playback ctx is ctx #1 (captureCtxInstance).
+    await bridge.start();
+    playAudioCb({ audio: [0.1, 0.2, 0.3], sampleRate: 22_050 });
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance.createBufferSource).toHaveBeenCalled();
+    });
+
+    // Interrupt mid-playback via a state change to 'listening'. stopPlayback
+    // must SYNCHRONOUSLY prime `outputPlaybackEndedAt`, not wait for onended.
+    const bridgeInternal = bridge as unknown as {
+      outputPlaybackEndedAt: number | null;
+      currentPlaybackSource: { stop: ReturnType<typeof vi.fn>; onended: (() => void) | null } | null;
+    };
+    // Sanity: playback is in flight, decay not yet primed.
+    expect(bridgeInternal.outputPlaybackEndedAt).toBeNull();
+
+    stateChangeCb({ state: 'listening' });
+
+    // Decay timestamp must be set RIGHT NOW, before any async onended hop.
+    expect(bridgeInternal.outputPlaybackEndedAt).not.toBeNull();
+    expect(typeof bridgeInternal.outputPlaybackEndedAt).toBe('number');
+
+    // BufferSource was stopped.
+    const bufferSource = captureCtxInstance.createBufferSource.mock.results[0].value;
+    expect(bufferSource.stop).toHaveBeenCalled();
+
+    // onended (if it fires after) must not overwrite the earlier timestamp.
+    const firstStamp = bridgeInternal.outputPlaybackEndedAt;
+    bufferSource.onended?.();
+    expect(bridgeInternal.outputPlaybackEndedAt).toBe(firstStamp);
   });
 });

@@ -9,14 +9,14 @@ import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
-
-try {
-  require('electron-reloader')(module);
-} catch {}
+import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
+import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
 
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
 const dialogWindows = new Map<string, BrowserWindow>();
+let stopSystemMetrics: (() => void) | null = null;
+let stopVoiceLevel: (() => void) | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -28,6 +28,7 @@ function createWindow(): void {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
@@ -62,8 +63,12 @@ app.whenReady().then(async () => {
 
   // --- Preload: create providers (fast, no activation) ---
   const { llm: llmConfig } = appContext.parsedConfig;
-  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, { ...llmConfig.options, num_ctx: 2048 });
   const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
+  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, {
+    ...llmConfig.options,
+    num_ctx: 2048,
+    num_gpu: -1,
+  });
   const workerOptions = {
     ...llmConfig.options,
     num_ctx: llmConfig.workerOptions.num_ctx,
@@ -112,8 +117,15 @@ app.whenReady().then(async () => {
     dialogWindows,
   });
 
+  const voiceLevel = registerVoiceLevelForwarder({
+    getMainWindow,
+    dialogWindows,
+  });
+  stopVoiceLevel = voiceLevel.stop;
+
   registerVoiceHandlers(ipcMain, {
     getAppContext,
+    onChunk: voiceLevel.onChunk,
   });
 
   registerBootHandlers({
@@ -122,6 +134,11 @@ app.whenReady().then(async () => {
     routerService,
     whisperProvider,
     piperProvider,
+  });
+
+  stopSystemMetrics = registerSystemMetricsHandlers(ipcMain, {
+    getMainWindow,
+    dialogWindows,
   });
 
   ipcMain.once('boot-done', () => {
@@ -168,6 +185,14 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', async () => {
+  if (stopSystemMetrics) {
+    stopSystemMetrics();
+    stopSystemMetrics = null;
+  }
+  if (stopVoiceLevel) {
+    stopVoiceLevel();
+    stopVoiceLevel = null;
+  }
   if (appContext) {
     await appContext.shutdown();
   }

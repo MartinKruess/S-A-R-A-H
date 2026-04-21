@@ -36,6 +36,7 @@ async function mount(): Promise<void> {
   document.title = view === 'settings' ? 'S.A.R.A.H. — Einstellungen' : 'S.A.R.A.H. — Dashboard';
 
   const container = document.getElementById('dialog-content')!;
+  container.classList.add(`view-${view}`);
   const el = await viewFactories[view]();
   container.appendChild(el);
 }

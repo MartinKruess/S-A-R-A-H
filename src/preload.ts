@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { SarahApi, BootStatus } from './core/sarah-api.js';
+import type { SystemMetrics, VoiceLevel } from './core/ipc-contract.js';
+import type { AudioConfig } from './core/config-schema.js';
 import type { VoiceState } from './services/voice/voice-types.js';
 
 const api: SarahApi = {
@@ -21,6 +23,22 @@ const api: SarahApi = {
   },
   splashTts: (text) => ipcRenderer.invoke('splash-tts', text),
   getSystemInfo: () => ipcRenderer.invoke('get-system-info'),
+  getSystemMetrics: () => ipcRenderer.invoke('get-system-metrics'),
+  onSystemMetrics: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: SystemMetrics) => callback(data);
+    ipcRenderer.on('system:metrics', handler);
+    return () => ipcRenderer.removeListener('system:metrics', handler);
+  },
+  onVoiceLevel: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: VoiceLevel) => callback(data);
+    ipcRenderer.on('voice:level', handler);
+    return () => ipcRenderer.removeListener('voice:level', handler);
+  },
+  onAudioConfigChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: AudioConfig) => callback(data);
+    ipcRenderer.on('audio-config-changed', handler);
+    return () => ipcRenderer.removeListener('audio-config-changed', handler);
+  },
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),

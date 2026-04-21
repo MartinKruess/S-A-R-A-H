@@ -4,6 +4,7 @@ import { app, BrowserWindow, dialog } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
+import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 
@@ -49,16 +50,24 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
     async (_event, config: Partial<SarahConfig>) => {
       const ctx = getAppContext();
       const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
+      const previousAudio = ctx.parsedConfig.audio;
       const merged = { ...existing, ...config };
-      await ctx.config.set('root', merged);
 
-      // Re-parse merged config
       const { SarahConfigSchema } = await import('../core/config-schema.js');
-      ctx.parsedConfig = SarahConfigSchema.parse(merged);
+      const parsed = SarahConfigSchema.parse(merged);
 
-      // Apply voice config changes live when controls section is saved
+      await ctx.config.set('root', merged);
+      ctx.parsedConfig = parsed;
+
       if ('controls' in config) {
         await getService<VoiceService>(ctx, 'voice').applyConfig();
+      }
+
+      if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
+        const win = getMainWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('audio-config-changed', parsed.audio);
+        }
       }
 
       return ctx.parsedConfig;
@@ -91,11 +100,14 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
     const dialogWin = new BrowserWindow({
       width: w,
       height: h,
+      minWidth: 720,
+      minHeight: 520,
       backgroundColor: '#0a0a1a',
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
 
