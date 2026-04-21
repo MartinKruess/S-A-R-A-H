@@ -67,6 +67,7 @@ app.whenReady().then(async () => {
   const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, {
     ...llmConfig.options,
     num_ctx: 2048,
+    num_gpu: -1,
   });
   const workerOptions = {
     ...llmConfig.options,
