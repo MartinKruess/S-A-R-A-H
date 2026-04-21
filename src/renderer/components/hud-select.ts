@@ -236,6 +236,13 @@ export class HudSelect extends SarahElement {
   set value(v: string) {
     if (this._value === v) return;
     this._value = v;
+    // Guard: `value` may be set before the element is connected to the DOM
+    // (e.g. when a view builds its subtree in-memory and appends later).
+    // `triggerLabel` / `trigger` are only assigned in `connectedCallback`,
+    // so we skip the sync calls here and let `setOptions()` (called from
+    // `connectedCallback` and `refreshDevices`) apply the stored `_value`
+    // once the DOM is in place.
+    if (!this.triggerLabel || !this.trigger) return;
     this.syncTriggerLabel();
     this.syncOptionSelection();
   }
