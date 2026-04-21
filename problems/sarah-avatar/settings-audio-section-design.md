@@ -3,6 +3,7 @@
 **Datum:** 2026-04-21
 **Branch:** `feat/dashboard` (Fortsetzung nach voice-panels Phase 6)
 **Bezug:** `voice-panels-plan.md` — Phase 7 („Settings-Gegenstück", bisher als optional markiert)
+**Revision:** v2 — 2026-04-21 nach `settings-audio-section-design-lücken.md`-Audit
 
 ## Kontext
 
@@ -19,7 +20,25 @@ Neue Section „Audio" in der Settings-View, in der der Nutzer Default-Eingabe- 
 - Kein Mute-Toggle in Settings (bleibt nur im Cockpit).
 - Keine Volume-/Gain-Slider in Settings.
 - Keine Live-Sync-Subscription zwischen Settings- und Cockpit-View (die sind im SPA nicht gleichzeitig gemountet — jede View liest Config frisch beim Aufbau).
-- Kein Refactor an `hud-select`.
+
+## Scope-Erweiterung: `hud-select` Pre-Connection-Guard (Lücke 2)
+
+`HudSelect` initialisiert DOM-Felder (`trigger`, `triggerLabel`, `listbox`) erst in `connectedCallback`. Der `value`-Setter ruft aber sofort `syncTriggerLabel()` + `syncOptionSelection()` auf, die auf diese Felder zugreifen. Wird `value` vor Einhängung in den Dokumentbaum gesetzt, gibt es einen `TypeError`.
+
+**Fix (kleinster möglicher Eingriff):** Setter guarden.
+
+```ts
+set value(v: string) {
+  if (this._value === v) return;
+  this._value = v;
+  if (this.triggerLabel && this.trigger) {
+    this.syncTriggerLabel();
+    this.syncOptionSelection();
+  }
+}
+```
+
+Das ist ein latenter Bug, den die Cockpit-Panels nie ausgelöst haben, weil sie `hud-select` erst nach Mount befüllen. Die Settings-Section baut aber offline (`createAudioSection` läuft bevor `settings.ts` den Container anhängt). Nach dem Fix speichert der Setter nur `_value`; `connectedCallback` → `setOptions()` ruft ohnehin `syncTriggerLabel` + `syncOptionSelection` auf, und der gespeicherte `_value` wird dort genutzt. Sobald `refreshDevices()` die echte Device-Liste nachlädt, re-rendert `setOptions()` nochmal und der gespeicherte `_value` wählt die korrekte Option aus.
 
 ## Architektur
 
@@ -40,68 +59,93 @@ Struktur der Section:
 
 Die hud-select-internen Prefix-Labels („Mikrofon: …" / „Ausgabe: …") liefern die Control-Beschriftung; ein zusätzliches Outer-Label wäre redundant und wird weggelassen. Section-Header „Audio" gibt den Oberkontext.
 
+Initial-Flash: Vor Abschluss von `refreshDevices()` zeigen beide Trigger „Mikrofon/Ausgabe: System-Standard", auch wenn bereits ein Device in `config.audio` gespeichert ist. Sobald die Enumeration zurückkommt (typisch <50ms), rendert `setOptions()` neu und der Trigger zeigt den echten Gerätenamen. Akzeptabel — kein zusätzliches Masking nötig.
+
 ## Datenfluss
 
-Initialisierung:
+Initialisierung (vollständiges Snippet):
 
 ```ts
-const audio = { ...(config.audio ?? {}) };
+import { createSectionHeader, createSpacer, save, showSaved } from '../../../shared/settings-utils.js';
+import type { SarahConfig } from '../../../../core/config-schema.js';
 
-const inputEl = document.createElement('hud-select');
-inputEl.setAttribute('kind', 'audioinput');
-section.appendChild(inputEl);
-inputEl.value = audio.inputDeviceId ?? '';
+export function createAudioSection(config: SarahConfig): HTMLElement {
+  const section = document.createElement('div');
+  section.className = 'settings-section';
 
-const outputEl = document.createElement('hud-select');
-outputEl.setAttribute('kind', 'audiooutput');
-section.appendChild(outputEl);
-outputEl.value = audio.outputDeviceId ?? '';
-```
+  const { header, feedback } = createSectionHeader('Audio');
+  section.appendChild(header);
 
-Change-Handler:
+  const audio = { ...(config.audio ?? {}) };
 
-```ts
-inputEl.addEventListener('change', (e) => {
-  const value = (e as CustomEvent<{ value: string }>).detail.value;
-  audio.inputDeviceId = value || undefined;
-  save('audio', audio);
-  showSaved(feedback);
-});
-// analog für outputEl → audio.outputDeviceId
+  const inputEl = document.createElement('hud-select') as HTMLElement & { value: string };
+  inputEl.setAttribute('kind', 'audioinput');
+  inputEl.value = audio.inputDeviceId ?? '';
+  inputEl.addEventListener('change', (e) => {
+    const value = (e as CustomEvent<{ value: string }>).detail.value;
+    audio.inputDeviceId = value || undefined;
+    save('audio', audio);
+    showSaved(feedback);
+  });
+  section.appendChild(inputEl);
+
+  section.appendChild(createSpacer());
+
+  const outputEl = document.createElement('hud-select') as HTMLElement & { value: string };
+  outputEl.setAttribute('kind', 'audiooutput');
+  outputEl.value = audio.outputDeviceId ?? '';
+  outputEl.addEventListener('change', (e) => {
+    const value = (e as CustomEvent<{ value: string }>).detail.value;
+    audio.outputDeviceId = value || undefined;
+    save('audio', audio);
+    showSaved(feedback);
+  });
+  section.appendChild(outputEl);
+
+  return section;
+}
 ```
 
 Leerer String = „System-Standard" (im Schema `undefined`). `value || undefined` hält das Schema sauber.
 
 `save('audio', audio)` ruft `window.sarah.saveConfig({ audio })`. Der Main-Prozess erkennt den `audio`-Diff, feuert `audio-config-changed` an den Renderer, `AudioBridge.applyAudioConfig` reagiert und das Cockpit-Panel synchronisiert seine eigene Anzeige automatisch.
 
+Der `value`-Setter vor `appendChild` funktioniert nur mit dem Guard aus „Scope-Erweiterung" oben — ohne den Guard wäre die Zeile ein Runtime-Crash.
+
 ## Fehlerbehandlung
 
-Keine zusätzliche Logik nötig — `hud-select` deckt bereits ab:
+`hud-select` deckt bereits ab:
 - `enumerateDevices()` schlägt fehl → stille Fallback-Liste (nur „System-Standard").
 - Permission beim ersten Open verweigert → Options ohne Labels, System-Standard bleibt wählbar.
 - Device-Hotplug → interner `devicechange`-Listener aktualisiert die Liste.
 
-Defensive: `{ ...(config.audio ?? {}) }` falls `config.audio` wider Erwarten fehlt; das AudioSchema füllt Defaults beim Save wieder auf.
+Defensive: `{ ...(config.audio ?? {}) }` falls `config.audio` wider Erwarten fehlt; das `AudioSchema` füllt Defaults beim Save wieder auf.
 
 ## Testing
 
-**Unit:** keine neuen. `hud-select` hat bereits Tests aus Phase 3, `toDeviceOptions` ist pure-function-getestet, `save()` / Renderer-IPC sind abgedeckt.
+**Unit:**
+- Keine neuen Tests für `audio-section.ts` — die Section ist eine reine Verdrahtung existierender APIs, kein eigenständiges Verhalten zu testen.
+- Bestehende Coverage ehrlich: `hud-select.test.ts` testet nur die pure Funktion `toDeviceOptions`; die `HudSelect`-Klasse (connectedCallback, `value`-Setter, `change`-Event, Device-Refresh) hat **keine** DOM-Tests. Der neue Setter-Guard ist also durch Unit-Tests nicht abgesichert.
+- **Neu zu ergänzen (empfohlen):** Ein minimaler JSDOM-Test für `HudSelect`, der den pre-connect value-Pfad abdeckt: Element erzeugen → `value = 'xyz'` → anhängen → erwarten, dass kein Throw und `element.value === 'xyz'`. Hält den latenten Bug künftig abgedeckt.
 
-**Manuell:**
-1. Settings öffnen → Audio-Section zeigt beide Pickers mit aktueller Auswahl.
-2. Erstes Öffnen des Input-Pickers im `voiceMode='off'` → OS-Mic-Permission-Prompt erscheint (gleiches Verhalten wie im Cockpit).
-3. Input-Device wechseln → Settings neu öffnen → Auswahl bleibt bestehen.
-4. Output-Device wechseln → Cockpit aufrufen → Voice-Out-Panel zeigt dasselbe Gerät ausgewählt.
-5. Im Cockpit Device wechseln → zurück zu Settings → Picker zeigt neuen Wert (frischer Config-Read beim View-Aufbau).
+**Manuell (Pflichtpfade):**
+1. Settings öffnen → Audio-Section zeigt beide Pickers; nach ~50ms Trigger-Texte aktualisiert.
+2. Bereits gespeichertes Device in Config → nach Enumeration zeigt Trigger genau dieses Device ausgewählt (nicht „System-Standard"). *Deckt den Setter-Guard-Fix ab.*
+3. Erstes Öffnen des Input-Pickers im `voiceMode='off'` → OS-Mic-Permission-Prompt erscheint (gleiches Verhalten wie im Cockpit).
+4. Input-Device wechseln → Settings neu öffnen → Auswahl bleibt bestehen.
+5. Output-Device wechseln → Cockpit aufrufen → Voice-Out-Panel zeigt dasselbe Gerät ausgewählt.
+6. Im Cockpit Device wechseln → zurück zu Settings → Picker zeigt neuen Wert (frischer Config-Read beim View-Aufbau).
 
 ## Dateien
 
 **Neu:**
 - `src/renderer/dashboard/views/sections/audio-section.ts`
+- *(empfohlen)* `src/renderer/components/hud-select.dom.test.ts` — Pre-Connect value-Setter-Smoke
 
 **Geändert:**
 - `src/renderer/dashboard/views/settings.ts` (ein Import, ein `appendChild`)
+- `src/renderer/components/hud-select.ts` (`value`-Setter-Guard, 2 Zeilen)
 
 ## Offene Punkte
 
-Keine — der Scope ist eng, alle Interfaces (AudioSchema, `hud-select`, `audio-config-changed` IPC, Settings-Section-Pattern) existieren bereits.
+Keine — alle drei Lücken aus dem Audit adressiert.
