@@ -79,26 +79,25 @@ export async function createSettingsView(): Promise<HTMLElement> {
 
   // Tab-Switching
   let currentId: TabId = initialId;
-  function showPanel(id: TabId): void {
+  function showPanel(id: TabId, updateHash = true): void {
     if (id === currentId) return;
     panels[currentId].hidden = true;
     panels[id].hidden = false;
     currentId = id;
-    const url = `${location.pathname}${location.search}#${id}`;
-    history.replaceState(null, '', url);
+    if (updateHash) {
+      const url = `${location.pathname}${location.search}#${id}`;
+      history.replaceState(null, '', url);
+    }
   }
 
   // Hash-Sync für Browser-Back/Forward
-  const controller = new AbortController();
   window.addEventListener('hashchange', () => {
     const id = resolveInitialTabId(location.hash, 'profile', VALID_IDS) as TabId;
     if (id !== currentId) {
       tabStrip.setActiveId(id);
-      panels[currentId].hidden = true;
-      panels[id].hidden = false;
-      currentId = id;
+      showPanel(id, false);
     }
-  }, { signal: controller.signal });
+  });
 
   return container;
 }
