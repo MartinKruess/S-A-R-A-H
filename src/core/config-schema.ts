@@ -5,15 +5,25 @@ const pre = <T extends z.ZodTypeAny>(schema: T) =>
 
 // ── Sub-Schemas (individually exported for wizard/settings reuse) ──
 
+export const LinkPreferenceSchema = z.object({
+  id: z.string().default(() => crypto.randomUUID()),
+  description: z.string().default(''),
+  url: z.string().default(''),
+});
+
 export const ProfileSchema = z.object({
   displayName: z.string().default(''),
   lastName: z.string().default(''),
   city: z.string().default(''),
   address: z.string().default(''),
+  postalCode: z.string().default(''),
+  birthday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).or(z.literal('')).default(''),
+  email: z.string().default(''),
   profession: z.string().default(''),
   activities: z.string().default(''),
   usagePurposes: z.array(z.string()).default([]),
   hobbies: z.array(z.string()).default([]),
+  linkPreferences: z.array(LinkPreferenceSchema).default([]),
 });
 
 export const SkillsSchema = z.object({
@@ -220,6 +230,7 @@ export const SarahConfigSchema = z.preprocess(
 
 export type SarahConfig = z.infer<typeof SarahConfigSchema>;
 export type Profile = z.infer<typeof ProfileSchema>;
+export type LinkPreference = z.infer<typeof LinkPreferenceSchema>;
 export type Skills = z.infer<typeof SkillsSchema>;
 export type ProgramEntry = z.infer<typeof ProgramEntrySchema>;
 export type PdfCategory = z.infer<typeof PdfCategorySchema>;
