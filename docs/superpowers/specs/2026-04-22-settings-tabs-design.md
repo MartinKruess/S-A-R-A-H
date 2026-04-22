@@ -35,7 +35,7 @@ Die Settings-Ansicht (`src/renderer/dashboard/views/settings.ts`) rendert aktuel
 | 1 | `profile`    | Profil                   | Erweiterte Profil-Sektion                                                                    |
 | 2 | `personal`   | Persönliche Einstellungen| Personalisierung + Audio (zwei `settings-section`s untereinander)                            |
 | 3 | `management` | Verwaltung               | Dateien & Ordner (anfangs alleine; Programme/Links folgen in späteren Specs)                 |
-| 4 | `control`    | Bedienung                | Steuerung (Voice, Quiet, GPU, Slash-Commands)                                                |
+| 4 | `control`    | Bedienung                | Steuerung (Voice-Mode, Push-to-Talk, Quiet-Mode, LLM-Leistungsprofil, Slash-Commands)        |
 | 5 | `security`   | Sicherheit               | Vertrauen & Sicherheit                                                                       |
 
 **Wizard-Action** („Einrichtung erneut durchführen") sitzt als dezenter Footer-Link **unter** dem Tab-Content, außerhalb der Tabs, auf jedem Tab sichtbar.
@@ -57,9 +57,11 @@ settings-grid (2 Spalten):
   Anzeigename | Nachname
   Stadt       | Adresse
   Beruf       |
-(darunter, volle Breite:)
+(darunter, volle Breite — grid-column: 1 / -1:)
   Hobbys (tag-select)
 ```
+
+Das Hobbys-Element bekommt Klasse `.settings-field-full` (neu, s. CSS-Ergänzungen), damit `grid-column: 1 / -1` greift und es die Grid-Breite überspannt.
 
 Alle Felder schreiben via bestehendem `save('profile', profile)`-Pattern. Kein neues Save-Routing.
 
@@ -78,12 +80,20 @@ export interface TabItem {
   label: string;
 }
 
+export class SarahTabs extends SarahElement {
+  setTabs(tabs: TabItem[]): void;
+  setActiveId(id: string): void;  // programmatisch aktiven Tab setzen (z. B. durch hashchange)
+  // feuert 'tab-change' CustomEvent<{ id: string }>
+}
+
 export function sarahTabs(props: {
   tabs: TabItem[];
   activeId?: string;
   onChange?: (id: string) => void;
 }): SarahTabs;
 ```
+
+`setActiveId` löst **kein** `tab-change`-Event aus (programmatischer Setter ist externe Ursache — Event wäre Echo). Nur User-Click feuert das Event.
 
 ### Verhalten
 
@@ -95,7 +105,6 @@ export function sarahTabs(props: {
   - Container: `role="tablist"` + `aria-orientation="horizontal"`
   - Tab-Items: `role="tab"`, `aria-selected` entsprechend State, `tabindex="0"` auf aktivem / `-1` auf inaktiven Tabs (Roving-Tabindex-Pattern)
   - Panel-Container (von Settings-View gemanaged): `role="tabpanel"` + `aria-labelledby="<tab-id>"`
-- **Reduced Motion:** Keine Transitions beim Tab-Wechsel unter `prefers-reduced-motion: reduce` (CSS-Regel).
 
 ### Styling
 
@@ -126,13 +135,26 @@ Ca. 40–60 Zeilen CSS.
 createSettingsView()
 ├── Page-Title ("Einstellungen")
 ├── Tab-Strip (sarah-tabs)
-├── Tab-Content-Container (div, wird bei Wechsel geleert/neu befüllt)
+├── Tab-Content-Container
+│     ├── Panel profile    (role="tabpanel")
+│     ├── Panel personal
+│     ├── Panel management
+│     ├── Panel control
+│     └── Panel security   (alle einmalig gerendert, nur aktives sichtbar)
 └── Footer-Link ("Einrichtung erneut durchführen")
 ```
 
 ### Render-Logik
 
-1. Config **einmal** laden (`await getSarah().getConfig()`) vor erstem Render. Wird via Closure an Section-Factories weitergegeben.
+**Strategie: Hide/Show statt Destroy/Recreate.** Alle Tab-Panels werden **einmal** beim Initialrender erzeugt und bleiben im DOM. Tab-Wechsel schaltet nur Sichtbarkeit um. Gründe:
+
+- Sections halten Closure-State (`const profile = { ...config.profile }`) plus User-Eingaben, die noch nicht gespeichert sind. Destroy/Recreate würde bei Rückkehr auf einen stale Config-Snapshot zurückfallen (`save()` schreibt zur DB, aber nicht zurück ins in-memory `config`-Objekt).
+- ARIA-Tab-Pattern verlangt `aria-hidden`/`hidden` auf inaktiven Panels, nicht DOM-Manipulation.
+- Performance: Section-Factories laufen nur einmal, keine Re-Binding-Kosten pro Tab-Wechsel.
+
+**Ablauf:**
+
+1. Config **einmal** laden (`await getSarah().getConfig()`) vor erstem Render.
 2. Mapping `tabId → Section-Factories`:
    ```ts
    const TAB_CONTENT: Record<TabId, (cfg: SarahConfig) => HTMLElement[]> = {
@@ -143,12 +165,35 @@ createSettingsView()
      security:   (c) => [createTrustSection(c)],
    };
    ```
-3. Aktiver Tab aus `location.hash` (ohne `#`), fallback `profile`. Ungültige Werte → `profile`.
-4. Bei `tab-change`:
-   - Content-Container leeren (`replaceChildren()`)
-   - Section-Factories für neuen Tab aufrufen, alle zurückgegebenen Elemente anhängen
-   - `history.replaceState(null, '', '#' + newId)` — kein Scroll-Jump, Reload hält Tab
-5. `window.addEventListener('hashchange', ...)` für Browser-Back/Forward-Nav — wechselt `sarah-tabs.activeId` und re-rendert Content.
+3. **Initialrender:** Für jeden Tab ein Panel-Wrapper (`<div role="tabpanel" id="panel-<tabId>" aria-labelledby="tab-<tabId>">`) erzeugen, Sections hineinhängen. Alle Panels in den Content-Container.
+4. Aktiver Tab aus `location.hash` (ohne `#`), fallback `profile`. Ungültige Werte → `profile`.
+5. Initial nur das aktive Panel sichtbar. Inaktive: `hidden` Attribut gesetzt (keine CSS-Klasse nötig, `hidden` bringt `display: none` + `aria-hidden` semantisch mit).
+6. Bei `tab-change`:
+   - Bisher aktives Panel: `hidden = true`
+   - Neues Panel: `hidden = false`
+   - URL-Hash aktualisieren (s. u.) — kein Scroll-Jump
+7. `hashchange`-Listener für Browser-Back/Forward: liest Hash, ruft `tabStrip.setActiveId(id)` + führt denselben Hide/Show-Switch durch.
+
+### URL-Hash-Handling
+
+```ts
+const url = `${location.pathname}${location.search}#${newId}`;
+history.replaceState(null, '', url);
+```
+
+**Wichtig:** `pathname + search` muss erhalten bleiben. `dialog.html?view=settings` wäre sonst nach dem ersten Tab-Wechsel zu `dialog.html#personal` degradiert → Reload würde die Settings-View nicht mehr laden.
+
+### Listener-Cleanup
+
+`hashchange`-Listener via `AbortController`:
+
+```ts
+const controller = new AbortController();
+window.addEventListener('hashchange', handler, { signal: controller.signal });
+// Cleanup-Hook für spätere View-Teardown (aktuell: Fenster-Close räumt auf, aber AbortController ist sauberer Pattern)
+```
+
+In `createSettingsView` wird der Controller im DOM-Root als WeakRef / data-Attribut hinterlegt oder direkt als Return-Wert exportiert, falls die dialog.ts später Teardown-Logik bekommt. Aktuell: bei Fenster-Close wird alles zerstört — der Controller ist Vorarbeit, kein akuter Fix.
 
 ### Footer-Link
 
@@ -189,6 +234,10 @@ styles/
 .settings-tabs-wrapper {
   margin-bottom: var(--sarah-space-xl);
   border-bottom: 1px solid var(--sarah-border);
+}
+
+.settings-grid .settings-field-full {
+  grid-column: 1 / -1;
 }
 
 .settings-footer-link {
