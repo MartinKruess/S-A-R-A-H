@@ -1,7 +1,10 @@
 import { sarahInput } from '../../../components/sarah-input.js';
 import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
+import { sarahButton } from '../../../components/sarah-button.js';
 import { getSarah, showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
+
+const ABO_UPGRADE_URL = 'https://sarah.ai/pricing';
 
 export function createProfileSection(config: SarahConfig): HTMLElement {
   const profile = { ...config.profile };
@@ -10,6 +13,36 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
 
   const { header, feedback } = createSectionHeader('Profil');
   section.appendChild(header);
+
+  // Abo-Block
+  const aboBlock = document.createElement('div');
+  aboBlock.className = 'settings-abo-block';
+
+  const aboHeader = document.createElement('div');
+  aboHeader.className = 'settings-abo-header';
+  aboHeader.textContent = 'Abonnement';
+  aboBlock.appendChild(aboHeader);
+
+  const aboRow = document.createElement('div');
+  aboRow.className = 'settings-abo-row';
+
+  const aboStatus = document.createElement('div');
+  aboStatus.className = 'settings-abo-status';
+  aboStatus.textContent = 'Free Tier';
+  aboRow.appendChild(aboStatus);
+
+  const upgradeBtn = sarahButton({
+    label: 'Auf Pro upgraden',
+    onClick: () => {
+      getSarah().openExternalUrl(ABO_UPGRADE_URL).catch((err) => {
+        console.error('[profile] openExternalUrl failed:', err);
+      });
+    },
+  });
+  aboRow.appendChild(upgradeBtn);
+
+  aboBlock.appendChild(aboRow);
+  section.appendChild(aboBlock);
 
   const grid = document.createElement('div');
   grid.className = 'settings-grid';
@@ -64,5 +97,3 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   return section;
 }
 
-// getSarah wird bereits transitively genutzt, aber für zukünftige Helpers hier re-exportiert
-void getSarah;

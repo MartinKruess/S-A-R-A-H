@@ -356,3 +356,31 @@ body:not(.boot-mode) #genesis-overlay {
 .settings-footer-link:hover {
   color: var(--sarah-accent);
 }
+
+.settings-abo-block {
+  margin-bottom: var(--sarah-space-lg);
+  padding: var(--sarah-space-md);
+  background: var(--sarah-bg-surface);
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+}
+
+.settings-abo-header {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--sarah-space-sm);
+}
+
+.settings-abo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sarah-space-md);
+}
+
+.settings-abo-status {
+  color: var(--sarah-text-primary);
+  font-size: var(--sarah-font-size-md);
+}
