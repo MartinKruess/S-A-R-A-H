@@ -44,6 +44,9 @@ const CONFIRMATION_MAP: Record<string, string> = {
   maximal: 'Always ask before taking any action. The user wants full control.',
 };
 
+/** Max number of link preferences injected into the user prompt (prevents prompt stuffing). */
+const MAX_LINK_ENTRIES = 20;
+
 // ── Quirk prompts (language-dependent) ──
 
 const QUIRK_PROMPTS: Record<string, Record<string, string>> = {
@@ -111,7 +114,6 @@ export function buildCoreUser(profile: SarahConfig['profile']): string {
     parts.push(`Their hobbies include: ${profile.hobbies.join(', ')}.`);
   }
 
-  const MAX_LINK_ENTRIES = 20;
   const validLinks = (profile.linkPreferences || [])
     .filter(l => l.description.trim() !== '' && l.url.trim() !== '')
     .slice(0, MAX_LINK_ENTRIES);

@@ -32,8 +32,8 @@ describe('sanitizePromptField', () => {
   });
 
   it('strips Unicode line separators U+2028 and U+2029', () => {
-    expect(sanitizePromptField('a b c')).toBe('a b c');
-  });
+    expect(sanitizePromptField('a\u2028b\u2029c')).toBe('a b c');
+  })
 });
 
 describe('buildCoreUser with linkPreferences', () => {
