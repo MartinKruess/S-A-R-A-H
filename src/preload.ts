@@ -45,6 +45,7 @@ const api: SarahApi = {
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
   scanFolderExes: (folderPath) => ipcRenderer.invoke('scan-folder-exes', folderPath),
   openDialog: (view) => ipcRenderer.invoke('open-dialog', view),
+  openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
 
   // Chat API
   chat: (message) => ipcRenderer.invoke('chat-message', message),
