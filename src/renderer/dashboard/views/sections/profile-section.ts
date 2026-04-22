@@ -54,25 +54,45 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Nachname',
+    label: 'Nachname (optional)',
     value: profile.lastName || '',
     onChange: (val) => { profile.lastName = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Stadt',
+    label: 'Stadt (optional)',
     value: profile.city || '',
     onChange: (val) => { profile.city = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Adresse',
+    label: 'Adresse (optional)',
     value: profile.address || '',
     onChange: (val) => { profile.address = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Beruf',
+    label: 'PLZ (optional)',
+    value: profile.postalCode || '',
+    onChange: (val) => { profile.postalCode = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'Geburtsdatum (optional)',
+    type: 'date',
+    value: profile.birthday || '',
+    onChange: (val) => { profile.birthday = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'E-Mail (optional)',
+    type: 'email',
+    value: profile.email || '',
+    onChange: (val) => { profile.email = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'Beruf (optional)',
     value: profile.profession || '',
     onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
@@ -80,7 +100,7 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   // Hobbys spannt volle Breite des Grids via .settings-field-full
   const hobbyOptions = (profile.hobbies || []).map((h) => ({ value: h, label: h }));
   const hobbies = sarahTagSelect({
-    label: 'Hobbys',
+    label: 'Hobbys (optional)',
     options: hobbyOptions,
     selected: profile.hobbies || [],
     allowCustom: true,
