@@ -55,10 +55,6 @@ export function createProgramPicker(props: ProgramPickerProps): HTMLElement {
   placeholder.style.fontSize = 'var(--sarah-font-size-sm)';
   container.appendChild(placeholder);
 
-  const scanStatus = document.createElement('div');
-  scanStatus.className = 'program-picker-scan-status';
-  container.appendChild(scanStatus);
-
   let tagSelectEl: ReturnType<typeof sarahTagSelect> | null = null;
   let currentOptions: ReturnType<typeof detector.buildOptions> = [];
 
@@ -89,7 +85,9 @@ export function createProgramPicker(props: ProgramPickerProps): HTMLElement {
 
   getSarah().detectPrograms().then((programs: ProgramEntry[]) => {
     detector.registerDetected(programs);
-    currentOptions = detector.buildOptions(programs);
+    const baseOptions = detector.buildOptions(programs);
+    const extras = detector.getScannedExtras(programs);
+    currentOptions = [...baseOptions, ...extras];
     mountTagSelect();
   }).catch(() => {
     currentOptions = [];
@@ -97,6 +95,10 @@ export function createProgramPicker(props: ProgramPickerProps): HTMLElement {
   });
 
   if (props.includeFolderScanners) {
+    const scanStatus = document.createElement('div');
+    scanStatus.className = 'program-picker-scan-status';
+    container.appendChild(scanStatus);
+
     const folders = document.createElement('div');
     folders.className = 'program-picker-folders';
 
@@ -106,7 +108,8 @@ export function createProgramPicker(props: ProgramPickerProps): HTMLElement {
         scanStatus.textContent = programs.length > 0
           ? `${programs.length} ${label} gefunden in ${folderPath}`
           : `Keine ${label} gefunden`;
-        detector.addScannedPrograms(programs, currentOptions);
+        const newOptions = detector.addScannedPrograms(programs);
+        currentOptions = [...currentOptions, ...newOptions];
         mountTagSelect();
         setTimeout(() => { scanStatus.textContent = ''; }, 4000);
       }).catch(() => { scanStatus.textContent = ''; });
