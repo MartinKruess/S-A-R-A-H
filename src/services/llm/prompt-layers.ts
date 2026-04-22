@@ -1,6 +1,14 @@
 // src/services/llm/prompt-layers.ts
 import type { SarahConfig } from '../../core/config-schema.js';
 
+/**
+ * Normalisiert User-Input für sichere Prompt-Injection:
+ * entfernt \n/\r/\t, trimmt, kappt auf 200 Zeichen.
+ */
+export function sanitizePromptField(s: string): string {
+  return s.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200);
+}
+
 // ── Tone mapping (de → en) ──
 
 const TONE_MAP: Record<string, string> = {
@@ -98,6 +106,19 @@ export function buildCoreUser(profile: SarahConfig['profile']): string {
   }
   if (profile.hobbies.length > 0) {
     parts.push(`Their hobbies include: ${profile.hobbies.join(', ')}.`);
+  }
+
+  const validLinks = (profile.linkPreferences || [])
+    .filter(l => l.description.trim() !== '' && l.url.trim() !== '');
+  if (validLinks.length > 0) {
+    const lines = validLinks.map(
+      l => `- ${sanitizePromptField(l.description)} → ${sanitizePromptField(l.url)}`
+    );
+    parts.push(
+      'The user has defined these preferred sources:\n' +
+      lines.join('\n')
+    );
+    parts.push('When a query matches one of these descriptions, prefer the corresponding URL.');
   }
 
   parts.push('This is background info only. Do NOT bring it up unless the user asks.');
