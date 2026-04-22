@@ -4,8 +4,8 @@ import { sarahTagSelect } from '../../components/sarah-tag-select.js';
 import { sarahPathPicker } from '../../components/sarah-path-picker.js';
 import { PDF_CATEGORY_OPTIONS } from '../../shared/pdf-constants.js';
 import { createPdfBlock } from '../../shared/pdf-block.js';
-import { createProgramDetector } from '../program-detection.js';
-import type { ProgramOption } from '../program-detection.js';
+import { createProgramDetector } from '../../shared/program-detection.js';
+import type { ProgramOption } from '../../shared/program-detection.js';
 import { getSarah } from '../../shared/settings-utils.js';
 import type { ProgramEntry } from '../../../core/config-schema.js';
 

@@ -1,4 +1,5 @@
-import type { ProgramEntry, ProgramType } from './wizard.js';
+import type { ProgramEntry } from '../../core/config-schema.js';
+type ProgramType = ProgramEntry['type'];
 
 export interface DetectedProgram {
   path: string;
