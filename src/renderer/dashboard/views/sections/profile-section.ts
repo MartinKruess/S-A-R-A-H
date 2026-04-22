@@ -8,6 +8,12 @@ const ABO_UPGRADE_URL = 'https://sarah.ai/pricing';
 
 export function createProfileSection(config: SarahConfig): HTMLElement {
   const profile = { ...config.profile };
+
+  // Leere Link-Einträge aus vorherigen Sessions räumen
+  profile.linkPreferences = (profile.linkPreferences || []).filter(
+    (l) => l.description.trim() !== '' || l.url.trim() !== ''
+  );
+
   const section = document.createElement('div');
   section.className = 'settings-section';
 
@@ -114,6 +120,90 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   grid.appendChild(hobbies);
 
   section.appendChild(grid);
+
+  // Linksammlung
+  const linksBlock = document.createElement('div');
+  linksBlock.className = 'settings-links-block';
+
+  const linksHeader = document.createElement('div');
+  linksHeader.className = 'settings-links-header';
+  linksHeader.textContent = 'Linksammlung';
+  linksBlock.appendChild(linksHeader);
+
+  const linksDesc = document.createElement('div');
+  linksDesc.className = 'settings-links-desc';
+  linksDesc.textContent = 'Hinterlege Webseiten, die Sarah bei passenden Anfragen bevorzugen soll. Beispiel: „Hotels buchen" → booking.com.';
+  linksBlock.appendChild(linksDesc);
+
+  const linksList = document.createElement('div');
+  linksList.className = 'settings-links-list';
+  linksBlock.appendChild(linksList);
+
+  const renderLinkRow = (entry: typeof profile.linkPreferences[number]): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'settings-links-row';
+    row.dataset.linkId = entry.id;
+
+    const descInput = sarahInput({
+      label: 'Beschreibung',
+      placeholder: 'z.B. Hotels und Reisen buchen',
+      value: entry.description,
+      onChange: (val) => {
+        entry.description = val;
+        save('profile', profile);
+        showSaved(feedback);
+      },
+    });
+
+    const urlInput = sarahInput({
+      label: 'URL',
+      type: 'url',
+      placeholder: 'https://...',
+      value: entry.url,
+      onChange: (val) => {
+        entry.url = val;
+        save('profile', profile);
+        showSaved(feedback);
+      },
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'settings-links-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.setAttribute('aria-label', 'Eintrag entfernen');
+    removeBtn.addEventListener('click', () => {
+      profile.linkPreferences = profile.linkPreferences.filter(l => l.id !== entry.id);
+      row.remove();
+      save('profile', profile);
+      showSaved(feedback);
+    });
+
+    row.appendChild(descInput);
+    row.appendChild(urlInput);
+    row.appendChild(removeBtn);
+    return row;
+  };
+
+  for (const entry of profile.linkPreferences) {
+    linksList.appendChild(renderLinkRow(entry));
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'settings-links-add';
+  addBtn.textContent = '+ Eintrag hinzufügen';
+  addBtn.addEventListener('click', () => {
+    const newEntry = { id: crypto.randomUUID(), description: '', url: '' };
+    profile.linkPreferences.push(newEntry);
+    linksList.appendChild(renderLinkRow(newEntry));
+    save('profile', profile);
+    showSaved(feedback);
+  });
+  linksBlock.appendChild(addBtn);
+
+  section.appendChild(linksBlock);
+
   return section;
 }
 
