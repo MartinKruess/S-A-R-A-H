@@ -53,14 +53,16 @@ export async function createSettingsView(): Promise<HTMLElement> {
   tabStripWrapper.appendChild(tabStrip);
   container.appendChild(tabStripWrapper);
 
-  // Panels — alle einmal rendern, inaktive verstecken
+  // Panels — alle einmal rendern, inaktive verstecken.
+  // aria-label statt aria-labelledby: sarah-tabs lebt im Shadow DOM,
+  // dessen Tab-Button-IDs sind aus dem Light-DOM-Panel nicht referenzierbar.
   const panelContainer = document.createElement('div');
   const panels: Record<TabId, HTMLElement> = {} as Record<TabId, HTMLElement>;
   for (const tab of TABS) {
     const panel = document.createElement('div');
     panel.id = `panel-${tab.id}`;
     panel.setAttribute('role', 'tabpanel');
-    panel.setAttribute('aria-labelledby', `tab-${tab.id}`);
+    panel.setAttribute('aria-label', tab.label);
     for (const section of buildPanelContent(tab.id as TabId, config)) {
       panel.appendChild(section);
     }
