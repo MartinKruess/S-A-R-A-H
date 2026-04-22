@@ -326,3 +326,25 @@ body:not(.boot-mode) #boot-bubble,
 body:not(.boot-mode) #genesis-overlay {
   display: none;
 }
+
+/* ── Settings Tabs Layout ── */
+.settings-tabs-wrapper {
+  margin-bottom: var(--sarah-space-xl);
+}
+
+.settings-grid .settings-field-full {
+  grid-column: 1 / -1;
+}
+
+.settings-footer-link {
+  display: inline-block;
+  margin-top: var(--sarah-space-xl);
+  color: var(--sarah-text-muted);
+  font-size: var(--sarah-font-size-sm);
+  text-decoration: none;
+  transition: color var(--sarah-transition-fast);
+}
+
+.settings-footer-link:hover {
+  color: var(--sarah-accent);
+}
