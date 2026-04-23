@@ -12,12 +12,10 @@ installSarah(sarah);
 
 registerComponents();
 
-// Apply saved accent color
+// Apply accent color on load — always, so data-theme gets set even for default cyan
 sarah.getConfig().then((config) => {
-  const color = config.personalization?.accentColor;
-  if (color && color !== '#00d4ff') {
-    applyAccentColor(color);
-  }
+  const color = config.personalization?.accentColor ?? '#00d4ff';
+  applyAccentColor(color);
 });
 
 type DialogView = 'dashboard' | 'settings';
