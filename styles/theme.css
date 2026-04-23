@@ -9,6 +9,16 @@
     radial-gradient(ellipse at center, var(--sarah-bg-secondary) 0%, var(--sarah-bg-primary) 80%),
     var(--sarah-bg-primary);
 
+  /* Panel accent gradients (Cockpit theme-aware) */
+  --sarah-panel-accent-gradient-cyan:
+    linear-gradient(135deg, var(--cockpit-accent-cyan), var(--cockpit-accent-violet));
+  --sarah-panel-accent-gradient-violet:
+    linear-gradient(135deg, var(--cockpit-accent-violet), var(--cockpit-accent-pink));
+  --sarah-panel-accent-gradient-pink:
+    linear-gradient(135deg, var(--cockpit-accent-pink), var(--cockpit-accent-cyan));
+  --sarah-panel-accent-gradient-mint:
+    linear-gradient(135deg, var(--cockpit-accent-mint), var(--cockpit-accent-cyan));
+
   /* Text */
   --sarah-text-primary: #e8e8f0;
   --sarah-text-secondary: #a0a0b8;
