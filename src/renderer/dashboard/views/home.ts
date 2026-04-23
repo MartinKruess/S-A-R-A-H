@@ -65,7 +65,7 @@ function buildVoiceInPanel(): HTMLElement {
   (voiceIn.el as HTMLElement & { __dispose?: () => void }).__dispose = voiceIn.dispose;
   const panel = sarahPanel({
     title: 'VOICE IN',
-    accent: 'mint',
+    accent: 'cyan',
     children: [voiceIn.el],
   });
   panel.classList.add('cockpit-voicein');
