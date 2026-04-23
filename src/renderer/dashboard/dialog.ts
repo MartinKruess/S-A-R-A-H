@@ -33,7 +33,7 @@ async function mount(): Promise<void> {
 
   if (!view || !viewFactories[view]) return;
 
-  document.title = view === 'settings' ? 'S.A.R.A.H. — Einstellungen' : 'S.A.R.A.H. — Dashboard';
+  document.title = view === 'settings' ? 'S.A.R.A.H. — Einstellungen' : 'S.A.R.A.H. — Cockpit';
 
   const container = document.getElementById('dialog-content')!;
   container.classList.add(`view-${view}`);
