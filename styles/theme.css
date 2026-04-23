@@ -1,9 +1,13 @@
 :root {
   /* Background */
-  --sarah-bg-primary: #0a0a1a;
-  --sarah-bg-secondary: #12122a;
+  --sarah-bg-primary: #05070d;
+  --sarah-bg-secondary: #0b1220;
+  --sarah-bg-panel: rgba(11, 18, 32, 0.72);
   --sarah-bg-surface: rgba(255, 255, 255, 0.03);
   --sarah-bg-surface-hover: rgba(255, 255, 255, 0.06);
+  --sarah-bg-page:
+    radial-gradient(ellipse at center, var(--sarah-bg-secondary) 0%, var(--sarah-bg-primary) 80%),
+    var(--sarah-bg-primary);
 
   /* Text */
   --sarah-text-primary: #e8e8f0;
@@ -62,7 +66,9 @@
   --sarah-transition-slow: 600ms ease;
 
   /* Typography */
-  --sarah-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sarah-font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sarah-font-heading: 'Orbitron', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sarah-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
   --sarah-font-size-sm: 0.85rem;
   --sarah-font-size-md: 1rem;
   --sarah-font-size-lg: 1.25rem;
@@ -70,9 +76,6 @@
   --sarah-font-size-xxl: 3rem;
 
   /* Cockpit palette (frozen — independent of user accent) */
-  --cockpit-bg-void: #05070d;
-  --cockpit-bg-deep: #0b1220;
-  --cockpit-bg-panel: rgba(11, 18, 32, 0.72);
   --cockpit-accent-cyan: #00e5ff;
   --cockpit-accent-violet: #7c3aed;
   --cockpit-accent-pink: #ff2fd1;
@@ -81,9 +84,6 @@
   --cockpit-text-hud: #d8f1ff;
   --cockpit-text-dim: #7b86b8;
   --cockpit-border-glow: linear-gradient(135deg, #00e5ff 0%, #7c3aed 50%, #ff2fd1 100%);
-  --cockpit-font-heading: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --cockpit-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --cockpit-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
   --cockpit-font-hud-xs: 0.7rem;
   --cockpit-font-hud-sm: 0.85rem;
   --cockpit-font-hud-md: 1.05rem;

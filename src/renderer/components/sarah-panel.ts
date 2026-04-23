@@ -96,7 +96,7 @@ const CSS = `
 
   .panel-inner {
     position: relative;
-    background: var(--cockpit-bg-panel);
+    background: var(--sarah-bg-panel);
     backdrop-filter: blur(14px);
     -webkit-backdrop-filter: blur(14px);
     clip-path: ${CHAMFER_INNER};
@@ -120,7 +120,7 @@ const CSS = `
   }
 
   .panel-title {
-    font-family: var(--cockpit-font-heading);
+    font-family: var(--sarah-font-heading);
     font-size: 0.85rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -146,7 +146,7 @@ const CSS = `
     flex: 1;
     min-height: 0;
     position: relative;
-    font-family: var(--cockpit-font-body);
+    font-family: var(--sarah-font-family);
     color: var(--cockpit-text-hud);
   }
 
@@ -194,7 +194,7 @@ const CSS = `
 
   .panel-error-text {
     display: none;
-    font-family: var(--cockpit-font-body);
+    font-family: var(--sarah-font-family);
     color: var(--cockpit-accent-red);
     font-size: 0.9rem;
   }

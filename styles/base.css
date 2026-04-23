@@ -8,7 +8,7 @@
 
 body {
   font-family: var(--sarah-font-family);
-  background: var(--sarah-bg-primary);
+  background: var(--sarah-bg-page);
   color: var(--sarah-text-primary);
   width: 100vw;
   height: 100vh;

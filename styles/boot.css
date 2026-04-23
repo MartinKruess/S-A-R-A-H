@@ -2,23 +2,11 @@
    When body.boot-mode is active, dashboard looks like the splash:
    dark bg, orb centered fullscreen, no sidebar/chat.
 */
-body.boot-mode {
-  background: #0a0a1a;
-}
-
 body.boot-mode .app-sidebar,
 body.boot-mode .chat-mode-toggle,
 body.boot-mode .chat-container,
 body.boot-mode .chat-input-bar {
   display: none;
-}
-
-body.boot-mode .app-layout {
-  background: #0a0a1a;
-}
-
-body.boot-mode .app-main {
-  background: #0a0a1a;
 }
 
 body.boot-mode .sarah-orb-wrapper {

@@ -16,7 +16,7 @@ const CSS = `
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-family: var(--cockpit-font-heading);
+    font-family: var(--sarah-font-heading);
     font-size: 0.68rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
