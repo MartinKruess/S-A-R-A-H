@@ -34,7 +34,7 @@ const CSS = `
   .panel-wrapper {
     position: relative;
     padding: 1px;
-    background: var(--panel-accent, linear-gradient(135deg, var(--cockpit-accent-cyan), var(--cockpit-accent-violet)));
+    background: var(--panel-accent, var(--sarah-panel-accent-gradient-cyan));
     box-shadow: 0 0 20px rgba(0, 229, 255, 0.15);
     clip-path: ${CHAMFER_WRAPPER};
     height: 100%;
@@ -47,7 +47,7 @@ const CSS = `
   }
 
   :host([accent="violet"]) .panel-wrapper {
-    background: var(--panel-accent, linear-gradient(135deg, var(--cockpit-accent-violet), var(--cockpit-accent-pink)));
+    background: var(--panel-accent, var(--sarah-panel-accent-gradient-violet));
     box-shadow: 0 0 20px rgba(124, 58, 237, 0.15);
   }
 
@@ -56,7 +56,7 @@ const CSS = `
   }
 
   :host([accent="pink"]) .panel-wrapper {
-    background: var(--panel-accent, linear-gradient(135deg, var(--cockpit-accent-pink), var(--cockpit-accent-cyan)));
+    background: var(--panel-accent, var(--sarah-panel-accent-gradient-pink));
     box-shadow: 0 0 20px rgba(255, 47, 209, 0.15);
   }
 
@@ -65,7 +65,7 @@ const CSS = `
   }
 
   :host([accent="mint"]) .panel-wrapper {
-    background: var(--panel-accent, linear-gradient(135deg, var(--cockpit-accent-mint), var(--cockpit-accent-cyan)));
+    background: var(--panel-accent, var(--sarah-panel-accent-gradient-mint));
     box-shadow: 0 0 20px rgba(34, 255, 192, 0.15);
   }
 
