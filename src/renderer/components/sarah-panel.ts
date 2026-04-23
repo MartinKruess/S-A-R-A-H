@@ -35,7 +35,7 @@ const CSS = `
     position: relative;
     padding: 1px;
     background: var(--panel-accent, var(--sarah-panel-accent-gradient-cyan));
-    box-shadow: 0 0 20px rgba(0, 229, 255, 0.15);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-cyan) 15%, transparent);
     clip-path: ${CHAMFER_WRAPPER};
     height: 100%;
     transition: box-shadow 200ms ease;
@@ -43,34 +43,34 @@ const CSS = `
   }
 
   :host(:hover) .panel-wrapper {
-    box-shadow: 0 0 40px rgba(0, 229, 255, 0.3);
+    box-shadow: 0 0 40px color-mix(in srgb, var(--cockpit-accent-cyan) 30%, transparent);
   }
 
   :host([accent="violet"]) .panel-wrapper {
     background: var(--panel-accent, var(--sarah-panel-accent-gradient-violet));
-    box-shadow: 0 0 20px rgba(124, 58, 237, 0.15);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-violet) 15%, transparent);
   }
 
   :host([accent="violet"]:hover) .panel-wrapper {
-    box-shadow: 0 0 40px rgba(124, 58, 237, 0.3);
+    box-shadow: 0 0 40px color-mix(in srgb, var(--cockpit-accent-violet) 30%, transparent);
   }
 
   :host([accent="pink"]) .panel-wrapper {
     background: var(--panel-accent, var(--sarah-panel-accent-gradient-pink));
-    box-shadow: 0 0 20px rgba(255, 47, 209, 0.15);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-pink) 15%, transparent);
   }
 
   :host([accent="pink"]:hover) .panel-wrapper {
-    box-shadow: 0 0 40px rgba(255, 47, 209, 0.3);
+    box-shadow: 0 0 40px color-mix(in srgb, var(--cockpit-accent-pink) 30%, transparent);
   }
 
   :host([accent="mint"]) .panel-wrapper {
     background: var(--panel-accent, var(--sarah-panel-accent-gradient-mint));
-    box-shadow: 0 0 20px rgba(34, 255, 192, 0.15);
+    box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-mint) 15%, transparent);
   }
 
   :host([accent="mint"]:hover) .panel-wrapper {
-    box-shadow: 0 0 40px rgba(34, 255, 192, 0.3);
+    box-shadow: 0 0 40px color-mix(in srgb, var(--cockpit-accent-mint) 30%, transparent);
   }
 
   :host([state="error"]) .panel-wrapper {
