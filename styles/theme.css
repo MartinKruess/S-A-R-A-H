@@ -111,3 +111,51 @@
   /* --sarah-bg-primary / -secondary bleiben (dark anchor) */
   /* Gradients erben aus :root — ziehen automatisch neue --cockpit-accent-* Werte */
 }
+
+/* ── Theme: Blue — kühle Palette ── */
+:root[data-theme="blue"] {
+  --sarah-accent: #4466ff;
+  --cockpit-accent-cyan: #60a5fa;    /* CPU-Ring: sky blue */
+  --cockpit-accent-violet: #8b5cf6;  /* GPU-Ring: deep violet */
+  --cockpit-accent-pink: #06b6d4;    /* RAM-Ring: cyan-teal */
+}
+
+/* ── Theme: Violet — tiefe Purpur-Palette ── */
+:root[data-theme="violet"] {
+  --sarah-accent: #8855ff;
+  --cockpit-accent-cyan: #a78bfa;    /* CPU-Ring: lavender */
+  --cockpit-accent-violet: #ec4899;  /* GPU-Ring: magenta */
+  --cockpit-accent-pink: #60a5fa;    /* RAM-Ring: sky blue */
+}
+
+/* ── Theme: Green — Natur-Palette ── */
+:root[data-theme="green"] {
+  --sarah-accent: #44ff88;
+  --cockpit-accent-cyan: #84cc16;    /* CPU-Ring: lime */
+  --cockpit-accent-violet: #0d9488;  /* GPU-Ring: deep teal */
+  --cockpit-accent-pink: #fbbf24;    /* RAM-Ring: amber (warm contrast) */
+}
+
+/* ── Theme: Pink — lebhafte Palette ── */
+:root[data-theme="pink"] {
+  --sarah-accent: #ff4488;
+  --cockpit-accent-cyan: #fb7185;    /* CPU-Ring: coral-pink */
+  --cockpit-accent-violet: #a855f7;  /* GPU-Ring: purple */
+  --cockpit-accent-pink: #fb923c;    /* RAM-Ring: orange (warm contrast) */
+}
+
+/* ── Theme: Gold — warm-luxuriöse Palette ── */
+:root[data-theme="gold"] {
+  --sarah-accent: #ffcc00;
+  --cockpit-accent-cyan: #fde047;    /* CPU-Ring: bright yellow */
+  --cockpit-accent-violet: #fb923c;  /* GPU-Ring: orange */
+  --cockpit-accent-pink: #c084fc;    /* RAM-Ring: lavender (cool contrast) */
+}
+
+/* ── Theme: Red — intensive Palette ── */
+:root[data-theme="red"] {
+  --sarah-accent: #ff5555;
+  --cockpit-accent-cyan: #fb7185;    /* CPU-Ring: rose */
+  --cockpit-accent-violet: #f97316;  /* GPU-Ring: orange */
+  --cockpit-accent-pink: #a855f7;    /* RAM-Ring: purple (cool contrast) */
+}
