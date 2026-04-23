@@ -100,3 +100,14 @@
   --cockpit-font-hud-lg: 1.6rem;
   --cockpit-font-hud-xl: 2.4rem;
 }
+
+/* ── Theme: Orange — warm accent palette ── */
+:root[data-theme="orange"] {
+  --sarah-accent: #ff8844;           /* User signature (Slider, Hero-Caption) */
+  --cockpit-accent-cyan: #ffd23f;    /* CPU-Ring: golden yellow */
+  --cockpit-accent-violet: #e76f51;  /* GPU-Ring: coral */
+  --cockpit-accent-pink: #f94144;    /* RAM-Ring: warm red */
+  /* --cockpit-accent-mint bleibt mint (Listening-state semantischer Anker) */
+  /* --sarah-bg-primary / -secondary bleiben (dark anchor) */
+  /* Gradients erben aus :root — ziehen automatisch neue --cockpit-accent-* Werte */
+}
