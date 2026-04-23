@@ -14,7 +14,7 @@ export function buildAccentPicker(pers: PersonalizationValues, onChange?: () => 
 
   const label = document.createElement('div');
   label.className = 'pers-label';
-  label.textContent = 'Akzentfarbe';
+  label.textContent = 'Theme';
   wrapper.appendChild(label);
 
   const grid = document.createElement('div');
