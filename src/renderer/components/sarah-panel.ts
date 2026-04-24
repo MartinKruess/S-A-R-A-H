@@ -258,6 +258,7 @@ export class SarahPanel extends SarahElement {
   private errorTextEl!: HTMLElement;
 
   connectedCallback(): void {
+    if (this.wrapperEl) return;
     this.injectStyles(CSS);
 
     if (!isAccent(this.getAttribute('accent'))) {
@@ -266,6 +267,8 @@ export class SarahPanel extends SarahElement {
     if (!isState(this.getAttribute('state'))) {
       this.setAttribute('state', 'idle');
     }
+
+    this.style.setProperty('--jitter-phase', `${-Math.random() * 16}s`);
 
     this.wrapperEl = document.createElement('div');
     this.wrapperEl.className = 'panel-wrapper';
