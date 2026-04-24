@@ -93,7 +93,7 @@
   --cockpit-accent-red: #ff3b3b;
   --cockpit-text-hud: #d8f1ff;
   --cockpit-text-dim: #7b86b8;
-  --cockpit-border-glow: linear-gradient(135deg, #00e5ff 0%, #7c3aed 50%, #ff2fd1 100%);
+  --cockpit-border-glow: linear-gradient(135deg, var(--cockpit-accent-cyan) 0%, var(--cockpit-accent-violet) 50%, var(--cockpit-accent-pink) 100%);
   --cockpit-font-hud-xs: 0.7rem;
   --cockpit-font-hud-sm: 0.85rem;
   --cockpit-font-hud-md: 1.05rem;
