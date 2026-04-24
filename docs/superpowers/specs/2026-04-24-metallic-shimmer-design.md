@@ -26,13 +26,15 @@ Panels in der Cockpit-UI sollen einen **subtilen, organischen Schimmer-Effekt** 
 
 ## Scope — Welche Bereiche bekommen den Effekt?
 
+**Wichtig:** `<sarah-panel>` ist im aktuellen Renderer **ausschließlich** im Cockpit instanziiert (6 Aufrufe in `dashboard/views/home.ts`). Settings-View, Wizard und Boot-Sequence verwenden plain `<div>`-Elemente — dort existiert kein Empfänger für `--jitter-scale`-Overrides. Bis diese Views sarah-panel adoptieren, ist der effektive Scope der Jitter-Animation = Cockpit.
+
 | Bereich | `--jitter-scale` | Effekt |
 |---|---|---|
 | **Cockpit** (`dashboard/views/home.ts`) | `1` (Default) | 4px / 2px elliptische Bewegung auf allen `<sarah-panel>`-Instanzen |
-| **Settings** (`dashboard/views/settings.ts`) | `0.5` | 2px / 1px — subliminal, kaum merkbar |
-| **Wizard** (`wizard/wizard.ts` Root) | `0` | Animation läuft, Bewegung null — Wizard soll ruhig/fokussiert wirken |
-| **Boot-Sequence** | — | Kein Handling nötig, läuft nur Sekunden und hat eigene Animationen |
-| **Zukünftige Sarah-View/Chat** | `0.5` (TODO) | Subliminal wie Settings, wenn die View gebaut wird |
+| **Settings** (`dashboard/views/settings.ts`) | — | Kein `<sarah-panel>` vorhanden. Falls Settings später zu Panels migriert wird: Root-Container `--jitter-scale: 0.5` (subliminal). |
+| **Wizard** | — | Kein `<sarah-panel>` vorhanden. Falls Wizard später Panels nutzt: Root `--jitter-scale: 0` (Animation tickt, Bewegung null). |
+| **Boot-Sequence** | — | Kein `<sarah-panel>` vorhanden, läuft nur Sekunden |
+| **Zukünftige Sarah-View/Chat** | `0.5` (geplant) | Subliminal, wenn die View gebaut wird **und** `<sarah-panel>` nutzt |
 
 ## Architektur
 
@@ -43,10 +45,8 @@ Der Jitter wird **ausschließlich** im `sarah-panel.ts` Web Component implementi
 | Datei | Art der Änderung |
 |---|---|
 | `src/renderer/components/sarah-panel.ts` | Shadow-DOM-CSS erweitern (Jitter-Keyframes, background-image-Refactor), eine Zeile im `connectedCallback` für Phase-Randomisierung |
-| `src/renderer/dashboard/views/settings.ts` | Eine Zeile: `container.style.setProperty('--jitter-scale', '0.5')` am Root-Container |
-| `src/renderer/wizard/wizard.ts` (oder analoger Wizard-Root-Init) | Eine Zeile: `--jitter-scale: 0` am Wizard-Root. Konkreter Einbau-Punkt im Implementation-Plan festzulegen. |
 
-**Keine neuen Dateien. Keine Änderungen an `styles/cockpit.css` oder `styles/theme.css`.**
+**Nur eine Datei.** Keine neuen Dateien, keine Änderungen an `styles/cockpit.css`, `styles/theme.css`, `settings.ts` oder Wizard-Files. Cockpit nutzt den Default-Wert `--jitter-scale: 1` ohne Eingriff — überall wo `<sarah-panel>` gerendert wird (derzeit nur Cockpit), läuft der Effekt automatisch.
 
 ## Technische Umsetzung
 
@@ -137,21 +137,18 @@ this.style.setProperty('--jitter-phase', `${-Math.random() * 16}s`);
 
 **Wirkung:** Jedes Panel bekommt beim Mounten einen einmaligen zufälligen Negativ-Delay zwischen `-16s` und `0s`. Der Browser interpretiert den negativen Delay als "Animation hat schon X Sekunden gelaufen" und startet bei entsprechender Frame-Position. Ergebnis: 8 Panels laufen an 8 verschiedenen Positionen in der 16s-Ellipse.
 
-### Scope-Overrides (Inline-Style an Root-Containern)
+### Scope-Overrides — in dieser Iteration nicht nötig
 
-**In `dashboard/views/settings.ts`** — direkt nach `const container = document.createElement('div')` (Zeile 35):
+Weil `<sarah-panel>` aktuell nur im Cockpit existiert, greift der Default-Wert `--jitter-scale: 1` direkt ohne jede zusätzliche Kodierung.
+
+Wenn Settings oder eine zukünftige Sarah-View später zu `<sarah-panel>` migriert werden, kann der Override am jeweiligen Root-Container per Inline-Style nachgereicht werden:
 
 ```ts
+// Beispiel, falls Settings je Panels verwendet:
 container.style.setProperty('--jitter-scale', '0.5');
 ```
 
-**Im Wizard-Root** (konkreter Ort in Implementation zu finden — entweder in `wizard.ts` beim Setup oder als Style-Attribut in `wizard.html`):
-
-```ts
-wizardRoot.style.setProperty('--jitter-scale', '0');
-```
-
-**Cockpit:** Keine Änderung — Default `1` greift ohne Eingriff.
+CSS Custom Properties vererben durch die Shadow-DOM-Grenze, der Panel-Component reagiert ohne Anpassung.
 
 ## Kompatibilitäts-Matrix
 
@@ -186,17 +183,19 @@ wizardRoot.style.setProperty('--jitter-scale', '0');
 
 5. **Eventuelles Settings-UI zur Jitter-Intensität** — Falls Nutzer den Effekt individuell stellen wollen, kann später ein Settings-Slider `--jitter-scale` zur Laufzeit ändern. Nicht im aktuellen Scope.
 
+6. **Settings-View / Wizard Panel-Migration** — Wenn eine dieser Views später auf `<sarah-panel>` umgestellt wird (siehe `project_visual_alignment.md` — "Rest der App optisch ans Cockpit angleichen"), greift der vorbereitete `--jitter-scale`-Mechanismus automatisch. Root-Container einfach per Inline-Style auf `0.5` (Settings) bzw. `0` (Wizard) setzen.
+
+7. **`connectedCallback` Doppel-Mount-Guard** — `sarah-panel.ts` hat aktuell keinen Guard gegen mehrfaches `connectedCallback` (pre-existing Tech-Debt). Wird das Panel disconnect/reconnect durchlaufen, entstehen doppelte Style-Tags, ein weiterer `.panel-wrapper` wird angehängt, und die Jitter-Phase springt neu. In der Praxis niedriges Risiko (Cockpit-Panels sind statisch während der Laufzeit), aber wenn der Implementation-Plan ohnehin im `connectedCallback` editiert, ist ein `if (this.wrapperEl) return;` am Anfang die pragmatische Kosten-Nutzen-Entscheidung.
+
 ## Risiken
 
 - **`background` → `background-image` Refactor:** Kleine aber essenzielle Änderung in 5 Stellen des Component-CSS. Ohne diese wird beim ersten accent-Switch das `background-size`/`background-position` resettet und der Jitter bricht. Test: Alle 4 Accents + Error-State nach Implementierung durchklicken.
 
-- **Wizard-Root-Klassifizierung:** Noch nicht 100% klar wo der Wizard-Root-Container beim Setup erstellt wird (nicht in `wizard-controller.ts`, vermutlich in `wizard.ts` oder direkt als HTML-Element in `wizard.html`). Während Implementation-Plan-Phase zu lokalisieren.
+- **Pre-existing Doppel-Mount-Verhalten:** Das bestehende `connectedCallback` in `sarah-panel.ts` hat keinen Guard — bei reconnect würde der neue `--jitter-phase`-Setter ebenfalls mehrfach laufen und einen sichtbaren Animation-Sprung verursachen. In der aktuellen App-Architektur (Cockpit-Panels statisch gemountet) tritt das nicht auf. Implementation-Plan sollte einen Guard `if (this.wrapperEl) return;` am Anfang von `connectedCallback` hinzufügen — das ist "kostenloser" Tech-Debt-Fix, weil wir die Stelle ohnehin anfassen.
 
 ## Rollback
 
-Alle Änderungen sind klein und file-lokal:
-- `sarah-panel.ts` — die neuen Props/Keyframes und die `connectedCallback`-Zeile in einem Commit, einfach revertbar
-- `settings.ts` — 1-Zeilen-Änderung, trivial revertbar
-- Wizard-Root — analog 1 Zeile
+Alle Änderungen konzentrieren sich auf eine einzige Datei:
+- `sarah-panel.ts` — CSS-Refactor, neue Keyframes und `connectedCallback`-Zeilen in einem Commit, einfach revertbar
 
-Einzelne Commits sollten atomisch sein (pro File), damit bei Rollback keine Inkonsistenz entsteht.
+Der Implementation-Plan sollte die Änderungen in **atomische Commits** aufsplitten (z.B. 1. `background` → `background-image` Refactor, 2. Keyframes + Animation, 3. `connectedCallback` Phase-Randomizer + optionaler Doppel-Mount-Guard), damit bei Bedarf einzelne Aspekte selektiv revertbar sind.
