@@ -35,11 +35,16 @@ const CSS = `
     position: relative;
     padding: 1px;
     background-image: var(--panel-accent, var(--sarah-panel-accent-gradient-cyan));
+    background-size: calc(100% + 16px) calc(100% + 16px);
+    background-position: 50% 50%;
     box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-cyan) 15%, transparent);
     clip-path: ${CHAMFER_WRAPPER};
     height: 100%;
     transition: box-shadow 200ms ease;
-    animation: cockpit-panel-breathe 6s ease-in-out infinite;
+    animation:
+      cockpit-panel-breathe 6s ease-in-out infinite,
+      cockpit-panel-jitter 16s linear infinite;
+    animation-delay: 0s, var(--jitter-phase, 0s);
   }
 
   :host(:hover) .panel-wrapper {
@@ -86,6 +91,34 @@ const CSS = `
   @keyframes cockpit-panel-breathe {
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.98; }
+  }
+
+  @keyframes cockpit-panel-jitter {
+    0% {
+      background-position:
+        calc(50% + 4px * var(--jitter-scale, 1))
+        50%;
+    }
+    25% {
+      background-position:
+        50%
+        calc(50% + 2px * var(--jitter-scale, 1));
+    }
+    50% {
+      background-position:
+        calc(50% - 4px * var(--jitter-scale, 1))
+        50%;
+    }
+    75% {
+      background-position:
+        50%
+        calc(50% - 2px * var(--jitter-scale, 1));
+    }
+    100% {
+      background-position:
+        calc(50% + 4px * var(--jitter-scale, 1))
+        50%;
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {
