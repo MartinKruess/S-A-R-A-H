@@ -34,7 +34,7 @@ const CSS = `
   .panel-wrapper {
     position: relative;
     padding: 1px;
-    background: var(--panel-accent, var(--sarah-panel-accent-gradient-cyan));
+    background-image: var(--panel-accent, var(--sarah-panel-accent-gradient-cyan));
     box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-cyan) 15%, transparent);
     clip-path: ${CHAMFER_WRAPPER};
     height: 100%;
@@ -47,7 +47,7 @@ const CSS = `
   }
 
   :host([accent="violet"]) .panel-wrapper {
-    background: var(--panel-accent, var(--sarah-panel-accent-gradient-violet));
+    background-image: var(--panel-accent, var(--sarah-panel-accent-gradient-violet));
     box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-violet) 15%, transparent);
   }
 
@@ -56,7 +56,7 @@ const CSS = `
   }
 
   :host([accent="pink"]) .panel-wrapper {
-    background: var(--panel-accent, var(--sarah-panel-accent-gradient-pink));
+    background-image: var(--panel-accent, var(--sarah-panel-accent-gradient-pink));
     box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-pink) 15%, transparent);
   }
 
@@ -65,7 +65,7 @@ const CSS = `
   }
 
   :host([accent="mint"]) .panel-wrapper {
-    background: var(--panel-accent, var(--sarah-panel-accent-gradient-mint));
+    background-image: var(--panel-accent, var(--sarah-panel-accent-gradient-mint));
     box-shadow: 0 0 20px color-mix(in srgb, var(--cockpit-accent-mint) 15%, transparent);
   }
 
@@ -74,7 +74,8 @@ const CSS = `
   }
 
   :host([state="error"]) .panel-wrapper {
-    background: var(--cockpit-accent-red);
+    background-color: var(--cockpit-accent-red);
+    background-image: none;
     box-shadow: 0 0 20px rgba(255, 59, 59, 0.25);
   }
 
