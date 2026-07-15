@@ -57,32 +57,44 @@ Sarah-Boot (neu)
 - Port nur lokal gebunden: `127.0.0.1:11434:11434` — nichts aus dem Netzwerk erreicht Ollama
 - Benanntes Volume `sarah-ollama-models` → `/root/.ollama` (Modelle überleben Container-Neubau)
 - `restart: unless-stopped`
-- Env-Defaults von Ollama bleiben (KEEP_ALIVE 5m, Flash-Attention aus)
+- Env-Defaults von Ollama bleiben (KEEP_ALIVE 5m). `OLLAMA_FLASH_ATTENTION` bleibt **bewusst aus** — auf diesem Setup verursachte Flash-Attention früher CUDA-500-Crashes; als Kommentar in der compose-Datei dokumentieren
 
 ## 6. Neue Datei: `src/services/llm/ollama-container-manager.ts`
 
 Service nach dem Vorbild des `FasterWhisperProvider`, steuert den Container über die Docker-CLI (`child_process`), keine neue npm-Dependency.
 
-**`ensureRunning(): Promise<void>`** — vor `RouterService.init()`:
+**Instanziierung:** in `src/main.ts`, direkt neben `RouterService`/`OllamaProvider` (konsistent mit dem bestehenden Muster), Übergabe an `registerBootHandlers` via `BootSequenceDeps` — wie `whisperProvider`/`piperProvider`. **Bewusst kein `SarahService` / keine Registry-Registrierung:** Die Registry wird erst nötig, wenn die Cockpit-Statusanzeige real gebaut wird (YAGNI); `getStatus()` existiert als normale Methode.
+
+**`ensureRunning(): Promise<void>`** — läuft vor `RouterService.init()` (Verdrahtung siehe §7):
 1. `docker inspect sarah-ollama` → existiert + läuft? (Millisekunden, lesend)
 2. Gestoppt → `docker start sarah-ollama`, dann Health-Polling auf `GET /api/tags`
-3. Existiert nicht → `docker compose up -d` im App-Verzeichnis (erzeugt aus compose-Datei)
+3. Existiert nicht → `docker compose -f <composePfad> up -d`. **Compose-Pfad:** `path.join(app.getAppPath(), 'docker-compose.yml')` — im Dev-Betrieb (`electron .`) ist das das Repo-Root. Die App wird derzeit nicht gepackt; Packaging-Anforderung siehe §10
 4. **Timeout 30 s** (Lektion aus analyze-fabel.md Bug 3.2 — nicht 5 min pollen)
-5. Docker fehlt / läuft nicht → Fehler mit klarer Meldung, kein Hänger
+5. Docker fehlt / läuft nicht → Fehler mit klarer Meldung, kein Hänger. **ENOENT-Unterscheidung:** Wenn `spawn('docker', …)` mit ENOENT fehlschlägt, prüft der Manager, ob `C:\Program Files\Docker\Docker\resources\bin\docker.exe` existiert — existiert sie, lautet die Meldung „Docker installiert, aber nicht im PATH", sonst „Docker Desktop nicht installiert". (Ein `where docker`-Fallback hätte dasselbe PATH-Problem wie der spawn selbst.)
 
 **`checkGpu(): Promise<GpuStatus>`** — nach dem Router-Warmup (phi4-mini ist dann geladen):
 - `GET /api/ps` liefert pro geladenem Modell `size_vram`
 - `size_vram > 0` → GPU aktiv ✅
-- Modell geladen, aber `size_vram === 0` → **CPU-Modus erkannt** → Log-Warnung + Boot-Meldung
+- Modell geladen, aber `size_vram === 0` → **ein Retry nach 500 ms**, erst wenn auch der `0` liefert → **CPU-Modus erkannt** → Log-Warnung + Boot-Meldung. (Der Warmup awaitet zwar eine vollständige Antwort, das Modell ist danach also geladen — der Retry kostet nichts und schließt Berichts-Verzögerungen von `/api/ps` sicher aus)
 - Nutzt dieselben Daten, die `VramManager.getLoadedModels()` bereits ausliest
 
 **`getStatus()`** — läuft/gestoppt/kein Docker, für spätere Settings-/Cockpit-Anzeige.
 
 ## 7. Integration in `boot-sequence.ts`
 
-- Vor `routerService.init()`: `await containerManager.ensureRunning()` (Fehler → Router-Status `error`, Boot-Meldung)
+**Wichtig (Ist-Zustand):** `routerService.init()` startet heute *sofort und synchron beim Registrieren* in `registerBootHandlers` (als Promise-Referenz `routerReady`, die der `boot-ready`-Handler später awaitet) — nicht erst im Handler. Ein simples „davor awaiten" ist daher nicht möglich. Verdrahtung:
+
+```ts
+// registerBootHandlers bleibt synchron; ensureRunning wird vorgeschaltet gechained:
+const routerReady = containerManager
+  .ensureRunning()
+  .then(() => routerService.init())
+  .catch((err) => { /* Router-Status error + Boot-Meldung, wie bisherige Fehlerpfade */ });
+```
+
+- Startet weiterhin sofort beim Registrieren → Orb-Reveal-Timing unverändert; im Normalfall (Container läuft) kostet `ensureRunning()` nur Millisekunden
+- Fehler aus `ensureRunning()` führen zu Router-Status `error` + Boot-Meldung (gleiche Wirkung wie ein fehlgeschlagenes `init()` heute)
 - Nach dem Warmup: `checkGpu()`, Ergebnis in Boot-Status durchreichen
-- Bestehende Boot-Meldungen bleiben; im Normalfall (Container läuft) kostet der Check nur Millisekunden
 - `baseUrl`, `OllamaProvider`, `RouterService`-Logik, VRAM-Swap: **unverändert**
 
 ## 8. Fehlerpfade
@@ -90,6 +102,7 @@ Service nach dem Vorbild des `FasterWhisperProvider`, steuert den Container übe
 | Situation | Verhalten |
 |---|---|
 | Docker Desktop nicht installiert / nicht gestartet | Boot-Screen-Hinweis („Docker Desktop nicht erreichbar — bitte starten"), Router-Status `error`, Chat meldet „Sarah träumt noch…" |
+| Docker installiert, aber `docker` nicht im PATH (ENOENT) | Eigene Meldung „Docker installiert, aber nicht im PATH" via Existenz-Check des Standard-Installationspfads (§6 Punkt 5) |
 | Container startet nicht (z.B. Port 11434 durch natives Ollama belegt) | Fehler mit Docker-Originalausgabe im Log, kontrollierter Boot-Abbruch |
 | API antwortet nicht binnen 30 s | Timeout-Fehler statt Endlos-Polling |
 | CPU-Modus erkannt (`size_vram === 0`) | Deutliche Warnung (Log + Boot-Meldung); Sarah läuft weiter, Nutzer ist informiert |
@@ -98,7 +111,7 @@ Service nach dem Vorbild des `FasterWhisperProvider`, steuert den Container übe
 
 1. WSL2 aktivieren + Docker Desktop installieren, „Start with Windows" aktivieren
 2. `docker compose up -d` im Projektordner
-3. Modelle pullen (~8 GB, einmalig): `docker exec sarah-ollama ollama pull phi4-mini:3.8b` und `… ollama pull qwen3:8b`
+3. Modelle pullen (einmalig, insgesamt ~8,5 GB Download: phi4-mini ~3,5 GB + qwen3:8b ~5 GB): `docker exec sarah-ollama ollama pull phi4-mini:3.8b` und `… ollama pull qwen3:8b`
 4. **Autostart des nativen Windows-Ollama deaktivieren** (Port-Konflikt!); Deinstallation erst nach Bewährungsphase
 5. Verifizieren: `server`-Log des Containers zeigt `library=CUDA … NVIDIA GeForce RTX 3050`
 
@@ -106,13 +119,14 @@ Service nach dem Vorbild des `FasterWhisperProvider`, steuert den Container übe
 
 - **AMD/Radeon-Weg:** CUDA ist NVIDIA-exklusiv; AMD-GPU-Durchreichung unter Windows/Docker ist derzeit nicht praxistauglich. Späterer Plan: GPU-Erkennung im Wizard → NVIDIA = Container, AMD = natives Ollama (Vulkan). Eigenes Feature.
 - **Wizard-/Endnutzer-Integration** (Docker-Check, geführte Installation, automatischer Modell-Pull mit Fortschritt): eigenes Feature, Design hält den Weg offen (compose-Datei ist reproduzierbar, Manager kapselt alle Docker-Aufrufe)
+- **App-Packaging:** Die App läuft derzeit nur ungepackt (`electron .`). Sobald ein Packaging-Feature kommt, muss `docker-compose.yml` als Extra-Resource gepackt und der Compose-Pfad auf `process.resourcesPath` umgestellt werden — der Manager kapselt den Pfad an einer Stelle
 - **Whisper/Piper in Docker:** kein aktueller Leidensdruck
 - **Migration der vorhandenen Modelle** aus `C:\Users\Martin\.ollama`: bewusst Neu-Download ins Volume statt Mount (sauber, vermeidet Pfad-/Performance-Probleme über WSL2-Dateisystemgrenze)
 
 ## 11. Tests & Verifikation
 
 **Automatisiert (Claude):**
-- Unit-Tests `ollama-container-manager.test.ts`: Docker-CLI gemockt — Container läuft / gestoppt / fehlt / Docker nicht installiert; `/api/ps`-Auswertung mit `size_vram` 0 und > 0; 30s-Timeout
+- Unit-Tests `ollama-container-manager.test.ts`: Docker-CLI gemockt — Container läuft / gestoppt / fehlt / Docker nicht installiert / ENOENT-Unterscheidung (installiert vs. nicht im PATH); `/api/ps`-Auswertung mit `size_vram` 0 und > 0; **Retry-Fall: erst 0, nach Retry > 0 → kein CPU-Alarm**; 30s-Timeout
 - `npm run typecheck` + bestehende Test-Suite
 
 **Manuell (Martin):**
