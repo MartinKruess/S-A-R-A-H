@@ -145,9 +145,9 @@ export const LlmSchema = z.object({
     .default('normal'),
   workerOptions: z
     .object({
-      num_ctx: z.number().default(8192),
+      num_ctx: z.number().default(4096),
     })
-    .default({ num_ctx: 8192 }),
+    .default({ num_ctx: 4096 }),
   options: z
     .object({
       temperature: z.number().optional(),
