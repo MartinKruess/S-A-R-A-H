@@ -99,9 +99,9 @@ export class OllamaContainerManager {
       throw new Error(DOCKER_ERROR_MESSAGES[status.docker]);
     }
     if (status.container === 'stopped') {
-      await this.execFn('docker', ['start', CONTAINER_NAME]);
+      await this.runDockerOrThrow(['start', CONTAINER_NAME]);
     } else if (status.container === 'missing') {
-      await this.execFn('docker', ['compose', '-f', this.composePath, 'up', '-d']);
+      await this.runDockerOrThrow(['compose', '-f', this.composePath, 'up', '-d']);
     }
     await this.waitForApi();
   }
@@ -109,6 +109,18 @@ export class OllamaContainerManager {
   async checkGpu(): Promise<GpuStatus> {
     // Implemented in Task 4.
     return 'unknown';
+  }
+
+  private async runDockerOrThrow(args: string[]): Promise<void> {
+    try {
+      await this.execFn('docker', args);
+    } catch (err) {
+      const e = err as Error & { stderr?: string };
+      const detail = e.stderr?.trim() || e.message;
+      throw new Error(
+        `Ollama-Container konnte nicht gestartet werden: ${detail}`,
+      );
+    }
   }
 
   private async waitForApi(): Promise<void> {
@@ -123,7 +135,7 @@ export class OllamaContainerManager {
       await sleep(this.healthPollMs);
     }
     throw new Error(
-      'Ollama-Container antwortet nicht (Timeout nach 30 Sekunden) — bitte Docker-Logs prüfen.',
+      `Ollama-Container antwortet nicht (Timeout nach ${Math.round(this.healthTimeoutMs / 1000)} Sekunden) — bitte Docker-Logs prüfen.`,
     );
   }
 }

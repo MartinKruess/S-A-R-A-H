@@ -50,8 +50,12 @@ afterEach(() => {
 
 describe('OllamaContainerManager.getStatus', () => {
   it('reports running container', async () => {
-    const { manager } = createManager({ execResults: [{ stdout: 'true\n' }] });
+    const { manager, calls } = createManager({ execResults: [{ stdout: 'true\n' }] });
     expect(await manager.getStatus()).toEqual({ docker: 'ok', container: 'running' });
+    expect(calls[0]).toEqual({
+      cmd: 'docker',
+      args: ['inspect', '--format', '{{.State.Running}}', 'sarah-ollama'],
+    });
   });
 
   it('reports stopped container', async () => {
@@ -143,5 +147,14 @@ describe('OllamaContainerManager.ensureRunning', () => {
       healthPollMs: 1,
     });
     await expect(manager.ensureRunning()).rejects.toThrow(/antwortet nicht/);
+  });
+
+  it('wraps docker start failures in a German message with the original output', async () => {
+    const { manager } = createManager({
+      execResults: [{ stdout: 'false\n' }, execError('Bind for 127.0.0.1:11434 failed: port is already allocated')],
+    });
+    await expect(manager.ensureRunning()).rejects.toThrow(
+      /Ollama-Container konnte nicht gestartet werden: .*port is already allocated/,
+    );
   });
 });
