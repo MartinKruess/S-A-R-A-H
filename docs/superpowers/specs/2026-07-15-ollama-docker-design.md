@@ -103,7 +103,7 @@ const routerReady = containerManager
 |---|---|
 | Docker Desktop nicht installiert / nicht gestartet | Boot-Screen-Hinweis („Docker Desktop nicht erreichbar — bitte starten"), Router-Status `error`, Chat meldet „Sarah träumt noch…" |
 | Docker installiert, aber `docker` nicht im PATH (ENOENT) | Eigene Meldung „Docker installiert, aber nicht im PATH" via Existenz-Check des Standard-Installationspfads (§6 Punkt 5) |
-| Container startet nicht (z.B. Port 11434 durch natives Ollama belegt) | Fehler mit Docker-Originalausgabe im Log, kontrollierter Boot-Abbruch |
+| Container startet nicht (z.B. Port 11434 durch natives Ollama belegt) | Fehler mit Docker-Originalausgabe im Log, Boot läuft mit Fehlermeldung weiter (Chat degradiert zu „Sarah träumt noch…") |
 | API antwortet nicht binnen 30 s | Timeout-Fehler statt Endlos-Polling |
 | CPU-Modus erkannt (`size_vram === 0`) | Deutliche Warnung (Log + Boot-Meldung); Sarah läuft weiter, Nutzer ist informiert |
 
@@ -122,6 +122,7 @@ const routerReady = containerManager
 - **App-Packaging:** Die App läuft derzeit nur ungepackt (`electron .`). Sobald ein Packaging-Feature kommt, muss `docker-compose.yml` als Extra-Resource gepackt und der Compose-Pfad auf `process.resourcesPath` umgestellt werden — der Manager kapselt den Pfad an einer Stelle
 - **Whisper/Piper in Docker:** kein aktueller Leidensdruck
 - **Migration der vorhandenen Modelle** aus `C:\Users\Martin\.ollama`: bewusst Neu-Download ins Volume statt Mount (sauber, vermeidet Pfad-/Performance-Probleme über WSL2-Dateisystemgrenze)
+- **Boot-Warnung bei Router-Status `error` nach erfolgreichem Container-Start** (z.B. Modell fehlt im Volume): Follow-up — aktuell zeigt der Boot-Screen dann keine Warnung, der Fehler wird erst im Chat sichtbar.
 
 ## 11. Tests & Verifikation
 

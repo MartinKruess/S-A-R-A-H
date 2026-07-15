@@ -770,6 +770,8 @@ Martin runs `npm start` and verifies:
 2. Self-healing: `docker stop sarah-ollama` → start Sarah → container comes up automatically, boot completes
 3. Error path: quit Docker Desktop → start Sarah → boot shows „Docker Desktop läuft nicht — bitte Docker Desktop starten." instead of hanging
 4. Voice roundtrip: answer latency comparable to the ~5.4 s warm baseline
+5. Self-heal recreate: `docker rm -f sarah-ollama` → start Sarah → container is recreated from compose and boot completes
+6. Fehlerpfad Boot-Screen: Meldung bleibt ~3 s sichtbar (dwell), bevor der Orb-Reveal startet
 
 - [ ] **Step 7: Commit nothing — create the PR**
 

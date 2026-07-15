@@ -20,7 +20,7 @@ export interface ContainerStatus {
 }
 
 type ExecResult = { stdout: string; stderr: string };
-type ExecFn = (cmd: string, args: string[]) => Promise<ExecResult>;
+type ExecFn = (cmd: string, args: string[], timeoutMs?: number) => Promise<ExecResult>;
 
 export interface ContainerManagerOptions {
   execFn?: ExecFn;
@@ -56,8 +56,8 @@ export class OllamaContainerManager {
   ) {
     this.execFn =
       options.execFn ??
-      (async (cmd, args) => {
-        const { stdout, stderr } = await execFileAsync(cmd, args);
+      (async (cmd, args, timeoutMs) => {
+        const { stdout, stderr } = await execFileAsync(cmd, args, { timeout: timeoutMs ?? 15_000 });
         return { stdout, stderr };
       });
     this.existsFn = options.existsFn ?? ((filePath) => fs.existsSync(filePath));
@@ -99,9 +99,10 @@ export class OllamaContainerManager {
       throw new Error(DOCKER_ERROR_MESSAGES[status.docker]);
     }
     if (status.container === 'stopped') {
-      await this.runDockerOrThrow(['start', CONTAINER_NAME]);
+      await this.runDockerOrThrow(['start', CONTAINER_NAME], 30_000);
     } else if (status.container === 'missing') {
-      await this.runDockerOrThrow(['compose', '-f', this.composePath, 'up', '-d']);
+      // Cold image pull can take minutes; still bounded so boot can never hang forever.
+      await this.runDockerOrThrow(['compose', '-f', this.composePath, 'up', '-d'], 120_000);
     }
     await this.waitForApi();
   }
@@ -127,9 +128,9 @@ export class OllamaContainerManager {
     }
   }
 
-  private async runDockerOrThrow(args: string[]): Promise<void> {
+  private async runDockerOrThrow(args: string[], timeoutMs: number): Promise<void> {
     try {
-      await this.execFn('docker', args);
+      await this.execFn('docker', args, timeoutMs);
     } catch (err) {
       const e = err as Error & { stderr?: string };
       const detail = e.stderr?.trim() || e.message;
@@ -151,7 +152,7 @@ export class OllamaContainerManager {
       await sleep(this.healthPollMs);
     }
     throw new Error(
-      `Ollama-Container antwortet nicht (Timeout nach ${Math.round(this.healthTimeoutMs / 1000)} Sekunden) — bitte Docker-Logs prüfen.`,
+      `Ollama-Container antwortet nicht (Timeout nach ${Math.max(1, Math.round(this.healthTimeoutMs / 1000))} Sekunden) — bitte Docker-Logs prüfen.`,
     );
   }
 }

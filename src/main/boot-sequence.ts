@@ -56,6 +56,8 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
 
       if (containerError) {
         send('router', containerError);
+        // Keep the error readable before router-ready hides the status line
+        await new Promise((r) => setTimeout(r, 3000));
       } else {
         const gpu = await containerManager.checkGpu();
         if (gpu === 'cpu') {
@@ -95,6 +97,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       });
     } catch (err) {
       console.error('[Boot] Activation failed:', err);
+      send('router-ready');
       send('piper-ready');
       const ctx = getAppContext();
       await ctx.registry.initAll().catch(() => {});

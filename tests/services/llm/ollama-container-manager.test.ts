@@ -7,7 +7,7 @@ import {
 const BASE_URL = 'http://localhost:11434';
 const COMPOSE_PATH = 'G:\\fake\\docker-compose.yml';
 
-type ExecCall = { cmd: string; args: string[] };
+type ExecCall = { cmd: string; args: string[]; timeoutMs?: number };
 
 function enoentError(): NodeJS.ErrnoException {
   const err: NodeJS.ErrnoException = new Error('spawn docker ENOENT');
@@ -29,8 +29,8 @@ function createManager(
   const calls: ExecCall[] = [];
   const results = [...(options.execResults ?? [])];
   const manager = new OllamaContainerManager(BASE_URL, COMPOSE_PATH, {
-    execFn: async (cmd, args) => {
-      calls.push({ cmd, args });
+    execFn: async (cmd, args, timeoutMs) => {
+      calls.push({ cmd, args, timeoutMs });
       const next = results.shift();
       if (next === undefined) return { stdout: '', stderr: '' };
       if (next instanceof Error) throw next;
@@ -55,6 +55,7 @@ describe('OllamaContainerManager.getStatus', () => {
     expect(calls[0]).toEqual({
       cmd: 'docker',
       args: ['inspect', '--format', '{{.State.Running}}', 'sarah-ollama'],
+      timeoutMs: undefined,
     });
   });
 
@@ -114,7 +115,7 @@ describe('OllamaContainerManager.ensureRunning', () => {
       execResults: [{ stdout: 'false\n' }, { stdout: '' }],
     });
     await manager.ensureRunning();
-    expect(calls[1]).toEqual({ cmd: 'docker', args: ['start', 'sarah-ollama'] });
+    expect(calls[1]).toEqual({ cmd: 'docker', args: ['start', 'sarah-ollama'], timeoutMs: 30_000 });
   });
 
   it('creates a missing container via docker compose up', async () => {
@@ -126,6 +127,7 @@ describe('OllamaContainerManager.ensureRunning', () => {
     expect(calls[1]).toEqual({
       cmd: 'docker',
       args: ['compose', '-f', COMPOSE_PATH, 'up', '-d'],
+      timeoutMs: 120_000,
     });
   });
 
