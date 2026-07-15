@@ -1,0 +1,26 @@
+# S.A.R.A.H. — Ollama LLM backend.
+# Frozen CUDA runtime inside the image: NVIDIA driver updates on Windows
+# can no longer break GPU inference (see spec 2026-07-15-ollama-docker-design.md).
+# Image is pinned deliberately — upgrade only by editing this tag and re-testing.
+services:
+  ollama:
+    image: ollama/ollama:0.32.0
+    container_name: sarah-ollama
+    restart: unless-stopped
+    ports:
+      # localhost only — never expose Ollama to the network
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - sarah-ollama-models:/root/.ollama
+    # OLLAMA_FLASH_ATTENTION stays OFF (Ollama default): enabling it caused
+    # CUDA 500 crashes on this setup (RTX 3050). Do not enable without re-testing.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  sarah-ollama-models:
