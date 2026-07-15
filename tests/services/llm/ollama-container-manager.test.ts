@@ -174,7 +174,9 @@ describe('OllamaContainerManager.checkGpu', () => {
   });
 
   it('returns cpu only after the retry also reports zero VRAM', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(psResponse(0));
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(psResponse(0)),
+    );
     const { manager } = createManager();
     expect(await manager.checkGpu()).toBe('cpu');
     expect(spy).toHaveBeenCalledTimes(2); // first read + one retry
@@ -198,6 +200,22 @@ describe('OllamaContainerManager.checkGpu', () => {
 
   it('returns unknown when the API is unreachable', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('unknown');
+  });
+
+  it('returns unknown when the API responds non-ok', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response('error', { status: 500 })),
+    );
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('unknown');
+  });
+
+  it('returns unknown when models is not an array', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response('{"models":null}', { status: 200 })),
+    );
     const { manager } = createManager();
     expect(await manager.checkGpu()).toBe('unknown');
   });

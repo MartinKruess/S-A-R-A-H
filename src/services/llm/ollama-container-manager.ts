@@ -119,7 +119,7 @@ export class OllamaContainerManager {
     try {
       const res = await fetch(`${this.baseUrl}/api/ps`);
       if (!res.ok) return 'unknown';
-      const data = (await res.clone().json()) as { models: { size_vram: number }[] };
+      const data = (await res.json()) as { models: { size_vram: number }[] };
       if (!Array.isArray(data.models) || data.models.length === 0) return 'unknown';
       return data.models.some((m) => m.size_vram > 0) ? 'gpu' : 'cpu';
     } catch {
