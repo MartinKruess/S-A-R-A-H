@@ -107,8 +107,24 @@ export class OllamaContainerManager {
   }
 
   async checkGpu(): Promise<GpuStatus> {
-    // Implemented in Task 4.
-    return 'unknown';
+    const first = await this.readVramStatus();
+    if (first !== 'cpu') return first;
+    // A model can still be loading right after warmup — retry once before
+    // raising a CPU-mode alarm.
+    await sleep(this.gpuRetryDelayMs);
+    return this.readVramStatus();
+  }
+
+  private async readVramStatus(): Promise<GpuStatus> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/ps`);
+      if (!res.ok) return 'unknown';
+      const data = (await res.clone().json()) as { models: { size_vram: number }[] };
+      if (!Array.isArray(data.models) || data.models.length === 0) return 'unknown';
+      return data.models.some((m) => m.size_vram > 0) ? 'gpu' : 'cpu';
+    } catch {
+      return 'unknown';
+    }
   }
 
   private async runDockerOrThrow(args: string[]): Promise<void> {

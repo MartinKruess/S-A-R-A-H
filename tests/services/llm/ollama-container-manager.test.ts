@@ -158,3 +158,47 @@ describe('OllamaContainerManager.ensureRunning', () => {
     );
   });
 });
+
+describe('OllamaContainerManager.checkGpu', () => {
+  function psResponse(sizeVram: number): Response {
+    return new Response(
+      JSON.stringify({ models: [{ model: 'phi4-mini:3.8b', size_vram: sizeVram }] }),
+      { status: 200 },
+    );
+  }
+
+  it('returns gpu when a loaded model resides in VRAM', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(psResponse(2_000_000_000));
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('gpu');
+  });
+
+  it('returns cpu only after the retry also reports zero VRAM', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(psResponse(0));
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('cpu');
+    expect(spy).toHaveBeenCalledTimes(2); // first read + one retry
+  });
+
+  it('returns gpu when the retry sees the model arrive in VRAM (no false alarm)', async () => {
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(psResponse(0))
+      .mockResolvedValueOnce(psResponse(2_000_000_000));
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('gpu');
+  });
+
+  it('returns unknown when no model is loaded', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"models":[]}', { status: 200 }),
+    );
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('unknown');
+  });
+
+  it('returns unknown when the API is unreachable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    const { manager } = createManager();
+    expect(await manager.checkGpu()).toBe('unknown');
+  });
+});
