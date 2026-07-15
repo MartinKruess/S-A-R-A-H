@@ -16,7 +16,7 @@ export function parseRouteTag(response: string): ParsedRoute {
   }
 
   const raw = match[1];
-  const route: RouteTarget = VALID_ROUTES.has(raw) ? raw as RouteTarget : 'self';
+  const route: RouteTarget = VALID_ROUTES.has(raw) ? raw as RouteTarget : '9b';
   const feedback = response.slice(match[0].length);
 
   return { route, feedback };
