@@ -44,7 +44,7 @@ export class RouterService implements SarahService {
 
   // init() is single-flight (A8): repeated calls return the same promise,
   // so the eager boot call and registry.initAll() cannot double-initialize.
-  async init(): Promise<void> {
+  init(): Promise<void> {
     if (!this.initPromise) {
       this.initPromise = this.doInit();
     }
