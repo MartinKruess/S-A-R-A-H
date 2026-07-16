@@ -34,6 +34,7 @@ export class OllamaProvider implements LlmProvider {
 
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: 'POST',
+      signal: options?.signal,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
@@ -59,6 +60,10 @@ export class OllamaProvider implements LlmProvider {
     let buffer = '';
 
     while (true) {
+      if (options?.signal?.aborted) {
+        await reader.cancel();
+        throw new Error('aborted');
+      }
       const { done, value } = await reader.read();
       if (done) break;
 
