@@ -41,12 +41,12 @@ S.A.R.A.H. (Smart Assistant for Resource and Administration Handling) ist eine E
 
 ## 3. Kritische Bugs — sofortige Priorität
 
-### 3.1 `boot-done` IPC-Handler doppelt registriert
+### ✅ ERLEDIGT (9c705a5) — 3.1 `boot-done` IPC-Handler doppelt registriert
 **Dateien:** `src/main.ts:144` und `src/main/boot-sequence.ts:176`
 
 Beide registrieren `ipcMain.once('boot-done', ...)` mit identischem Fenster-Animations-Code. `once` stellt sicher, dass nur der erste Handler feuert — der zweite ist totes Code und wird nie aufgerufen. Das ist kein sichtbarer Bug heute, wird aber zum Problem, sobald jemand einen der Blöcke anpasst. Einer der beiden Blöcke muss entfernt werden.
 
-### 3.2 `spawn('python', ...)` — keine Garantie dass Python verfügbar ist
+### ✅ ERLEDIGT (9c705a5) — 3.2 `spawn('python', ...)` — keine Garantie dass Python verfügbar ist
 **Datei:** `src/services/voice/providers/faster-whisper-provider.ts:38`
 
 Der Code ruft `spawn('python', [...])` auf und geht davon aus, dass `python` im PATH liegt. Auf Windows ist das oft `python3`, oder es ist eine Windows-Store-Stub-App, oder gar nicht vorhanden. Wenn Python nicht gefunden wird, schlägt der Spawn lautlos fehl (der `on('error')` Handler loggt es nur) — aber der `waitForServer()` dreht 5 Minuten lang (`STARTUP_TIMEOUT_MS = 300_000`) im 500ms-Poll-Takt, bevor ein Fehler geworfen wird. Das hängt die App bei nicht vorhandenem Python für 5 Minuten.
@@ -63,7 +63,7 @@ Der Code ruft `spawn('python', [...])` auf und geht davon aus, dass `python` im 
 
 Alle Nachrichten gehen in dieselbe Konversation. Kein Multi-Session-Support möglich. Muss gelöst werden, bevor History-Recovery implementiert wird.
 
-### 3.5 Unbekannte Route fällt auf `[ROUTE:self]` zurück
+### ✅ ERLEDIGT (9c705a5, Test in cd58c15) — 3.5 Unbekannte Route fällt auf `[ROUTE:self]` zurück
 **Datei:** `src/services/llm/route-parser.ts:19`
 
 Gibt das Routing-Modell eine unbekannte Route (`[ROUTE:xyz]`) zurück, wird sie silently auf `self` gemappt — das heißt, der 2B-Router antwortet selbst, anstatt zur 9B-Instanz zu eskalieren. Bei schlecht geformten Antworten des 4B-Modells können so komplexe Aufgaben falsch behandelt werden.
