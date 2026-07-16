@@ -167,7 +167,7 @@ CSS Custom Properties vererben durch die Shadow-DOM-Grenze, der Panel-Component 
 
 - `background-position` gehört nicht zu den klassischen compositor-only Properties (`transform`/`opacity`), erzeugt also pro Frame technisch Paint-Arbeit
 - Bei statischem Gradient-Bild und Amplitude ≤ 4px bleibt die Paint-Region aber winzig — Chromium cached den Gradient und resamplet nur die Sichtfenster-Position
-- Bei 8 Panels × 16s-Animation: je Panel ≈ 60 fps × 0,4 % Box-Paint-Delta — messbarer Overhead vernachlässigbar
+- Bei 6 Panels × 16s-Animation (sysload, voicein, voiceout, termine, wetter, media): je Panel ≈ 60 fps × 0,4 % Box-Paint-Delta — messbarer Overhead vernachlässigbar
 - `connectedCallback`-Zeile: 1× `Math.random()` + 1× `setProperty` pro Panel-Mount — vernachlässigbar
 - Auf Ziel-Hardware (RTX 3050, Sarah läuft parallel zu Ollama/Voice-Last): kein spürbarer Impact erwartet; falls Benchmarks in der Implementation-Phase anders ausfallen, kann `will-change: background-position` den Compositor-Layer forcieren
 
