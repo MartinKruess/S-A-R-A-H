@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
 import type { RouterService } from '../services/llm/router-service.js';
@@ -149,7 +149,6 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     // Wizard was maximized — restore to splash size and center
     mainWindow.unmaximize();
     mainWindow.setSize(800, 600);
-    const { screen } = require('electron');
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     mainWindow.setPosition(
       Math.round((screenW - 800) / 2),
@@ -206,7 +205,6 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    const { screen } = require('electron');
     const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const targetW = Math.round(screenH * 0.3);
     const targetH = Math.round(screenH * 0.33);

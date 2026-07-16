@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
@@ -92,7 +92,6 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
       return;
     }
 
-    const { screen } = require('electron');
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const w = Math.round(screenW * 0.8);
     const h = Math.round(screenH * 0.8);
