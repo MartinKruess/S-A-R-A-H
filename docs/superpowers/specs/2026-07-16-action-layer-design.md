@@ -80,6 +80,7 @@ private async emitAssistantResponse(text: string): Promise<void>
 Regeln:
 
 - Eingehende `action:result` werden über die Warteschlange dieser Methode ausgegeben — trifft ein Suchergebnis während eines laufenden Worker-Streams ein, wartet es, bis der Stream fertig ist.
+- **Sprech-Reihenfolge:** Wer zuerst *fertig* ist, spricht zuerst — unabhängige Action-Ergebnisse müssen nicht auf früher gestellte, noch laufende Anfragen warten. Garantiert wird nur: nie mitten in eine laufende Ausgabe (Serialisierung), und Historie/DB in exakt der gesprochenen Reihenfolge.
 - Der Router hält eine Map `pendingActions: Map<requestId, …>`. Ergebnisse ohne bekannten `requestId` (z. B. nach `destroy()` oder doppelt) werden verworfen und geloggt.
 - Aktionen werden nur geparst/emittiert, wenn `status === 'running'`. Nach `destroy()` emittiert nichts mehr auf den Bus (Shutdown-Guard in `emitAssistantResponse`).
 - Timer-Abläufe kommen als `action:notify` — bewusst **ohne** Bindung an die auslösende, längst vergangene User-Nachricht; die Ansage ist neutral formuliert („Dein 10-Minuten-Timer ist abgelaufen.").
@@ -119,7 +120,7 @@ Keine neuen externen Dateien, keine Compose-Änderung, nichts zu packagen. Einzi
 | `web_search` | `z.string().min(2).max(200)` | SearchService (§7) |
 | `show_browser` | `z.string().max(100)` (Index 1–8 oder Stichwort) | Nur gegen die aktuelle Ergebnis-Session (§7). Stichwort-Match nur bei eindeutigem Treffer, sonst Rückfrage. **Nur gemerkte, kanonisch validierte URLs, nie LLM-URLs** |
 | `set_volume` | `z.coerce.number().int().min(0).max(100)` | Wert außerhalb → Ablehnung mit `speak`, kein stilles Klemmen. **Implementierung erst nach Spike** (§5a) |
-| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout` bei Standby); Ablauf → `action:notify`, einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf |
+| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout` bei Standby); Ablauf → `action:notify` mit Dauer („Dein 10-Minuten-Timer ist abgelaufen."), einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf. **Kein Abbruch in V1** (bewusste Entscheidung 16.07. — Timer laufen einfach ab, „Stopp den Timer" wird ehrlich abgelehnt wie jede unbekannte Aktion) |
 | `lock_screen` | kein Param | `execFile('rundll32.exe', ['user32.dll,LockWorkStation'])` — fester Binary-Name + festes Args-Array, keine Interpolation; `error`/Exit-Code behandelt |
 
 ### 5a. Plattform-Guard & Lautstärke-Spike (Review-Punkt 10)
@@ -248,4 +249,4 @@ Der Code hat bereits: `type: 'exe' | 'launcher' | 'appx' | 'updater'` im Schema,
 
 ## 12. V2+ Ausblick (bewusst nicht V1)
 
-Ganze Seiten lesen (lokal gekürzt vs. Backend), Mehrschritt-Aktionen, Programme schließen/steuern, Timer-Persistenz, `updater`-Pfad-Korrektur/Migration, `SearchProvider` fürs Abo-Backend, Aktions-Historie im Cockpit.
+Ganze Seiten lesen (lokal gekürzt vs. Backend), Mehrschritt-Aktionen, Programme schließen/steuern, Timer-Abbruch + benannte Timer („Pizza-Timer", braucht Nummern-/Label-Disambiguierung — Design-Skizze war: kleinste freie Nummer 1–5, Bestätigung nennt Nummer, bei mehrdeutigem Abbruch Rückfrage statt Raten), Timer-Persistenz, `updater`-Pfad-Korrektur/Migration, `SearchProvider` fürs Abo-Backend, Aktions-Historie im Cockpit.
