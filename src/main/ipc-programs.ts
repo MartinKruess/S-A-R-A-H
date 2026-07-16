@@ -37,7 +37,11 @@ const mapProgramResult = (result: ProgramScanResult): ProgramOption => ({
 export function registerProgramHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
     try {
-      if (!folderPath || !fs.existsSync(folderPath)) return [];
+      if (typeof folderPath !== 'string' || folderPath.length === 0 || folderPath.length > 500) {
+        console.warn('[IPC] invalid payload for scan-folder-exes');
+        return [];
+      }
+      if (!fs.existsSync(folderPath)) return [];
       const results: { name: string; path: string }[] = [];
       const seen = new Set<string>();
 

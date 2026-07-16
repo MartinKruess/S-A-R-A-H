@@ -38,7 +38,7 @@ export class VramManager {
     }
   }
 
-  async swapModels(unload: string, _load: string): Promise<void> {
+  async swapModels(unload: string): Promise<void> {
     await this.unloadModel(unload);
     // The new model is loaded automatically by Ollama on the next chat request.
   }

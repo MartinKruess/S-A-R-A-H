@@ -18,6 +18,7 @@ export type BusEvents = {
   'voice:play-audio':    { audio: number[]; sampleRate: number };
   'voice:done':          Record<string, never>;
   'voice:error':         { message: string };
+  'voice:capability':    { stt: boolean; tts: boolean };
   'voice:interrupted':   Record<string, never>;
   'voice:wake':          Record<string, never>;
   'voice:playback-done': Record<string, never>;

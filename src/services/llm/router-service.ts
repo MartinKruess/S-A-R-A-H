@@ -40,7 +40,18 @@ export class RouterService implements SarahService {
     this.worker = new WorkerService(workerProvider);
   }
 
-  async init(): Promise<void> {
+  private initPromise: Promise<void> | null = null;
+
+  // init() is single-flight (A8): repeated calls return the same promise,
+  // so the eager boot call and registry.initAll() cannot double-initialize.
+  init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
     const available = await this.routerProvider.isAvailable();
     if (!available) {
       this.status = 'error';
@@ -116,7 +127,7 @@ export class RouterService implements SarahService {
     });
 
     const llmConfig = this.context.parsedConfig.llm;
-    await this.vramManager.swapModels(llmConfig.routerModel, llmConfig.workerModel);
+    await this.vramManager.swapModels(llmConfig.routerModel);
     this.context.bus.emit(this.id, 'llm:model-swap', {
       loading: llmConfig.workerModel,
       unloading: llmConfig.routerModel,
