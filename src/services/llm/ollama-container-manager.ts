@@ -86,7 +86,8 @@ export class OllamaContainerManager {
           container: 'unknown',
         };
       }
-      if ((e.stderr ?? '').includes('No such object')) {
+      // Docker < 29 says "No such object", Docker >= 29 lowercase "no such object"
+      if ((e.stderr ?? '').toLowerCase().includes('no such object')) {
         return { docker: 'ok', container: 'missing' };
       }
       return { docker: 'not-running', container: 'unknown' };

@@ -71,6 +71,13 @@ describe('OllamaContainerManager.getStatus', () => {
     expect(await manager.getStatus()).toEqual({ docker: 'ok', container: 'missing' });
   });
 
+  it('reports missing container with lowercase stderr (Docker >= 29)', async () => {
+    const { manager } = createManager({
+      execResults: [execError('error: no such object: sarah-ollama')],
+    });
+    expect(await manager.getStatus()).toEqual({ docker: 'ok', container: 'missing' });
+  });
+
   it('distinguishes docker-not-installed via ENOENT + missing install path', async () => {
     const { manager } = createManager({
       execResults: [enoentError()],
