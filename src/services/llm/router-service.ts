@@ -40,7 +40,18 @@ export class RouterService implements SarahService {
     this.worker = new WorkerService(workerProvider);
   }
 
+  private initPromise: Promise<void> | null = null;
+
+  // init() is single-flight (A8): repeated calls return the same promise,
+  // so the eager boot call and registry.initAll() cannot double-initialize.
   async init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
     const available = await this.routerProvider.isAvailable();
     if (!available) {
       this.status = 'error';

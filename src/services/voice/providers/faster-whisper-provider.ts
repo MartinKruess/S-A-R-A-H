@@ -18,7 +18,17 @@ export class FasterWhisperProvider implements SttProvider {
     this.scriptPath = path.join(resourcesPath, 'whisper', 'faster-whisper-server.py');
   }
 
+  private initPromise: Promise<void> | null = null;
+
+  // init() is single-flight (A8): repeated calls return the same promise.
   async init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
     // Idempotency guard — skip if server is already running
     if (this.serverProcess) return;
 

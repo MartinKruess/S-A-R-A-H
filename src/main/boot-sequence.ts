@@ -95,7 +95,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       send('piper-ready');
 
       // Wire up remaining service plumbing (TtsQueue, hotkeys, subscriptions, status)
-      // Provider inits are idempotent, so double-calling is safe
+      // init() is single-flight (A8): repeated calls return the same promise
       const ctx = getAppContext();
       await ctx.registry.initAll().catch((err) => {
         console.error('[Boot] Service wiring failed:', err);
