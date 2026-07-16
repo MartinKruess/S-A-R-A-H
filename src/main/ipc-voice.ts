@@ -52,6 +52,7 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   forwardToRenderers(bus, 'voice:speaking');
   forwardToRenderers(bus, 'voice:done');
   forwardToRenderers(bus, 'voice:error');
+  forwardToRenderers(bus, 'voice:capability');
   forwardToRenderers(bus, 'voice:interrupted');
   forwardToRenderers(bus, 'voice:wake');
   forwardToRenderers(bus, 'voice:play-audio');

@@ -98,6 +98,7 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   };
 
   const applyState = (payload: { state: VoiceState }): void => {
+    if (ttsOffline) return; // offline notice wins over transient states
     stateEl.dataset.state = payload.state;
     stateEl.textContent = labelFor(payload.state);
   };
@@ -113,6 +114,14 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   const audioSync = createAudioSync('VoiceOut', applyAudio);
 
   let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
+  let ttsOffline = false;
+  let unsubCapability: (() => void) | null = sarah.voice.onCapability(({ tts }) => {
+    ttsOffline = !tts;
+    if (ttsOffline) {
+      stateEl.dataset.state = 'error';
+      stateEl.textContent = 'Stimme offline — Antworten nur als Text';
+    }
+  });
   window.addEventListener('audio:output-level', applyLevel);
 
   sarah.voice
@@ -126,6 +135,10 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
     if (unsubState) {
       unsubState();
       unsubState = null;
+    }
+    if (unsubCapability) {
+      unsubCapability();
+      unsubCapability = null;
     }
     window.removeEventListener('audio:output-level', applyLevel);
     audioSync.dispose();

@@ -17,6 +17,7 @@ export interface SarahVoiceApi {
   onPlayAudio(cb: (data: BusEvents['voice:play-audio']) => void): () => void;
   playbackDone(): Promise<void>;
   onError(cb: (data: BusEvents['voice:error']) => void): () => void;
+  onCapability(cb: (data: BusEvents['voice:capability']) => void): () => void;
   setInteractionMode(mode: 'chat' | 'voice'): Promise<void>;
   sendAudioChunk(chunk: number[]): Promise<void>;
   configChanged(): Promise<void>;
