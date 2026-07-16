@@ -8,6 +8,7 @@ import type { PiperProvider } from '../services/voice/providers/piper-provider.j
 import type { FasterWhisperProvider } from '../services/voice/providers/faster-whisper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
+import { isValidChatMessage } from './ipc-validation.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
@@ -111,6 +112,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
 
   // Splash TTS handler (uses Piper directly, VoiceService not wired yet)
   ipcMain.handle('splash-tts', async (_event, text: string) => {
+    if (!isValidChatMessage(text)) {
+      console.warn('[IPC] invalid payload for splash-tts');
+      return;
+    }
     try {
       const audio = await piperProvider.speak(text);
       const mainWindow = getMainWindow();
@@ -158,6 +163,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
   });
 
   ipcMain.handle('chat-message', async (_event, text: string) => {
+    if (!isValidChatMessage(text)) {
+      console.warn('[IPC] invalid payload for chat-message');
+      return;
+    }
     const ctx = getAppContext();
     const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
