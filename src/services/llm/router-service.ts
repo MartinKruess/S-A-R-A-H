@@ -116,7 +116,7 @@ export class RouterService implements SarahService {
     });
 
     const llmConfig = this.context.parsedConfig.llm;
-    await this.vramManager.swapModels(llmConfig.routerModel, llmConfig.workerModel);
+    await this.vramManager.swapModels(llmConfig.routerModel);
     this.context.bus.emit(this.id, 'llm:model-swap', {
       loading: llmConfig.workerModel,
       unloading: llmConfig.routerModel,
