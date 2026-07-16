@@ -1,4 +1,4 @@
-import type { StorageProvider, Filter } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
 import { encrypt, decrypt } from '../crypto/crypto.js';
 
 /** Columns that should NOT be encrypted (structural, used for filtering). */
@@ -51,6 +51,10 @@ export class EncryptedStorage implements StorageProvider {
 
   async delete(table: string, filter: Filter): Promise<number> {
     return this.inner.delete(table, filter);
+  }
+
+  async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
+    return this.inner.queryMessagesPage(query);
   }
 
   async close(): Promise<void> {
