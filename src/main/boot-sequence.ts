@@ -3,6 +3,7 @@ import { BrowserWindow, ipcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
 import type { RouterService } from '../services/llm/router-service.js';
+import type { OllamaContainerManager } from '../services/llm/ollama-container-manager.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import type { FasterWhisperProvider } from '../services/voice/providers/faster-whisper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
@@ -14,10 +15,11 @@ export interface BootSequenceDeps {
   routerService: RouterService;
   whisperProvider: FasterWhisperProvider;
   piperProvider: PiperProvider;
+  containerManager: OllamaContainerManager;
 }
 
 export function registerBootHandlers(deps: BootSequenceDeps): void {
-  const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider } = deps;
+  const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider, containerManager } = deps;
 
   const send = (step: string, message?: string) => {
     const win = getMainWindow();
@@ -30,9 +32,16 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
   const whisperReady = whisperProvider.init().catch((err) => {
     console.error('[Boot] Whisper init failed:', err);
   });
-  const routerReady = routerService.init().catch((err) => {
-    console.error('[Boot] Router init failed:', err);
-  });
+  // Container must be up before router init — chained so the promise still
+  // starts eagerly at registration time (orb-reveal timing unchanged).
+  let containerError: string | null = null;
+  const routerReady = containerManager
+    .ensureRunning()
+    .then(() => routerService.init())
+    .catch((err) => {
+      containerError = err instanceof Error ? err.message : String(err);
+      console.error('[Boot] Ollama container/router init failed:', err);
+    });
 
   ipcMain.once('boot-ready', async () => {
     const mainWindow = getMainWindow();
@@ -45,7 +54,21 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       send('router', 'Sarah Protokoll wird initialisiert ...');
       await routerReady;
 
-      // Signal router ready — renderer starts orb reveal immediately
+      if (containerError) {
+        send('router', containerError);
+        // Keep the error readable before router-ready hides the status line
+        await new Promise((r) => setTimeout(r, 3000));
+      } else {
+        const gpu = await containerManager.checkGpu();
+        if (gpu === 'cpu') {
+          console.warn('[Boot] Ollama is running WITHOUT GPU (CPU mode)');
+          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.');
+          // Keep the warning readable before router-ready hides the status line
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+
+      // Signal router ready — renderer starts orb reveal (even if router errored)
       send('router-ready');
 
       // Whisper finishes in background; signal renderer when ready so it can enable voice
@@ -79,6 +102,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       });
     } catch (err) {
       console.error('[Boot] Activation failed:', err);
+      send('router-ready');
       send('piper-ready');
       const ctx = getAppContext();
       await ctx.registry.initAll().catch(() => {});

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
+import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
 import { PERFORMANCE_PROFILE_MAP } from './services/llm/llm-types.js';
 import { VoiceService } from './services/voice/voice-service.js';
 import { registerProgramHandlers } from './main/ipc-programs.js';
@@ -78,6 +79,13 @@ app.whenReady().then(async () => {
   const routerService = new RouterService(appContext, routerProvider, workerProvider);
   appContext.registry.register(routerService);
 
+  // Plain class, deliberately not a SarahService/registry entry (YAGNI —
+  // registry integration comes with the cockpit status display).
+  const containerManager = new OllamaContainerManager(
+    llmConfig.baseUrl,
+    path.join(app.getAppPath(), 'docker-compose.yml'),
+  );
+
   const { AudioManager } = await import('./services/voice/audio-manager.js');
   const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
   const { FasterWhisperProvider } = await import('./services/voice/providers/faster-whisper-provider.js');
@@ -134,6 +142,7 @@ app.whenReady().then(async () => {
     routerService,
     whisperProvider,
     piperProvider,
+    containerManager,
   });
 
   stopSystemMetrics = registerSystemMetricsHandlers(ipcMain, {
