@@ -14,7 +14,7 @@ const CSS = `
     flex-direction: column;
     align-items: center;
     gap: 6px;
-    color: var(--panel-accent-color, var(--cockpit-accent-cyan));
+    color: var(--sarah-accent, var(--panel-accent-color, var(--cockpit-accent-cyan)));
   }
 
   .track-wrap {
@@ -60,9 +60,9 @@ const CSS = `
     height: 100%;
     background: linear-gradient(
       to top,
-      rgba(216, 241, 255, 0.08),
-      color-mix(in srgb, currentColor 80%, transparent) 50%,
-      rgba(216, 241, 255, 0.08)
+      color-mix(in srgb, var(--sarah-accent, var(--panel-accent-color, var(--cockpit-accent-cyan))) 30%, transparent),
+      var(--sarah-accent, var(--panel-accent-color, var(--cockpit-accent-cyan))) 50%,
+      color-mix(in srgb, var(--sarah-accent, var(--panel-accent-color, var(--cockpit-accent-cyan))) 30%, transparent)
     );
     border-radius: 2px;
   }
@@ -74,9 +74,9 @@ const CSS = `
     width: 14px;
     height: 6px;
     border-radius: 2px;
-    background: currentColor;
+    background: var(--sarah-accent, var(--panel-accent-color, var(--cockpit-accent-cyan)));
     box-shadow:
-      0 0 6px color-mix(in srgb, currentColor 70%, transparent),
+      0 0 6px color-mix(in srgb, var(--sarah-accent, var(--cockpit-accent-cyan)) 70%, transparent),
       0 0 1px rgba(0, 0, 0, 0.6);
     border: none;
     cursor: pointer;
@@ -88,12 +88,12 @@ const CSS = `
 
   input[type="range"]:focus-visible::-webkit-slider-thumb {
     box-shadow:
-      0 0 0 2px color-mix(in srgb, currentColor 55%, transparent),
-      0 0 8px color-mix(in srgb, currentColor 70%, transparent);
+      0 0 0 2px color-mix(in srgb, var(--sarah-accent, var(--cockpit-accent-cyan)) 55%, transparent),
+      0 0 8px color-mix(in srgb, var(--sarah-accent, var(--cockpit-accent-cyan)) 70%, transparent);
   }
 
   .label {
-    font-family: var(--cockpit-font-heading);
+    font-family: var(--sarah-font-heading);
     font-size: 0.6rem;
     letter-spacing: 0.15em;
     color: var(--cockpit-text-dim);

@@ -1,4 +1,5 @@
-import type { ProgramEntry, ProgramType } from './wizard.js';
+import type { ProgramEntry } from '../../core/config-schema.js';
+type ProgramType = ProgramEntry['type'];
 
 export interface DetectedProgram {
   path: string;
@@ -75,10 +76,12 @@ export interface ProgramOption {
 export function createProgramDetector() {
   const detectedProgramMap = new Map<string, DetectedProgram>();
 
-  function addScannedPrograms(
-    programs: ProgramEntry[],
-    currentOptions: ProgramOption[],
-  ): void {
+  /**
+   * Registers newly-scanned programs and returns the ProgramOption[] entries
+   * for programs that weren't already in the detected map. Does not mutate caller state.
+   */
+  function addScannedPrograms(programs: ProgramEntry[]): ProgramOption[] {
+    const newOptions: ProgramOption[] = [];
     for (const prog of programs) {
       if (!detectedProgramMap.has(prog.name)) {
         detectedProgramMap.set(prog.name, {
@@ -89,9 +92,21 @@ export function createProgramDetector() {
           duplicateGroup: prog.duplicateGroup,
         });
         const warning = prog.type === 'updater' ? ' ⚠️ Updater' : prog.type === 'launcher' ? ' ⚠️ Launcher' : '';
-        currentOptions.push({ value: prog.name, label: prog.name + warning, icon: getIcon(prog.name) });
+        newOptions.push({ value: prog.name, label: prog.name + warning, icon: getIcon(prog.name) });
       }
     }
+    return newOptions;
+  }
+
+  function getScannedExtras(excludeFromIpc: ProgramEntry[]): ProgramOption[] {
+    const excludedNames = new Set(excludeFromIpc.map(p => p.name));
+    const extras: ProgramOption[] = [];
+    for (const [name, detected] of detectedProgramMap.entries()) {
+      if (excludedNames.has(name)) continue;
+      const warning = detected.type === 'updater' ? ' ⚠️ Updater' : detected.type === 'launcher' ? ' ⚠️ Launcher' : '';
+      extras.push({ value: name, label: name + warning, icon: getIcon(name) });
+    }
+    return extras;
   }
 
   function registerDetected(programs: ProgramEntry[]): void {
@@ -133,5 +148,5 @@ export function createProgramDetector() {
     return { name, path: '', type: 'exe', source: 'manual', verified: false, aliases: [] };
   }
 
-  return { addScannedPrograms, registerDetected, buildOptions, buildProgramEntry };
+  return { addScannedPrograms, getScannedExtras, registerDetected, buildOptions, buildProgramEntry };
 }

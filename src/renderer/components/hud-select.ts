@@ -21,7 +21,7 @@ const CSS = `
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-family: var(--cockpit-font-mono);
+    font-family: var(--sarah-font-mono);
     font-size: 0.72rem;
     letter-spacing: 0.04em;
     text-transform: none;
@@ -93,7 +93,7 @@ const CSS = `
   }
 
   .option {
-    font-family: var(--cockpit-font-mono);
+    font-family: var(--sarah-font-mono);
     font-size: 0.72rem;
     letter-spacing: 0.03em;
     color: var(--cockpit-text-hud);

@@ -71,7 +71,7 @@
 .dialog-standalone {
   width: 100%;
   height: 100vh;
-  background: var(--sarah-bg-primary);
+  background: var(--sarah-bg-page);
   overflow-y: auto;
   padding: var(--sarah-space-xl);
 }
@@ -207,6 +207,12 @@
 .cmd-add-input { flex: 0 0 140px; }
 .cmd-add-prompt { flex: 1; }
 
+/* Lifts the button so its bottom edge aligns with the input *field*,
+   not with the reserved .error-msg space inside sarah-input. */
+.cmd-add sarah-button {
+  margin-bottom: calc(var(--sarah-font-size-sm) * 1.2 + var(--sarah-space-xs));
+}
+
 /* ── Save feedback ── */
 .save-feedback {
   color: var(--sarah-accent);
@@ -223,23 +229,11 @@
    When body.boot-mode is active, dashboard looks like the splash:
    dark bg, orb centered fullscreen, no sidebar/chat.
 */
-body.boot-mode {
-  background: #0a0a1a;
-}
-
 body.boot-mode .app-sidebar,
 body.boot-mode .chat-mode-toggle,
 body.boot-mode .chat-container,
 body.boot-mode .chat-input-bar {
   display: none;
-}
-
-body.boot-mode .app-layout {
-  background: #0a0a1a;
-}
-
-body.boot-mode .app-main {
-  background: #0a0a1a;
 }
 
 body.boot-mode .sarah-orb-wrapper {
@@ -325,4 +319,121 @@ body:not(.boot-mode) #boot-status,
 body:not(.boot-mode) #boot-bubble,
 body:not(.boot-mode) #genesis-overlay {
   display: none;
+}
+
+/* ── Settings Tabs Layout ── */
+.settings-tabs-wrapper {
+  margin-bottom: var(--sarah-space-xl);
+}
+
+.settings-grid .settings-field-full {
+  grid-column: 1 / -1;
+}
+
+.settings-footer-link {
+  position: fixed;
+  bottom: var(--sarah-space-xl);
+  right: var(--sarah-space-xl);
+  color: var(--sarah-text-muted);
+  font-size: var(--sarah-font-size-sm);
+  text-decoration: none;
+  transition: color var(--sarah-transition-fast);
+  z-index: var(--sarah-z-base);
+}
+
+.settings-footer-link:hover {
+  color: var(--sarah-accent);
+}
+
+.settings-abo-block {
+  margin-bottom: var(--sarah-space-lg);
+  padding: var(--sarah-space-md);
+  background: var(--sarah-bg-surface);
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+}
+
+.settings-abo-header {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--sarah-space-sm);
+}
+
+.settings-abo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sarah-space-md);
+}
+
+.settings-abo-status {
+  color: var(--sarah-text-primary);
+  font-size: var(--sarah-font-size-md);
+}
+
+.settings-links-block {
+  margin-top: var(--sarah-space-lg);
+}
+
+.settings-links-header {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-accent);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  margin-bottom: var(--sarah-space-xs);
+}
+
+.settings-links-desc {
+  font-size: var(--sarah-font-size-sm);
+  color: var(--sarah-text-muted);
+  margin-bottom: var(--sarah-space-md);
+}
+
+.settings-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-sm);
+  margin-bottom: var(--sarah-space-md);
+}
+
+.settings-links-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--sarah-space-md);
+  align-items: end;
+}
+
+.settings-links-remove {
+  padding: var(--sarah-space-sm) var(--sarah-space-md);
+  background: transparent;
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-sm);
+  color: var(--sarah-text-muted);
+  cursor: pointer;
+  font-size: var(--sarah-font-size-md);
+  min-height: 40px;
+  transition: color var(--sarah-transition-fast), border-color var(--sarah-transition-fast);
+}
+
+.settings-links-remove:hover {
+  color: var(--sarah-accent-orange);
+  border-color: var(--sarah-accent-orange);
+}
+
+.settings-links-add {
+  padding: var(--sarah-space-sm) var(--sarah-space-md);
+  background: transparent;
+  border: 1px dashed var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+  color: var(--sarah-text-secondary);
+  cursor: pointer;
+  font-size: var(--sarah-font-size-sm);
+  transition: color var(--sarah-transition-fast), border-color var(--sarah-transition-fast);
+}
+
+.settings-links-add:hover {
+  color: var(--sarah-accent);
+  border-color: var(--sarah-accent);
 }

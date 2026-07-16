@@ -1,14 +1,54 @@
 import { sarahInput } from '../../../components/sarah-input.js';
+import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
+import { sarahButton } from '../../../components/sarah-button.js';
 import { getSarah, showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
 
+const ABO_UPGRADE_URL = 'https://sarah.ai/pricing';
+
 export function createProfileSection(config: SarahConfig): HTMLElement {
   const profile = { ...config.profile };
+
+  // Leere Link-Einträge aus vorherigen Sessions räumen
+  profile.linkPreferences = (profile.linkPreferences || []).filter(
+    (l) => l.description.trim() !== '' || l.url.trim() !== ''
+  );
+
   const section = document.createElement('div');
   section.className = 'settings-section';
 
   const { header, feedback } = createSectionHeader('Profil');
   section.appendChild(header);
+
+  // Abo-Block
+  const aboBlock = document.createElement('div');
+  aboBlock.className = 'settings-abo-block';
+
+  const aboHeader = document.createElement('div');
+  aboHeader.className = 'settings-abo-header';
+  aboHeader.textContent = 'Abonnement';
+  aboBlock.appendChild(aboHeader);
+
+  const aboRow = document.createElement('div');
+  aboRow.className = 'settings-abo-row';
+
+  const aboStatus = document.createElement('div');
+  aboStatus.className = 'settings-abo-status';
+  aboStatus.textContent = 'Free Tier';
+  aboRow.appendChild(aboStatus);
+
+  const upgradeBtn = sarahButton({
+    label: 'Auf Pro upgraden',
+    onClick: () => {
+      getSarah().openExternalUrl(ABO_UPGRADE_URL).catch((err) => {
+        console.error('[profile] openExternalUrl failed:', err);
+      });
+    },
+  });
+  aboRow.appendChild(upgradeBtn);
+
+  aboBlock.appendChild(aboRow);
+  section.appendChild(aboBlock);
 
   const grid = document.createElement('div');
   grid.className = 'settings-grid';
@@ -20,17 +60,150 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Stadt',
+    label: 'Nachname (optional)',
+    value: profile.lastName || '',
+    onChange: (val) => { profile.lastName = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'Stadt (optional)',
     value: profile.city || '',
     onChange: (val) => { profile.city = val; save('profile', profile); showSaved(feedback); },
   }));
 
   grid.appendChild(sarahInput({
-    label: 'Beruf',
+    label: 'Adresse (optional)',
+    value: profile.address || '',
+    onChange: (val) => { profile.address = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'PLZ (optional)',
+    value: profile.postalCode || '',
+    onChange: (val) => { profile.postalCode = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'Geburtsdatum (optional)',
+    type: 'date',
+    value: profile.birthday || '',
+    onChange: (val) => { profile.birthday = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'E-Mail (optional)',
+    type: 'email',
+    value: profile.email || '',
+    onChange: (val) => { profile.email = val; save('profile', profile); showSaved(feedback); },
+  }));
+
+  grid.appendChild(sarahInput({
+    label: 'Beruf (optional)',
     value: profile.profession || '',
     onChange: (val) => { profile.profession = val; save('profile', profile); showSaved(feedback); },
   }));
 
+  // Hobbys spannt volle Breite des Grids via .settings-field-full
+  const hobbyOptions = (profile.hobbies || []).map((h) => ({ value: h, label: h }));
+  const hobbies = sarahTagSelect({
+    label: 'Hobbys (optional)',
+    options: hobbyOptions,
+    selected: profile.hobbies || [],
+    allowCustom: true,
+    onChange: (values) => {
+      profile.hobbies = values;
+      save('profile', profile);
+      showSaved(feedback);
+    },
+  });
+  hobbies.classList.add('settings-field-full');
+  grid.appendChild(hobbies);
+
   section.appendChild(grid);
+
+  // Linksammlung
+  const linksBlock = document.createElement('div');
+  linksBlock.className = 'settings-links-block';
+
+  const linksHeader = document.createElement('div');
+  linksHeader.className = 'settings-links-header';
+  linksHeader.textContent = 'Linksammlung';
+  linksBlock.appendChild(linksHeader);
+
+  const linksDesc = document.createElement('div');
+  linksDesc.className = 'settings-links-desc';
+  linksDesc.textContent = 'Hinterlege Webseiten, die Sarah bei passenden Anfragen bevorzugen soll. Beispiel: „Hotels buchen" → booking.com.';
+  linksBlock.appendChild(linksDesc);
+
+  const linksList = document.createElement('div');
+  linksList.className = 'settings-links-list';
+  linksBlock.appendChild(linksList);
+
+  const renderLinkRow = (entry: typeof profile.linkPreferences[number]): HTMLElement => {
+    const row = document.createElement('div');
+    row.className = 'settings-links-row';
+    row.dataset.linkId = entry.id;
+
+    const descInput = sarahInput({
+      label: 'Beschreibung',
+      placeholder: 'z.B. Hotels und Reisen buchen',
+      value: entry.description,
+      onChange: (val) => {
+        entry.description = val;
+        save('profile', profile);
+        showSaved(feedback);
+      },
+    });
+
+    const urlInput = sarahInput({
+      label: 'URL',
+      type: 'url',
+      placeholder: 'https://...',
+      value: entry.url,
+      onChange: (val) => {
+        entry.url = val;
+        save('profile', profile);
+        showSaved(feedback);
+      },
+    });
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'settings-links-remove';
+    removeBtn.textContent = '✕';
+    removeBtn.setAttribute('aria-label', 'Eintrag entfernen');
+    removeBtn.addEventListener('click', () => {
+      profile.linkPreferences = profile.linkPreferences.filter(l => l.id !== entry.id);
+      row.remove();
+      save('profile', profile);
+      showSaved(feedback);
+    });
+
+    row.appendChild(descInput);
+    row.appendChild(urlInput);
+    row.appendChild(removeBtn);
+    return row;
+  };
+
+  for (const entry of profile.linkPreferences) {
+    linksList.appendChild(renderLinkRow(entry));
+  }
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'settings-links-add';
+  addBtn.textContent = '+ Eintrag hinzufügen';
+  addBtn.addEventListener('click', () => {
+    const newEntry = { id: crypto.randomUUID(), description: '', url: '' };
+    profile.linkPreferences.push(newEntry);
+    linksList.appendChild(renderLinkRow(newEntry));
+    save('profile', profile);
+    showSaved(feedback);
+  });
+  linksBlock.appendChild(addBtn);
+
+  section.appendChild(linksBlock);
+
   return section;
 }
+

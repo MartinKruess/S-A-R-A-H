@@ -1,9 +1,23 @@
 :root {
   /* Background */
-  --sarah-bg-primary: #0a0a1a;
-  --sarah-bg-secondary: #12122a;
+  --sarah-bg-primary: #05070d;
+  --sarah-bg-secondary: #0b1220;
+  --sarah-bg-panel: rgba(11, 18, 32, 0.72);
   --sarah-bg-surface: rgba(255, 255, 255, 0.03);
   --sarah-bg-surface-hover: rgba(255, 255, 255, 0.06);
+  --sarah-bg-page:
+    radial-gradient(ellipse at center, var(--sarah-bg-secondary) 0%, var(--sarah-bg-primary) 80%),
+    var(--sarah-bg-primary);
+
+  /* Panel accent gradients (Cockpit theme-aware) */
+  --sarah-panel-accent-gradient-cyan:
+    linear-gradient(135deg, var(--cockpit-accent-cyan), var(--cockpit-accent-violet));
+  --sarah-panel-accent-gradient-violet:
+    linear-gradient(135deg, var(--cockpit-accent-violet), var(--cockpit-accent-pink));
+  --sarah-panel-accent-gradient-pink:
+    linear-gradient(135deg, var(--cockpit-accent-pink), var(--cockpit-accent-cyan));
+  --sarah-panel-accent-gradient-mint:
+    linear-gradient(135deg, var(--cockpit-accent-mint), var(--cockpit-accent-cyan));
 
   /* Text */
   --sarah-text-primary: #e8e8f0;
@@ -62,7 +76,9 @@
   --sarah-transition-slow: 600ms ease;
 
   /* Typography */
-  --sarah-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sarah-font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --sarah-font-heading: 'Orbitron', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --sarah-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
   --sarah-font-size-sm: 0.85rem;
   --sarah-font-size-md: 1rem;
   --sarah-font-size-lg: 1.25rem;
@@ -70,9 +86,6 @@
   --sarah-font-size-xxl: 3rem;
 
   /* Cockpit palette (frozen — independent of user accent) */
-  --cockpit-bg-void: #05070d;
-  --cockpit-bg-deep: #0b1220;
-  --cockpit-bg-panel: rgba(11, 18, 32, 0.72);
   --cockpit-accent-cyan: #00e5ff;
   --cockpit-accent-violet: #7c3aed;
   --cockpit-accent-pink: #ff2fd1;
@@ -80,13 +93,69 @@
   --cockpit-accent-red: #ff3b3b;
   --cockpit-text-hud: #d8f1ff;
   --cockpit-text-dim: #7b86b8;
-  --cockpit-border-glow: linear-gradient(135deg, #00e5ff 0%, #7c3aed 50%, #ff2fd1 100%);
-  --cockpit-font-heading: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --cockpit-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --cockpit-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  --cockpit-border-glow: linear-gradient(135deg, var(--cockpit-accent-cyan) 0%, var(--cockpit-accent-violet) 50%, var(--cockpit-accent-pink) 100%);
   --cockpit-font-hud-xs: 0.7rem;
   --cockpit-font-hud-sm: 0.85rem;
   --cockpit-font-hud-md: 1.05rem;
   --cockpit-font-hud-lg: 1.6rem;
   --cockpit-font-hud-xl: 2.4rem;
+}
+
+/* ── Theme: Orange — warm accent palette ── */
+:root[data-theme="orange"] {
+  --sarah-accent: #ff8844;           /* User signature (Slider, Hero-Caption) */
+  --cockpit-accent-cyan: #ffd23f;    /* CPU-Ring: golden yellow */
+  --cockpit-accent-violet: #e76f51;  /* GPU-Ring: coral */
+  --cockpit-accent-pink: #f94144;    /* RAM-Ring: warm red */
+  /* --cockpit-accent-mint bleibt mint (Listening-state semantischer Anker) */
+  /* --sarah-bg-primary / -secondary bleiben (dark anchor) */
+  /* Gradients erben aus :root — ziehen automatisch neue --cockpit-accent-* Werte */
+}
+
+/* ── Theme: Blue — kühle Palette ── */
+:root[data-theme="blue"] {
+  --sarah-accent: #4466ff;
+  --cockpit-accent-cyan: #60a5fa;    /* CPU-Ring: sky blue */
+  --cockpit-accent-violet: #8b5cf6;  /* GPU-Ring: deep violet */
+  --cockpit-accent-pink: #06b6d4;    /* RAM-Ring: cyan-teal */
+}
+
+/* ── Theme: Violet — tiefe Purpur-Palette ── */
+:root[data-theme="violet"] {
+  --sarah-accent: #8855ff;
+  --cockpit-accent-cyan: #a78bfa;    /* CPU-Ring: lavender */
+  --cockpit-accent-violet: #ec4899;  /* GPU-Ring: magenta */
+  --cockpit-accent-pink: #60a5fa;    /* RAM-Ring: sky blue */
+}
+
+/* ── Theme: Green — Natur-Palette ── */
+:root[data-theme="green"] {
+  --sarah-accent: #44ff88;
+  --cockpit-accent-cyan: #84cc16;    /* CPU-Ring: lime */
+  --cockpit-accent-violet: #0d9488;  /* GPU-Ring: deep teal */
+  --cockpit-accent-pink: #fbbf24;    /* RAM-Ring: amber (warm contrast) */
+}
+
+/* ── Theme: Pink — lebhafte Palette ── */
+:root[data-theme="pink"] {
+  --sarah-accent: #ff4488;
+  --cockpit-accent-cyan: #fb7185;    /* CPU-Ring: coral-pink */
+  --cockpit-accent-violet: #a855f7;  /* GPU-Ring: purple */
+  --cockpit-accent-pink: #fb923c;    /* RAM-Ring: orange (warm contrast) */
+}
+
+/* ── Theme: Gold — warm-luxuriöse Palette ── */
+:root[data-theme="gold"] {
+  --sarah-accent: #ffcc00;
+  --cockpit-accent-cyan: #fde047;    /* CPU-Ring: bright yellow */
+  --cockpit-accent-violet: #fb923c;  /* GPU-Ring: orange */
+  --cockpit-accent-pink: #c084fc;    /* RAM-Ring: lavender (cool contrast) */
+}
+
+/* ── Theme: Red — intensive Palette ── */
+:root[data-theme="red"] {
+  --sarah-accent: #ff5555;
+  --cockpit-accent-cyan: #fb7185;    /* CPU-Ring: rose */
+  --cockpit-accent-violet: #f97316;  /* GPU-Ring: orange */
+  --cockpit-accent-pink: #a855f7;    /* RAM-Ring: purple (cool contrast) */
 }

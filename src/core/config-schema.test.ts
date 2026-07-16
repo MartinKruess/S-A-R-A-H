@@ -80,4 +80,44 @@ describe('SarahConfigSchema', () => {
     expect(result.controls.pushToTalkKey).toBe('F10');
     expect(result.llm.workerModel).toBe('qwen3:8b');
   });
+
+  it('profile has new optional field defaults', () => {
+    const result = SarahConfigSchema.parse({});
+    expect(result.profile.postalCode).toBe('');
+    expect(result.profile.birthday).toBe('');
+    expect(result.profile.email).toBe('');
+    expect(result.profile.linkPreferences).toEqual([]);
+  });
+
+  it('profile.birthday accepts ISO YYYY-MM-DD and empty string', () => {
+    const withDate = SarahConfigSchema.parse({ profile: { birthday: '1990-03-15' } });
+    expect(withDate.profile.birthday).toBe('1990-03-15');
+    const empty = SarahConfigSchema.parse({ profile: { birthday: '' } });
+    expect(empty.profile.birthday).toBe('');
+  });
+
+  it('profile.birthday rejects freeform text', () => {
+    const result = SarahConfigSchema.safeParse({ profile: { birthday: 'gestern' } });
+    expect(result.success).toBe(false);
+  });
+
+  it('linkPreferences entries get a generated id when missing', () => {
+    const result = SarahConfigSchema.parse({
+      profile: {
+        linkPreferences: [{ description: 'Hotels', url: 'https://booking.com' }],
+      },
+    });
+    expect(result.profile.linkPreferences).toHaveLength(1);
+    expect(typeof result.profile.linkPreferences[0].id).toBe('string');
+    expect(result.profile.linkPreferences[0].id.length).toBeGreaterThan(0);
+  });
+
+  it('linkPreferences entries preserve explicit id', () => {
+    const result = SarahConfigSchema.parse({
+      profile: {
+        linkPreferences: [{ id: 'fixed-id', description: 'X', url: 'https://x' }],
+      },
+    });
+    expect(result.profile.linkPreferences[0].id).toBe('fixed-id');
+  });
 });

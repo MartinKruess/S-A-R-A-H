@@ -16,7 +16,7 @@ declare var sarah: {
 };
 
 interface BootStatus {
-  step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
+  step: 'whisper' | 'router' | 'router-ready' | 'whisper-ready' | 'piper' | 'piper-ready';
   message?: string;
 }
 
@@ -341,6 +341,9 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
           break;
         case 'router-ready':
           routerReady = true;
+          hideStatus();
+          break;
+        case 'whisper-ready':
           hideStatus();
           break;
         case 'piper-ready':

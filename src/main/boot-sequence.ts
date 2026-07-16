@@ -49,8 +49,8 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
 
     try {
       send('whisper', 'Spracherkennung wird aktiviert ...');
-      await whisperReady;
 
+      // Router determines orb reveal — don't block on whisper (takes 30-45s cold)
       send('router', 'Sarah Protokoll wird initialisiert ...');
       await routerReady;
 
@@ -70,6 +70,11 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
 
       // Signal router ready — renderer starts orb reveal (even if router errored)
       send('router-ready');
+
+      // Whisper finishes in background; signal renderer when ready so it can enable voice
+      whisperReady
+        .then(() => { send('whisper-ready'); })
+        .catch(() => { send('whisper-ready'); });
 
       // Wait for reveal animation to finish (renderer sends reveal-done IPC)
       await new Promise<void>((resolve) => {

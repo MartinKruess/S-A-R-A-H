@@ -1,3 +1,20 @@
+export type ThemeKey = 'cyan' | 'blue' | 'violet' | 'orange' | 'green' | 'pink' | 'gold' | 'red';
+
+const ACCENT_TO_THEME: Record<string, ThemeKey> = {
+  '#00d4ff': 'cyan',
+  '#4466ff': 'blue',
+  '#8855ff': 'violet',
+  '#ff8844': 'orange',
+  '#44ff88': 'green',
+  '#ff4488': 'pink',
+  '#ffcc00': 'gold',
+  '#ff5555': 'red',
+};
+
+export function colorToTheme(hex: string): ThemeKey {
+  return ACCENT_TO_THEME[hex.toLowerCase()] ?? 'cyan';
+}
+
 function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
   const match = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!match) return null;
@@ -18,4 +35,5 @@ export function applyAccentColor(hex: string): void {
     document.documentElement.style.setProperty('--sarah-accent-rgb', `${rgb.r}, ${rgb.g}, ${rgb.b}`);
     document.documentElement.style.setProperty('--sarah-accent-hover', lighten(rgb.r, rgb.g, rgb.b));
   }
+  document.documentElement.setAttribute('data-theme', colorToTheme(hex));
 }

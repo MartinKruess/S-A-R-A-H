@@ -44,6 +44,7 @@ export interface SarahApi {
   detectPrograms(): Promise<ProgramEntry[]>;
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;
   openDialog(view: string): Promise<void>;
+  openExternalUrl(url: string): Promise<void>;
   chat(message: string): Promise<void>;
   onChatChunk(cb: (data: BusEvents['llm:chunk']) => void): () => void;
   onChatDone(cb: (data: BusEvents['llm:done']) => void): () => void;

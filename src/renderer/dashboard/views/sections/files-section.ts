@@ -3,6 +3,7 @@ import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
 import { PDF_CATEGORY_OPTIONS } from '../../../shared/pdf-constants.js';
 import { createPdfBlock } from '../../../shared/pdf-block.js';
 import { showSaved, createSectionHeader, save } from '../../../shared/settings-utils.js';
+import { createProgramPicker } from '../../../shared/program-picker.js';
 import type { SarahConfig, PdfCategory } from '../../../../core/config-schema.js';
 
 export function createFilesSection(config: SarahConfig): HTMLElement {
@@ -13,6 +14,23 @@ export function createFilesSection(config: SarahConfig): HTMLElement {
 
   const { header, feedback } = createSectionHeader('Dateien & Ordner');
   section.appendChild(header);
+
+  // Program-Picker (geshared mit Wizard)
+  const programPicker = createProgramPicker({
+    initialSelected: resources.programs,
+    onChange: (entries) => {
+      resources.programs = entries;
+      save('resources', resources);
+      showSaved(feedback);
+    },
+    includeFolderScanners: false,
+  });
+  section.appendChild(programPicker);
+
+  const programPickerHint = document.createElement('div');
+  programPickerHint.className = 'program-picker-hint';
+  programPickerHint.textContent = 'Nach Ordner-Änderung App neu starten, um neue Programme zu erfassen.';
+  section.appendChild(programPickerHint);
 
   const grid = document.createElement('div');
   grid.className = 'settings-grid';

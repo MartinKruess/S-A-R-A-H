@@ -34,6 +34,12 @@ export class FasterWhisperProvider implements SttProvider {
       // No old server running — expected
     }
 
+    // Rejects immediately if Python is not found or the process fails to start
+    let rejectOnSpawnError!: (err: Error) => void;
+    const spawnFailed = new Promise<never>((_, reject) => {
+      rejectOnSpawnError = reject;
+    });
+
     // Start the Python server process
     this.serverProcess = spawn('python', [
       this.scriptPath,
@@ -52,10 +58,12 @@ export class FasterWhisperProvider implements SttProvider {
 
     this.serverProcess.on('error', (err) => {
       console.error('[FasterWhisper] Server process error:', err.message);
+      this.serverProcess = null;
+      rejectOnSpawnError(new Error(`Failed to start faster-whisper (is Python in PATH?): ${err.message}`));
     });
 
-    // Wait for server to be ready
-    await this.waitForServer();
+    // Wait for server to be ready, abort immediately if the process itself fails
+    await Promise.race([this.waitForServer(), spawnFailed]);
   }
 
   async transcribe(audio: Float32Array, sampleRate: number, language = 'de'): Promise<string> {

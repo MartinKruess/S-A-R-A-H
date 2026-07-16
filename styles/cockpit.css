@@ -2,7 +2,7 @@
    padding + max-width from .dialog-standalone in dashboard.css */
 .dialog-standalone.view-dashboard {
   padding: 0;
-  background: var(--cockpit-bg-void);
+  background: var(--sarah-bg-primary);
 }
 .dialog-standalone.view-dashboard > * {
   max-width: none;
@@ -25,12 +25,12 @@
   width: 100%;
   height: 100vh;
   background:
-    radial-gradient(circle 900px at 50% 35%, rgba(0, 229, 255, 0.08) 0%, transparent 55%),
-    radial-gradient(circle 700px at 50% 80%, rgba(124, 58, 237, 0.07) 0%, transparent 55%),
-    radial-gradient(ellipse at center, var(--cockpit-bg-deep) 0%, var(--cockpit-bg-void) 80%),
-    var(--cockpit-bg-void);
+    radial-gradient(circle 900px at 50% 35%, color-mix(in srgb, var(--cockpit-accent-cyan) 8%, transparent) 0%, transparent 55%),
+    radial-gradient(circle 700px at 50% 80%, color-mix(in srgb, var(--cockpit-accent-violet) 7%, transparent) 0%, transparent 55%),
+    radial-gradient(ellipse at center, var(--sarah-bg-secondary) 0%, var(--sarah-bg-primary) 80%),
+    var(--sarah-bg-primary);
   color: var(--cockpit-text-hud);
-  font-family: var(--cockpit-font-body);
+  font-family: var(--sarah-font-family);
 }
 
 .cockpit-sysload  { grid-area: sysload; }
@@ -69,7 +69,7 @@
 .cockpit-greeting {
   display: flex;
   align-items: center;
-  font-family: var(--cockpit-font-heading);
+  font-family: var(--sarah-font-heading);
   font-size: var(--cockpit-font-hud-lg);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -77,7 +77,7 @@
 }
 
 .cockpit-clock {
-  font-family: var(--cockpit-font-mono);
+  font-family: var(--sarah-font-mono);
   font-size: var(--cockpit-font-hud-md);
   color: var(--cockpit-text-dim);
   font-variant-numeric: tabular-nums;
@@ -112,12 +112,12 @@
   height: 100%;
   border-radius: 50%;
   background:
-    radial-gradient(circle at 30% 30%, rgba(255, 47, 209, 0.4) 0%, transparent 35%),
-    radial-gradient(circle at 70% 70%, rgba(124, 58, 237, 0.35) 0%, transparent 45%),
-    radial-gradient(circle at 50% 50%, var(--cockpit-accent-cyan) 0%, rgba(0, 229, 255, 0.6) 25%, rgba(11, 18, 32, 0.95) 70%);
+    radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--cockpit-accent-pink) 40%, transparent) 0%, transparent 35%),
+    radial-gradient(circle at 70% 70%, color-mix(in srgb, var(--cockpit-accent-violet) 35%, transparent) 0%, transparent 45%),
+    radial-gradient(circle at 50% 50%, var(--cockpit-accent-cyan) 0%, color-mix(in srgb, var(--cockpit-accent-cyan) 60%, transparent) 25%, rgba(11, 18, 32, 0.95) 70%);
   box-shadow:
-    0 0 60px rgba(0, 229, 255, 0.35),
-    0 0 120px rgba(124, 58, 237, 0.25),
+    0 0 60px color-mix(in srgb, var(--cockpit-accent-cyan) 35%, transparent),
+    0 0 120px color-mix(in srgb, var(--cockpit-accent-violet) 25%, transparent),
     inset 0 0 40px rgba(5, 7, 13, 0.8);
   animation: cockpit-hero-breathe 4s ease-in-out infinite;
 }
@@ -129,11 +129,11 @@
   border-radius: 50%;
   background: conic-gradient(
     from 0deg,
-    rgba(0, 229, 255, 0) 0deg,
-    rgba(0, 229, 255, 0.4) 90deg,
-    rgba(124, 58, 237, 0.35) 180deg,
-    rgba(255, 47, 209, 0.3) 270deg,
-    rgba(0, 229, 255, 0) 360deg
+    transparent 0deg,
+    color-mix(in srgb, var(--cockpit-accent-cyan) 40%, transparent) 90deg,
+    color-mix(in srgb, var(--cockpit-accent-violet) 35%, transparent) 180deg,
+    color-mix(in srgb, var(--cockpit-accent-pink) 30%, transparent) 270deg,
+    transparent 360deg
   );
   /* Mask to carve the conic gradient into a thin ring */
   mask: radial-gradient(circle, transparent 52%, #000 54%, #000 58%, transparent 60%);
@@ -154,15 +154,15 @@
     radial-gradient(1px 1px at 20% 30%, rgba(216, 241, 255, 0.6), transparent),
     radial-gradient(1px 1px at 70% 60%, rgba(216, 241, 255, 0.4), transparent),
     radial-gradient(1px 1px at 45% 75%, rgba(216, 241, 255, 0.5), transparent),
-    radial-gradient(1.5px 1.5px at 85% 25%, rgba(34, 255, 192, 0.5), transparent),
-    radial-gradient(1px 1px at 15% 80%, rgba(255, 47, 209, 0.4), transparent);
+    radial-gradient(1.5px 1.5px at 85% 25%, color-mix(in srgb, var(--cockpit-accent-mint) 50%, transparent), transparent),
+    radial-gradient(1px 1px at 15% 80%, color-mix(in srgb, var(--cockpit-accent-pink) 40%, transparent), transparent);
   animation: cockpit-hero-grid-drift 30s linear infinite;
 }
 
 .cockpit-hero-caption {
-  font-family: var(--cockpit-font-heading);
+  font-family: var(--sarah-font-heading);
   font-size: var(--cockpit-font-hud-sm);
-  color: var(--cockpit-text-dim);
+  color: var(--sarah-accent);
   letter-spacing: 0.2em;
   text-transform: uppercase;
 }
@@ -236,7 +236,7 @@
 }
 
 .ring-text-value {
-  font-family: var(--cockpit-font-mono);
+  font-family: var(--sarah-font-mono);
   font-size: 1.35rem;
   fill: var(--cockpit-text-hud);
   font-variant-numeric: tabular-nums;
@@ -244,7 +244,7 @@
 }
 
 .ring-text-label {
-  font-family: var(--cockpit-font-heading);
+  font-family: var(--sarah-font-heading);
   font-size: 0.62rem;
   letter-spacing: 0.2em;
   fill: var(--cockpit-text-dim);
@@ -283,7 +283,7 @@
 }
 
 .voice-io-state {
-  font-family: var(--cockpit-font-heading);
+  font-family: var(--sarah-font-heading);
   font-size: var(--cockpit-font-hud-sm);
   text-transform: uppercase;
   letter-spacing: 0.18em;

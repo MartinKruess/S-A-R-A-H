@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
@@ -102,7 +102,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
       height: h,
       minWidth: 720,
       minHeight: 520,
-      backgroundColor: '#0a0a1a',
+      backgroundColor: '#05070d',
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload.js'),
         contextIsolation: true,
@@ -120,5 +120,18 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
     dialogWin.on('closed', () => {
       dialogWindows.delete(view);
     });
+  });
+
+  ipcMain.handle('open-external-url', async (_event, url: string) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error('Invalid URL');
+    }
+    if (parsed.protocol !== 'https:') {
+      throw new Error('Only https URLs are allowed');
+    }
+    await shell.openExternal(parsed.toString());
   });
 }

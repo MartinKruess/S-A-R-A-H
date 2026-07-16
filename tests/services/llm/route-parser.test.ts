@@ -47,8 +47,8 @@ describe('parseRouteTag', () => {
     expect(result).toEqual({ route: 'self', feedback: 'Zeile eins.\nZeile zwei.' });
   });
 
-  it('falls back to self for unknown route tag', () => {
+  it('falls back to 9b for unknown route tag', () => {
     const result = parseRouteTag('[ROUTE:bla] Irgendwas.');
-    expect(result).toEqual({ route: 'self', feedback: 'Irgendwas.' });
+    expect(result).toEqual({ route: '9b', feedback: 'Irgendwas.' });
   });
 });

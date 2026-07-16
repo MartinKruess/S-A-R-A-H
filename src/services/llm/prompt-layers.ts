@@ -1,6 +1,17 @@
 // src/services/llm/prompt-layers.ts
 import type { SarahConfig } from '../../core/config-schema.js';
 
+/**
+ * Normalisiert User-Input für sichere Prompt-Injection:
+ * entfernt \n/\r/\t sowie Unicode-Line-Separators U+2028/U+2029,
+ * trimmt, kappt auf 200 Zeichen.
+ *
+ * Gedacht rein für Prompt-Kontexte, nicht als allgemeiner Input-Sanitizer.
+ */
+export function sanitizePromptField(s: string): string {
+  return s.replace(/[\r\n\t\u2028\u2029]/g, ' ').trim().slice(0, 200);
+}
+
 // ── Tone mapping (de → en) ──
 
 const TONE_MAP: Record<string, string> = {
@@ -32,6 +43,9 @@ const CONFIRMATION_MAP: Record<string, string> = {
   standard: 'Ask before actions that are hard to reverse. Handle simple requests independently.',
   maximal: 'Always ask before taking any action. The user wants full control.',
 };
+
+/** Max number of link preferences injected into the user prompt (prevents prompt stuffing). */
+const MAX_LINK_ENTRIES = 20;
 
 // ── Quirk prompts (language-dependent) ──
 
@@ -98,6 +112,20 @@ export function buildCoreUser(profile: SarahConfig['profile']): string {
   }
   if (profile.hobbies.length > 0) {
     parts.push(`Their hobbies include: ${profile.hobbies.join(', ')}.`);
+  }
+
+  const validLinks = (profile.linkPreferences || [])
+    .filter(l => l.description.trim() !== '' && l.url.trim() !== '')
+    .slice(0, MAX_LINK_ENTRIES);
+  if (validLinks.length > 0) {
+    const lines = validLinks.map(
+      l => `- ${sanitizePromptField(l.description)} → ${sanitizePromptField(l.url)}`
+    );
+    parts.push(
+      'The user has defined these preferred sources:\n' +
+      lines.join('\n')
+    );
+    parts.push('When a query matches one of these descriptions, prefer the corresponding URL.');
   }
 
   parts.push('This is background info only. Do NOT bring it up unless the user asks.');
