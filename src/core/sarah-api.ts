@@ -7,6 +7,8 @@ import type { VoiceState } from '../services/voice/voice-types.js';
 export type BootStatus = {
   step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
   message?: string;
+  /** Display class for the splash status line; defaults to 'info'. */
+  severity?: 'info' | 'warning' | 'error';
 };
 
 /** Voice sub-API exposed to renderers */

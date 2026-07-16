@@ -9,6 +9,7 @@ import type { FasterWhisperProvider } from '../services/voice/providers/faster-w
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
 import { isValidChatMessage } from './ipc-validation.js';
+import { deriveBootIssue } from './boot-issues.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
@@ -22,10 +23,10 @@ export interface BootSequenceDeps {
 export function registerBootHandlers(deps: BootSequenceDeps): void {
   const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider, containerManager } = deps;
 
-  const send = (step: string, message?: string) => {
+  const send = (step: string, message?: string, severity: 'info' | 'warning' | 'error' = 'info') => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
-      win.webContents.send('boot-status', { step, message });
+      win.webContents.send('boot-status', { step, message, severity });
     }
   };
 
@@ -55,15 +56,16 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       send('router', 'Sarah Protokoll wird initialisiert ...');
       await routerReady;
 
-      if (containerError) {
-        send('router', containerError);
+      const issue = deriveBootIssue(containerError, routerService.status);
+      if (issue) {
+        send('router', issue.message, issue.severity);
         // Keep the error readable before router-ready hides the status line
         await new Promise((r) => setTimeout(r, 3000));
       } else {
         const gpu = await containerManager.checkGpu();
         if (gpu === 'cpu') {
           console.warn('[Boot] Ollama is running WITHOUT GPU (CPU mode)');
-          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.');
+          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.', 'warning');
           // Keep the warning readable before router-ready hides the status line
           await new Promise((r) => setTimeout(r, 3000));
         }
