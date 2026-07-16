@@ -54,11 +54,21 @@ export class EncryptedStorage implements StorageProvider {
   }
 
   async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
-    return this.inner.queryMessagesPage(query);
+    const rows = await this.inner.queryMessagesPage(query);
+    // Only `content` is an encrypted column in MessageRow — the rest are passthrough.
+    return rows.map((row) => ({ ...row, content: this.decryptString(row.content) }));
   }
 
   async close(): Promise<void> {
     await this.inner.close();
+  }
+
+  private decryptString(value: string): string {
+    try {
+      return JSON.parse(decrypt(value, this.key)) as string;
+    } catch {
+      return value;
+    }
   }
 
   private encryptRow(row: Record<string, unknown>): Record<string, unknown> {
