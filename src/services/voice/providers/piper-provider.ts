@@ -18,7 +18,17 @@ export class PiperProvider implements TtsProvider {
     this.voicePath = path.join(resourcesPath, 'piper', 'de_DE-thorsten-medium.onnx');
   }
 
-  async init(): Promise<void> {
+  private initPromise: Promise<void> | null = null;
+
+  // init() is single-flight (A8): repeated calls return the same promise.
+  init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
     if (!fs.existsSync(this.binaryPath)) {
       throw new Error(`Piper binary not found: ${this.binaryPath}`);
     }

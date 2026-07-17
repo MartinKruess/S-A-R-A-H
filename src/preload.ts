@@ -64,6 +64,11 @@ const api: SarahApi = {
     ipcRenderer.on('llm:error', handler);
     return () => ipcRenderer.removeListener('llm:error', handler);
   },
+  onStorageDegraded: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
+    ipcRenderer.on('storage:degraded', handler);
+    return () => ipcRenderer.removeListener('storage:degraded', handler);
+  },
 
   // Voice API
   voice: {
@@ -88,6 +93,11 @@ const api: SarahApi = {
       const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
       ipcRenderer.on('voice:error', handler);
       return () => ipcRenderer.removeListener('voice:error', handler);
+    },
+    onCapability: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: { stt: boolean; tts: boolean }) => callback(data);
+      ipcRenderer.on('voice:capability', handler);
+      return () => ipcRenderer.removeListener('voice:capability', handler);
     },
     setInteractionMode: (mode) => ipcRenderer.invoke('voice-set-interaction-mode', mode),
     sendAudioChunk: (chunk) => ipcRenderer.invoke('voice-audio-chunk', chunk),

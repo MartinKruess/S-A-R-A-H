@@ -84,19 +84,34 @@ export class VoiceService implements SarahService {
     }
   }
 
+  private capabilities = { stt: false, tts: false };
+
   async init(): Promise<void> {
+    const { controls } = this.context.parsedConfig;
+    const rawMode = controls.voiceMode;
+    // keyword mode is non-functional — treat as off
+    this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
+    this.pushToTalkKey = controls.pushToTalkKey;
+
+    // STT and TTS are independent capabilities (A5): one failing must not
+    // silently kill the other — degrade instead of dying.
     try {
-      const { controls } = this.context.parsedConfig;
-      const rawMode = controls.voiceMode;
-      // keyword mode is non-functional — treat as off
-      this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
-      this.pushToTalkKey = controls.pushToTalkKey;
-
       await this.stt.init();
+      this.capabilities.stt = true;
+    } catch (err) {
+      console.error('[VoiceService] STT init failed:', err);
+    }
+
+    try {
       await this.tts.init();
+      this.capabilities.tts = true;
+    } catch (err) {
+      console.error('[VoiceService] TTS init failed:', err);
+    }
 
-      this.setupMode();
+    this.setupMode();
 
+    if (this.capabilities.tts) {
       this.ttsQueue = new TtsQueue(
         this.tts,
         (audio, sampleRate) => {
@@ -120,12 +135,10 @@ export class VoiceService implements SarahService {
         this.audio.setPlaying(false);
         this.ttsQueue?.playbackDone();
       });
-
-      this.status = 'running';
-    } catch (err) {
-      console.error('[VoiceService] init failed:', err);
-      this.status = 'error';
     }
+
+    this.context.bus.emit(this.id, 'voice:capability', { ...this.capabilities });
+    this.status = this.capabilities.stt || this.capabilities.tts ? 'running' : 'error';
   }
 
   async destroy(): Promise<void> {

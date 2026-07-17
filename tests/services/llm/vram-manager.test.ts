@@ -75,7 +75,7 @@ describe('VramManager', () => {
         json: () => Promise.resolve({}),
       });
 
-      await manager.swapModels('phi4-mini:3.8b', 'qwen3:8b');
+      await manager.swapModels('phi4-mini:3.8b');
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);

@@ -49,10 +49,11 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
       db: {
         get: vi.fn(),
         set: vi.fn(),
-        query: vi.fn(),
+        query: vi.fn().mockResolvedValue([]),
         insert: vi.fn().mockResolvedValue(1),
         update: vi.fn(),
         delete: vi.fn(),
+        queryMessagesPage: vi.fn().mockResolvedValue([]),
         close: vi.fn(),
       },
       parsedConfig,
@@ -115,6 +116,19 @@ describe('RouterService', () => {
     expect(service.status).toBe('error');
   });
 
+  describe('init idempotence (single-flight)', () => {
+    it('runs the init body exactly once for concurrent and repeated calls', async () => {
+      await Promise.all([service.init(), service.init()]);
+      await service.init();
+      expect(routerProvider.isAvailable).toHaveBeenCalledTimes(1);
+      expect(routerProvider.chat).toHaveBeenCalledTimes(1); // warmup once
+    });
+
+    it('returns the same promise for repeated calls', () => {
+      expect(service.init()).toBe(service.init());
+    });
+  });
+
   describe('routing to self', () => {
     it('emits feedback directly and stores messages in db', async () => {
       await service.init();
@@ -135,8 +149,11 @@ describe('RouterService', () => {
       expect(chunks).toContain('Hallo Martin!');
       expect(dones).toEqual(['Hallo Martin!']);
 
-      // Messages stored in db (user + assistant)
-      const insertCalls = (context.db.insert as any).mock.calls;
+      // Messages stored in db (user + assistant) — filter out the
+      // ConversationStore's session-bootstrap insert into 'conversations'.
+      const insertCalls = (context.db.insert as any).mock.calls.filter(
+        (call: [string, Record<string, unknown>]) => call[0] === 'messages',
+      );
       expect(insertCalls.length).toBe(2);
       expect(insertCalls[0][1].role).toBe('user');
       expect(insertCalls[1][1].role).toBe('assistant');

@@ -18,6 +18,7 @@ declare var sarah: {
 interface BootStatus {
   step: 'whisper' | 'router' | 'router-ready' | 'whisper-ready' | 'piper' | 'piper-ready';
   message?: string;
+  severity?: 'info' | 'warning' | 'error';
 }
 
 // ============================================================
@@ -41,9 +42,14 @@ const statusEl = document.getElementById('boot-status')!;
 const bubbleEl = document.getElementById('boot-bubble')!;
 const genesisOverlay = document.getElementById('genesis-overlay')!;
 
-function showStatus(message: string, animated = false): void {
+function showStatus(message: string, animated = false, severity: 'info' | 'warning' | 'error' = 'info'): void {
   statusEl.classList.remove('visible');
   setTimeout(() => {
+    statusEl.classList.remove('boot-msg-error', 'boot-msg-warning');
+    if (severity === 'error') statusEl.classList.add('boot-msg-error');
+    if (severity === 'warning') statusEl.classList.add('boot-msg-warning');
+    // Errors and warnings must not look like loading animations (A6)
+    if (severity !== 'info') animated = false;
     if (animated) {
       const base = message.replace(/\s*\.{3}\s*$/, '').replace(/\s*\.\.\.\s*$/, '');
       statusEl.innerHTML = `${base} <span class="loading-dots"><span>.</span><span>.</span><span>.</span></span>`;
@@ -337,7 +343,7 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
         case 'whisper':
         case 'router':
         case 'piper':
-          if (data.message) showStatus(data.message, true);
+          if (data.message) showStatus(data.message, true, data.severity ?? 'info');
           break;
         case 'router-ready':
           routerReady = true;

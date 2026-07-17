@@ -7,6 +7,8 @@ import type { VoiceState } from '../services/voice/voice-types.js';
 export type BootStatus = {
   step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
   message?: string;
+  /** Display class for the splash status line; defaults to 'info'. */
+  severity?: 'info' | 'warning' | 'error';
 };
 
 /** Voice sub-API exposed to renderers */
@@ -17,6 +19,7 @@ export interface SarahVoiceApi {
   onPlayAudio(cb: (data: BusEvents['voice:play-audio']) => void): () => void;
   playbackDone(): Promise<void>;
   onError(cb: (data: BusEvents['voice:error']) => void): () => void;
+  onCapability(cb: (data: BusEvents['voice:capability']) => void): () => void;
   setInteractionMode(mode: 'chat' | 'voice'): Promise<void>;
   sendAudioChunk(chunk: number[]): Promise<void>;
   configChanged(): Promise<void>;
@@ -49,5 +52,6 @@ export interface SarahApi {
   onChatChunk(cb: (data: BusEvents['llm:chunk']) => void): () => void;
   onChatDone(cb: (data: BusEvents['llm:done']) => void): () => void;
   onChatError(cb: (data: BusEvents['llm:error']) => void): () => void;
+  onStorageDegraded(cb: (data: BusEvents['storage:degraded']) => void): () => void;
   voice: SarahVoiceApi;
 }

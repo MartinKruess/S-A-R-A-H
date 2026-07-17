@@ -3,6 +3,26 @@ export interface Filter {
   [column: string]: unknown;
 }
 
+/** A row from the messages table. `content` is decrypted when read via EncryptedStorage. */
+export interface MessageRow {
+  id: number;
+  conversation_id: number;
+  role: string;
+  content: string;
+  timestamp: string;
+}
+
+/** Upper bound for queryMessagesPage limits — keeps the start read small by contract. */
+export const MESSAGES_PAGE_MAX_LIMIT = 100;
+
+/** Parameters for the ordered/limited messages query. */
+export interface MessagesPageQuery {
+  /** Messages of this conversation are excluded (the current session). Integer. */
+  excludeConversationId: number;
+  /** Maximum number of rows returned. Integer in 1..MESSAGES_PAGE_MAX_LIMIT. */
+  limit: number;
+}
+
 /**
  * Abstract storage provider.
  * Currently backed by JSON files (config) and SQLite (rules/memory).
@@ -26,6 +46,13 @@ export interface StorageProvider {
 
   /** Delete rows matching filter. Returns number of deleted rows. */
   delete(table: string, filter: Filter): Promise<number>;
+
+  /**
+   * Newest messages excluding one conversation, newest first
+   * (ORDER BY id DESC, LIMIT). The only ordered/limited query the
+   * storage layer exposes — no raw SQL crosses this interface.
+   */
+  queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]>;
 
   /** Close connections and clean up. */
   close(): Promise<void>;

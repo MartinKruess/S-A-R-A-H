@@ -7,9 +7,10 @@ import { buildSystemPrompt } from './prompt-builder.js';
 import { VramManager } from './vram-manager.js';
 import { RoutingService } from './routing-service.js';
 import { WorkerService } from './worker-service.js';
+import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
+import { buildContextWindow } from './context-window.js';
+import { NUM_PREDICT_MAP } from './llm-types.js';
 
-const MAX_CONTEXT_TOKENS = 120_000;
-const CHARS_PER_TOKEN = 4;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -29,6 +30,9 @@ export class RouterService implements SarahService {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private routing: RoutingService;
   private worker: WorkerService;
+  private conversationId: number = FALLBACK_CONVERSATION_ID;
+  private startContext: ChatMessage[] = [];
+  private persistenceWarned = false;
 
   constructor(
     private context: AppContext,
@@ -40,7 +44,25 @@ export class RouterService implements SarahService {
     this.worker = new WorkerService(workerProvider);
   }
 
-  async init(): Promise<void> {
+  private initPromise: Promise<void> | null = null;
+
+  // init() is single-flight (A8): repeated calls return the same promise,
+  // so the eager boot call and registry.initAll() cannot double-initialize.
+  init(): Promise<void> {
+    if (!this.initPromise) {
+      this.initPromise = this.doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
+    const boot = await new ConversationStore(this.context.db).boot();
+    this.conversationId = boot.conversationId;
+    this.startContext = boot.startContext.map((row) => ({
+      role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+      content: row.content,
+    }));
+
     const available = await this.routerProvider.isAvailable();
     if (!available) {
       this.status = 'error';
@@ -76,7 +98,7 @@ export class RouterService implements SarahService {
     }
 
     this.history.push({ role: 'user', content: text });
-    await this.context.db.insert('messages', { conversation_id: 1, role: 'user', content: text });
+    await this.persistMessage('user', text);
 
     try {
       if (this.activeModel === '9b') {
@@ -103,7 +125,7 @@ export class RouterService implements SarahService {
       this.context.bus.emit(this.id, 'llm:chunk', { text: result.feedback });
       this.context.bus.emit(this.id, 'llm:done', { fullText: result.feedback });
       this.history.push({ role: 'assistant', content: result.feedback });
-      await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: result.feedback });
+      await this.persistMessage('assistant', result.feedback);
       return;
     }
 
@@ -116,7 +138,7 @@ export class RouterService implements SarahService {
     });
 
     const llmConfig = this.context.parsedConfig.llm;
-    await this.vramManager.swapModels(llmConfig.routerModel, llmConfig.workerModel);
+    await this.vramManager.swapModels(llmConfig.routerModel);
     this.context.bus.emit(this.id, 'llm:model-swap', {
       loading: llmConfig.workerModel,
       unloading: llmConfig.routerModel,
@@ -129,8 +151,8 @@ export class RouterService implements SarahService {
 
   private async runWorker(mode: 'chat' | 'voice'): Promise<void> {
     const systemPrompt = buildSystemPrompt(this.context.parsedConfig, mode);
-    const messages = this.buildMessages(systemPrompt);
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
+    const messages = this.buildMessages(systemPrompt, responseStyle);
 
     const { fullText, tookMs } = await this.worker.stream(messages, responseStyle, (chunk) => {
       this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
@@ -138,28 +160,48 @@ export class RouterService implements SarahService {
     this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
 
     this.history.push({ role: 'assistant', content: fullText });
-    await this.context.db.insert('messages', { conversation_id: 1, role: 'assistant', content: fullText });
+    await this.persistMessage('assistant', fullText);
     this.context.bus.emit(this.id, 'llm:done', { fullText });
   }
 
-  private buildMessages(systemPrompt: string): ChatMessage[] {
-    const system: ChatMessage = { role: 'system', content: systemPrompt };
-    const systemTokens = this.estimateTokens(systemPrompt);
-    const budget = MAX_CONTEXT_TOKENS - systemTokens;
-    const trimmed: ChatMessage[] = [];
-    let usedTokens = 0;
-    for (let i = this.history.length - 1; i >= 0; i--) {
-      const msg = this.history[i];
-      const tokens = this.estimateTokens(msg.content);
-      if (usedTokens + tokens > budget) break;
-      usedTokens += tokens;
-      trimmed.unshift(msg);
-    }
-    return [system, ...trimmed];
+  private buildMessages(systemPrompt: string, responseStyle: string): ChatMessage[] {
+    return buildContextWindow({
+      systemPrompt,
+      startContext: this.startContext,
+      history: this.history,
+      numCtx: this.context.parsedConfig.llm.workerOptions.num_ctx,
+      numPredict: NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel,
+    });
   }
 
-  private estimateTokens(text: string): number {
-    return Math.ceil(text.length / CHARS_PER_TOKEN);
+  /**
+   * Persist a turn message without ever disturbing the answer flow (Spec B, H4):
+   * failures are caught, inserts are skipped in in-memory mode, and the user
+   * sees exactly one visible warning per run.
+   */
+  private async persistMessage(role: 'user' | 'assistant', content: string): Promise<void> {
+    if (this.conversationId === FALLBACK_CONVERSATION_ID) {
+      this.warnPersistenceOnce();
+      return;
+    }
+    try {
+      await this.context.db.insert('messages', {
+        conversation_id: this.conversationId,
+        role,
+        content,
+      });
+    } catch (err) {
+      console.warn('[Router] Message persist failed (non-fatal):', err);
+      this.warnPersistenceOnce();
+    }
+  }
+
+  private warnPersistenceOnce(): void {
+    if (this.persistenceWarned) return;
+    this.persistenceWarned = true;
+    this.context.bus.emit(this.id, 'storage:degraded', {
+      message: 'Speichern nicht möglich — diese Unterhaltung wird nach einem Neustart vergessen.',
+    });
   }
 
   private resetIdleTimer(): void {

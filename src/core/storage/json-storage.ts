@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import type { StorageProvider, Filter } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
 
 /**
  * JSON file-based storage for config/settings.
@@ -77,6 +77,10 @@ export class JsonStorage implements StorageProvider {
 
   async delete(_table: string, _filter: Filter): Promise<number> {
     throw new Error('JsonStorage does not support table operations. Use SqliteStorage.');
+  }
+
+  async queryMessagesPage(_query: MessagesPageQuery): Promise<MessageRow[]> {
+    throw new Error('JsonStorage does not support message queries. Use SqliteStorage.');
   }
 
   async close(): Promise<void> {

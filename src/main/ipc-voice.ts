@@ -4,6 +4,7 @@ import type { MessageBus } from '../core/message-bus.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
 import { getService } from './ipc-helpers.js';
+import { isValidAudioChunk, isValidInteractionMode } from './ipc-validation.js';
 
 export interface VoiceHandlerDeps {
   getAppContext: () => AppContext;
@@ -22,13 +23,21 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   });
 
   ipcMain.handle('voice-audio-chunk', (_event, chunk: number[]) => {
+    if (!isValidAudioChunk(chunk)) {
+      console.warn('[IPC] invalid payload for voice-audio-chunk');
+      return;
+    }
     const samples = new Float32Array(chunk);
     getService<VoiceService>(getAppContext(), 'voice').feedAudioChunk(samples);
     if (onChunk) onChunk(samples);
   });
 
   ipcMain.handle('voice-set-interaction-mode', (_event, mode: string) => {
-    getService<VoiceService>(getAppContext(), 'voice').setInteractionMode(mode as 'chat' | 'voice');
+    if (!isValidInteractionMode(mode)) {
+      console.warn('[IPC] invalid payload for voice-set-interaction-mode');
+      return;
+    }
+    getService<VoiceService>(getAppContext(), 'voice').setInteractionMode(mode);
   });
 
   ipcMain.handle('voice-config-changed', async () => {
@@ -43,6 +52,7 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   forwardToRenderers(bus, 'voice:speaking');
   forwardToRenderers(bus, 'voice:done');
   forwardToRenderers(bus, 'voice:error');
+  forwardToRenderers(bus, 'voice:capability');
   forwardToRenderers(bus, 'voice:interrupted');
   forwardToRenderers(bus, 'voice:wake');
   forwardToRenderers(bus, 'voice:play-audio');

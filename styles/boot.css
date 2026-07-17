@@ -35,6 +35,17 @@ body.boot-mode .sarah-orb-wrapper {
   opacity: 1;
 }
 
+/* Errors and warnings must be visually distinct from loading states (A6) */
+#boot-status.boot-msg-error {
+  color: var(--cockpit-accent-red, #ff4d5e);
+  animation: none;
+}
+
+#boot-status.boot-msg-warning {
+  color: #ffb347;
+  animation: none;
+}
+
 /* Smooth loading dots animation */
 .loading-dots span {
   opacity: 0;

@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { BrowserWindow, ipcMain } from 'electron';
+import { BrowserWindow, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
 import type { RouterService } from '../services/llm/router-service.js';
@@ -8,6 +8,8 @@ import type { PiperProvider } from '../services/voice/providers/piper-provider.j
 import type { FasterWhisperProvider } from '../services/voice/providers/faster-whisper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
+import { isValidChatMessage } from './ipc-validation.js';
+import { deriveBootIssue } from './boot-issues.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
@@ -21,10 +23,10 @@ export interface BootSequenceDeps {
 export function registerBootHandlers(deps: BootSequenceDeps): void {
   const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider, containerManager } = deps;
 
-  const send = (step: string, message?: string) => {
+  const send = (step: string, message?: string, severity: 'info' | 'warning' | 'error' = 'info') => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
-      win.webContents.send('boot-status', { step, message });
+      win.webContents.send('boot-status', { step, message, severity });
     }
   };
 
@@ -54,15 +56,16 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       send('router', 'Sarah Protokoll wird initialisiert ...');
       await routerReady;
 
-      if (containerError) {
-        send('router', containerError);
+      const issue = deriveBootIssue(containerError, routerService.status);
+      if (issue) {
+        send('router', issue.message, issue.severity);
         // Keep the error readable before router-ready hides the status line
         await new Promise((r) => setTimeout(r, 3000));
       } else {
         const gpu = await containerManager.checkGpu();
         if (gpu === 'cpu') {
           console.warn('[Boot] Ollama is running WITHOUT GPU (CPU mode)');
-          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.');
+          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.', 'warning');
           // Keep the warning readable before router-ready hides the status line
           await new Promise((r) => setTimeout(r, 3000));
         }
@@ -95,7 +98,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       send('piper-ready');
 
       // Wire up remaining service plumbing (TtsQueue, hotkeys, subscriptions, status)
-      // Provider inits are idempotent, so double-calling is safe
+      // init() is single-flight (A8): repeated calls return the same promise
       const ctx = getAppContext();
       await ctx.registry.initAll().catch((err) => {
         console.error('[Boot] Service wiring failed:', err);
@@ -111,6 +114,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
 
   // Splash TTS handler (uses Piper directly, VoiceService not wired yet)
   ipcMain.handle('splash-tts', async (_event, text: string) => {
+    if (!isValidChatMessage(text)) {
+      console.warn('[IPC] invalid payload for splash-tts');
+      return;
+    }
     try {
       const audio = await piperProvider.speak(text);
       const mainWindow = getMainWindow();
@@ -149,7 +156,6 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     // Wizard was maximized — restore to splash size and center
     mainWindow.unmaximize();
     mainWindow.setSize(800, 600);
-    const { screen } = require('electron');
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     mainWindow.setPosition(
       Math.round((screenW - 800) / 2),
@@ -159,6 +165,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
   });
 
   ipcMain.handle('chat-message', async (_event, text: string) => {
+    if (!isValidChatMessage(text)) {
+      console.warn('[IPC] invalid payload for chat-message');
+      return;
+    }
     const ctx = getAppContext();
     const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
@@ -173,6 +183,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
   forwardToRenderers(bus, 'llm:chunk');
   forwardToRenderers(bus, 'llm:done');
   forwardToRenderers(bus, 'llm:error');
+  forwardToRenderers(bus, 'storage:degraded');
 
   // ── Performance timing collector ──
   let perfStart = 0;
@@ -206,7 +217,6 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    const { screen } = require('electron');
     const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const targetW = Math.round(screenH * 0.3);
     const targetH = Math.round(screenH * 0.33);

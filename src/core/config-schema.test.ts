@@ -120,4 +120,9 @@ describe('SarahConfigSchema', () => {
     });
     expect(result.profile.linkPreferences[0].id).toBe('fixed-id');
   });
+
+  it('rejects a workerOptions.num_ctx below the response-reserve minimum', () => {
+    const result = SarahConfigSchema.safeParse({ llm: { workerOptions: { num_ctx: 2048 } } });
+    expect(result.success).toBe(false);
+  });
 });

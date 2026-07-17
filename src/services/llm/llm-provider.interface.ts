@@ -7,6 +7,8 @@ export interface ChatOptions {
   num_predict?: number;
   /** Ollama keep_alive: seconds (number), duration string ("5m"), or -1 for forever. */
   keep_alive?: number | string;
+  /** Abort the in-flight request and stop streaming. */
+  signal?: AbortSignal;
 }
 
 export interface LlmProvider {

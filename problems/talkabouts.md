@@ -1,266 +1,209 @@
-# Talkabouts — Spec-Review-Protokoll
+# Talkabouts - Plan-Review-Protokoll
 
-Copilot trägt hier Reviews von Specs ein. Erledigte Reviews (Feature gemerged) werden entfernt.
+# Action-Layer V1 — Spec-Review (2026-07-17)
+
+**Grundlage:** `2026-07-16-action-layer-design.md` Rev. 3 gegen den aktuellen Working Tree (`feat/action-layer`)
 
 ---
 
-# Action-Layer-V1-Spec (2026-07-16)
+## Kritisch — muss vor Plan-Phase geklärt werden
 
-Geprueft gegen den aktuellen Stand auf `dev`. Die Spec beschreibt die richtige
-Richtung, setzt aber an einigen Stellen Infrastruktur voraus, die noch nicht
-existiert oder deren Verhalten genauer festgelegt werden muss. Die folgenden
-Punkte sollten vor der Implementierung in die Spec bzw. den Umsetzungsplan.
+### K1 — Dev nicht gemergt: 46 Dateien aus Spec B fehlen im Working Tree
 
-## Kritische Blocker
+Der Branch `feat/action-layer` basiert auf `ab72650` (Spec A / PR #21). PR #22 (Spec B, `0f451a7`) ist in `origin/dev` gemergt, aber **nicht** in den lokalen Tree übernommen.
 
-### 1. Aktionskorrelation und Parallelitaet fehlen
+Folgendes fehlt komplett im Working Tree:
 
-`action:request` und `action:result` enthalten keine Anfrage-ID. Der
-`MessageBus` liefert synchron an alle Listener, die Action-Ausfuehrung ist aber
-asynchron. Bei zwei schnell aufeinanderfolgenden Befehlen kann daher ein
-Suchergebnis nach der Antwort auf eine spaetere Anfrage gesprochen und in deren
-Kontext eingeordnet werden. Das gilt besonders fuer Timer, deren Ergebnis erst
-Stunden spaeter kommt.
+- `persistMessage()` — die Spec erwähnt ihn 9× als einzigen Schreibpfad
+- `ConversationStore` — Session-Management, per-Boot-Session
+- `buildContextWindow` — das kontrollierte Budget-Fenster
+- `src/services/llm/router-service.test.ts` — der Integrations-Harness den Spec §10 nennt
+- `src/services/llm/context-window.ts/.test.ts`
+- `storage:degraded` Bus-Event in `bus-events.ts`
+- `src/core/storage/conversation-store.ts`
 
-**Ergaenzung fuer den Vertrag:**
+Der aktuelle `router-service.ts` hat zwei rohe `db.insert('messages', { conversation_id: 1, ... })` Aufrufe — Spec B hat beides durch `persistMessage()` + ConversationStore-Session ersetzt.
 
-- `action:request` bekommt mindestens `{ requestId, action, param, mode }`.
-- `action:result` bekommt mindestens `{ requestId, action, ok, speak? }`.
-- Der Router fuehrt ausstehende Anfragen oder einen kleinen Ablaufzustand, damit
-	Ergebnis, Historie und TTS eindeutig zugeordnet werden koennen.
-- Timer duerfen nicht an eine vergangene User-Anfrage gebunden wirken. Ihr
-	Ablaufereignis braucht entweder einen eigenen, als Benachrichtigung
-	modellierten Vertrag oder eine eindeutige Timer-ID und eine neutrale Ansage.
-- Es muss entschieden werden, ob Antworten strikt in Eingabereihenfolge
-	gesprochen werden oder ob unabhaengige Action-Ergebnisse sofort sprechen
-	duerfen. Ohne Regel sind TTS- und Historienreihenfolge nicht deterministisch.
+**Konsequenz:** Kein einziger Implementierungsschritt aus §11 kann beginnen, bevor `dev` in `feat/action-layer` gemergt ist. Das ist die allererste Aktion — vor allem anderen.
 
-### 2. Der Router-Zustand ist nicht actionsicher beschrieben
+---
 
-Aktuell verarbeitet `RouterService` nur `chat:message`; seine `history` wird
-direkt dort gepflegt. Die Spec verlangt zusaetzlich `action:result`, beschreibt
-aber nicht, wie dieses Ergebnis gegen gleichzeitige neue Nachrichten und einen
-laufenden 9B-Worker abgegrenzt wird.
+### K2 — Interface-Lücke: Wer diskriminiert Route vs. Action?
 
-Konkrete Risiken:
+Die Spec (§3) sagt: "`ParsedRoute` wird diskriminierte Union: `{ kind: 'route', … } | { kind: 'action', action, param, feedback }`."
 
-- Ein Action-Ergebnis kann waehrend eines Worker-Streams eintreffen. Dann
-	mischen sich `llm:chunk` und `llm:done` zweier Antworten fuer Renderer und
-	TTS.
-- Ein erneuter User-Befehl kann vor dem Suchergebnis in die Historie gelangen;
-	die nachtraegliche Summary steht dann nicht mehr neben der ausloesenden Frage.
-- Der 9B-Idle-Timer und `activeModel` bleiben aktiv, wenn eine Action waehrend
-	eines Modellwechsels ausgefuehrt wird. Der Plan muss festlegen, ob Actions
-	nur bei aktivem Router erlaubt sind und wie ein Ergebnis nach `destroy()`
-	verworfen wird.
+`RoutingService.route()` gibt aber `RoutingResult` zurück (`{ route, feedback, tookMs, hadTag }`) — das ist ein anderer Typ. Die Frage, wer die Diskriminierung übernimmt, ist nicht beantwortet:
 
-**Ergaenzung fuer die Architektur:** Eine zentrale, serialisierte
-`emitAssistantResponse()`-Methode im Router sollte exklusiv Chunk/Done,
-Historie und DB-Schreiben erledigen. Fuer Action-Summaries ist ein Queue- bzw.
-Turn-Modell erforderlich; ein blosses zweites `onMessage` reicht nicht.
+**Option A:** `RoutingService.route()` gibt direkt die Union zurück → bricht seine Schnittstelle, `tookMs`/`hadTag` müssen in beide Union-Arme.
 
-### 3. Service-Startreihenfolge und Shutdown sind unvollstaendig
+**Option B:** `RouterService.routeAndRespond()` ruft `parseRouteTag()` direkt auf (Bypass von `RoutingService`) → `RoutingService` bleibt ROUTE-only, RouterService verwaltet beides selbst.
 
-Services werden erst durch `registry.initAll()` verdrahtet. Der Plan nennt die
-Registrierung neuer Services in `main.ts`, aber weder ihren Registrierungs- und
-Init-Zeitpunkt noch ihre Abhaengigkeiten. Der `SandboxBrowser` und In-Memory-
-Timer haben ausserdem Ressourcen, die beim App-Shutdown aufgeraeumt werden
-muessen.
+**Option C:** `RoutingService.route()` gibt einen Supertyp zurück der `ParsedRoute | RoutingResult` abdeckt → schlechtes API-Design.
 
-**Planentscheidung:**
+Empfehlung: **Option A** — `RoutingResult` bekommt eine `parsed: ParsedRoute`-Property (die Union), `tookMs` und `hadTag` bleiben als flache Felder. Der Plan muss diese Entscheidung treffen bevor Schritt 1 beginnt.
 
-- Die neue Reihenfolge explizit festlegen: Infrastruktur/Launcher/Browser,
-	dann `SearchService`, dann `ActionService`, dann `RouterService`; alle vor
-	dem ersten `registry.initAll()` registrieren.
-- Pruefen, wo `initAll()` aktuell aufgerufen wird, und sicherstellen, dass die
-	Action-Subscriptions davor aktiv sind.
-- `destroy()` muss Search-Abbrueche, BrowserWindow, offene Navigationen und
-	Timer bereinigen. Spaete Promises duerfen nach Shutdown kein Bus-Event mehr
-	emittieren.
+---
 
-## Abweichungen vom aktuellen Code
+### K3 — LLM-Provider-Zugang für SearchService nicht spezifiziert
 
-### 4. Programmtypen widersprechen der Spec
+`summarize-results.ts` braucht einen LLM-Aufruf (phi4-mini). Die Spec sagt das Modell ist "warm" und "kein VRAM-Swap nötig." Aber `SearchService` bekommt in §4 keinen Provider-Parameter.
 
-`ProgramEntrySchema` und `classifyProgramPath()` kennen bereits
-`'exe' | 'launcher' | 'appx' | 'updater'`. Die Spec reduziert dies auf drei
-Typen und sagt zugleich, Updater wuerden beim Scanner als Launcher markiert.
-Das ist fachlich und technisch widerspruechlich.
+Das Problem: Wenn RouterService gerade einen VRAM-Swap zu 9B durchgeführt hat (Worker läuft), ist phi4-mini nicht mehr im VRAM. Eine Suche die während eines Worker-Streams abgeschlossen wird, würde einen Cold-Load von phi4-mini triggern — was den laufenden Worker verdrängt. Dieser Race existiert in der aktuellen Spec nicht.
 
-**Entscheidung erforderlich:** Entweder `updater` als vorhandenen Typ behalten
-und im `ProgramLauncher` hart ablehnen, oder vorhandene `updater`-Eintraege mit
-einer expliziten Migration auf einen korrigierten Hauptpfad umstellen. Sie
-duerfen nicht wie `launcher` gestartet werden. Der aktuelle Scan filtert viele
-Updater bereits heraus, die Konfiguration kann sie aber weiterhin enthalten.
+Mögliche Ansätze:
 
-Ausserdem existieren schon Alias-Generierung, Pfadklassifikation,
-Verifikation und Duplicate-Groups in `src/main/program-utils.ts`. Der neue
-Matcher sollte diese Funktionen wiederverwenden statt Alias-Logik parallel
-aufzubauen. Ein exakter Treffer muss dabei gegen Name *und* Alias gewinnen;
-fuzzy Matching darf nicht still einen anderen Eintrag aus einer
-`duplicateGroup` auswaehlen.
+- SearchService bekommt den routerProvider im Konstruktor übergeben
+- Zusammenfassung wartet in der `emitAssistantResponse`-Queue bis 9B-Turn fertig ist, dann ist phi4-mini wieder warm
+- Zusammenfassung läuft nur wenn `activeModel === '2b'` (pragmatisch, aber sperrt Suche während Worker)
 
-### 5. `appx`-Start ist nicht ausreichend konkret
+Der Plan muss eine explizite Entscheidung treffen.
 
-`appx:<AppUserModelId>` wird aktuell beim Scan erzeugt. `shell:AppsFolder`
-allein ist kein `child_process.spawn`-Ziel. Der Plan muss einen getesteten
-Electron-/Windows-Aufruf fuer genau diese AppUserModelId benennen, inklusive
-Fehlerbehandlung, wenn die Store-App deinstalliert oder der Identifier veraltet
-ist. Argumente fuer EXE- und Launcher-Eintraege sind ebenfalls nicht Teil des
-aktuellen Datenmodells und duerfen nicht aus LLM-Text abgeleitet werden.
+---
 
-### 6. Die Routing-Semantik muss rueckwaertskompatibel bleiben
+### K4 — `hadTag` erkennt ACTION-Tags nicht
 
-Der Parser akzeptiert heute nur `[ROUTE:<wort>]` und faellt bei fehlendem Tag
-auf `self` zurueck. Die neue diskriminierte Union braucht explizite Regeln:
+`routing-service.ts` berechnet: `hadTag = response.trimStart().startsWith('[ROUTE:')`.
 
-- Nur ein Tag am String-Anfang ist gueltig; kein Nachparsen von Tags im
-	Feedback und keine verschachtelten oder mehrfachen Tags.
-- Ungueltige oder unbekannte ACTION-Namen werden als ungueltiges Routing-
-	Ergebnis behandelt, nicht als 9B-Route und nicht als ausfuehrbare Action.
-- `hadTag` muss ACTION-Tags ebenfalls erfassen; sonst entstehen irrefuehrende
-	Warnungen und Metriken.
-- Die bestehenden `ROUTE:self`-Beispiele fuer Programmoeffnen muessen entfernt
-	werden, sonst trainiert der Prompt gegensaetzliches Verhalten.
-- Der Parametertrenner `:` ist mehrdeutig fuer Suchanfragen, Uhrzeiten und
-	Programmnamen. Entweder ein kodiertes strukturiertes Format waehlen oder
-	genau festlegen, dass nur der erste und zweite Doppelpunkt strukturell sind
-	und der Rest zum Parameter gehoert.
+Nach der Erweiterung gibt das Modell `[ACTION:...]` zurück → `hadTag = false` → `[Router] No route tag in 2B response, falling back to self` warnt für **jede** Aktion, obwohl alles korrekt funktioniert.
 
-## Suche und Browser: fehlende Fehler- und Sicherheitsfaelle
+Fix ist trivial (OR-Condition auf `[ACTION:`), muss aber als expliziter Teilschritt in Implementierungsschritt 1 stehen damit er nicht vergessen wird.
 
-### 7. Navigation braucht einen vollstaendigen Netzwerkvertrag
+---
 
-Die genannten `will-navigate`- und Popup-Guards reichen nicht allein. Auch
-Redirects, Subresources, `webContents.loadURL()`-Fehler, Zertifikatsfehler,
-HTTP-Fehler, `did-fail-load`, endlose Redirect-Ketten und der Status einer
-bereits sichtbaren Browser-Seite brauchen definierte Behandlung. Das
-`sarah-web`-Profil ist zwar nicht persistent, bleibt aber pro laufender App
-geteilt; fuer V1 sollte vor jeder Suche klar sein, ob Cookies/Cache/History
-geloescht werden oder die Partition eindeutig nur eine Session tragen darf.
+## Major — muss im Implementierungsplan adressiert werden
 
-**Ergaenzungen:**
+### M1 — `routing-prompt.ts`: Photoshop-Beispiel ist noch drin
 
-- Einen `AbortSignal` bzw. Abbruchpfad fuer die 15-Sekunden-Frist vorsehen,
-	damit ein spaetes `did-finish-load` keine veraltete Summary erzeugt.
-- URL vor *jeder* Navigation und nicht nur beim Extraktionsergebnis validieren.
-	Redirects muessen ebenfalls auf `http:`/`https:` beschraenkt bleiben.
-- Browserfenster darf nicht zufaellig geschlossen werden; `closed` muss die
-	gespeicherte Referenz loeschen. Bei Renderer-Crash muss die laufende Anfrage
-	genau einmal fehlschlagen, nicht beim naechsten Aufruf erneut sichtbar werden.
-- Kein `executeJavaScript` mit Query, URL oder DOM-Text per Stringinterpolation
-	bauen. Die Extraktionsfunktion muss statisch sein, sonst wird die
-	Sicherheitsgrenze selbst zum Script-Injection-Pfad.
-- DuckDuckGo und Bing koennen Bot-Schutz, Consent-Seiten, CAPTCHA, regionale
-	Umleitungen oder geaendertes Markup liefern. Das ist ein erwarteter Provider-
-	Fehler mit Diagnose, nicht nur "keine Ergebnisse".
+Die Spec (§3, Review-Punkt 6) sagt explizit: "Die bestehenden `[ROUTE:self]`-Beispiele fürs Programmöffnen werden **entfernt**."
 
-### 8. Die Text-Schleuse braucht Unicode- und Prompt-Grenzen
+Aktuell steht im Prompt:
 
-Steuerzeichen und Unicode-Separatoren zu entfernen ist sinnvoll, aber fuer
-Prompt-Quarantaene nicht vollstaendig. Beruecksichtigen: bidi-Steuerzeichen,
-Zero-Width-Zeichen, homoglyphische Tag-Imitationen, HTML-Entities, sehr lange
-einzelne Tokens sowie Titel und Snippets, die nur aus Steuer-/Leerzeichen
-bestehen.
+```
+User: "Öffne Photoshop" → [ROUTE:self] Natürlich, ich öffne Photoshop!
+```
 
-**Festlegen:** Normalisierung (z. B. NFC), Whitespace-Kanonisierung,
-Entfernung unsichtbarer Formatzeichen, Validierung nichtleerer Felder und ein
-Gesamtbudget nach Zeichen/Token fuer alle acht Ergebnisse. URLs sind fuer die
-Summary nicht notwendig; idealerweise gehen nur Titel und Snippet in den
-Prompt, waehrend die kanonisch validierte URL ausschliesslich in `lastResults`
-bleibt.
+Dieser Eintrag muss durch ein `[ACTION:open_program:...]`-Beispiel ersetzt werden — als **erster Teilschritt von Implementierungsschritt 1**, noch vor dem Parser. Sonst konkurrieren ROUTE:self und ACTION-Signal im Modell und das Routing wird instabil.
 
-Die Summary darf keine Action-Tags ausfuehren, aber ihr Text kann spaetere
-Router-Entscheidungen beeinflussen, weil er in der Historie steht. Der
-Systemprompt des Workers und Routers sollte deshalb klarstellen, dass
-Suchzusammenfassungen und alle zuvor zitierten Webinhalte Daten sind, keine
-Anweisungen.
+---
 
-### 9. `lastResults` braucht Session- und Kontextregeln
+### M2 — `emitAssistantResponse`: Serialisierungsmuster nicht konkretisiert
 
-Ein globales `lastResults` ist bei parallelen Suchen, mehreren Fenstern oder
-einem Ergebnis nach App-/Browser-Neustart mehrdeutig. `show_browser:2` muss an
-eine Search-Session gebunden sein, die mit der Summary in Historie bzw.
-`requestId` verknuepft wird. Bei einer neuen Suche sollte klar sein, ob sie die
-alte Session ersetzt, und ob "das zweite" ohne vorherige Suche den letzten
-erfolgreichen Satz Ergebnisse meint. URLs aus Suchergebnissen muessen vor dem
-Speichern kanonisch validiert werden; die Zuordnung darf nicht nach Titel-
-Stichwort allein erfolgen, weil mehrere Treffer denselben Titel haben koennen.
+Die Spec sagt "Intern über eine Promise-Kette serialisiert." Das korrekte Muster ist:
 
-## Ausfuehrungs- und Plattformrisiken
+```ts
+private _outputQueue: Promise<void> = Promise.resolve();
 
-### 10. Systemaktionen brauchen echte Plattformgrenzen
+private emitAssistantResponse(text: string): Promise<void> {
+  this._outputQueue = this._outputQueue
+    .then(() => this._doEmit(text))
+    .catch(() => {});
+  return this._outputQueue;
+}
+```
 
-Die V1-Aktionen sind Windows-spezifisch. Der `SystemSchema` kennt zwar
-Plattformdaten, die Spec fordert aber keine Laufzeitpruefung. Auf macOS/Linux
-oder in Tests darf weder `rundll32.exe` noch eine Lautstaerke-Implementierung
-versucht werden. Jede Systemaktion braucht eine einheitliche Antwort fuer
-"nicht unterstuetzt", Zugriffsfehler und fehlende Binaries.
+Ein naiver `isRunning: boolean`-Lock würde bei Exceptions dauerhaft blockieren. Das Muster muss im Plan explizit stehen damit es korrekt implementiert wird.
 
-Fuer `lock_screen` sollte die Ausfuehrung mit `spawn`/`execFile` und festen
-Argumenten beschrieben werden, inklusive Fehler- und Exit-Code-Behandlung;
-ein einzelner zusammengesetzter String ist nicht ausreichend als
-Implementierungsentscheidung. Lautstaerke erfordert vor der Package-Wahl einen
-Spike mit gepackter Electron-App und ohne Administratorrechte. Die neue
-Dependency gehoert dann in Lockfile, Build und Lizenz-/Native-Module-Check.
+---
 
-### 11. Programmstart erfordert Prozess- und Fehlermodell
+### M3 — SandboxBrowser/Timer-Cleanup fehlt in `main.ts`
 
-`spawn(path, { detached: true })` allein kann unter Windows mit Leerzeichen,
-fehlenden Zugriffsrechten, blockierten Dateien, bereits laufenden Anwendungen
-oder Launcher-Prozessen scheitern. Der Plan braucht `error`-Listener und eine
-klare Definition, wann "geoeffnet" gesagt werden darf: erfolgreich gestarteter
-Prozess ist nicht gleich sichtbares Programmfenster. `unref()` und die
-Standard-Streams muessen so konfiguriert werden, dass die Electron-App nicht
-am Kindprozess haengt. Fuer `launcher` ist ein Timeout bzw. keine positive
-Sichtbarkeitsbehauptung sinnvoll.
+`SandboxBrowser` und der Timer-Registry in `system-actions.ts` sind keine `SarahService`-Einträge (Spec §4: "Infrastruktur, kein Service"). `appContext.shutdown()` ruft nur `registry.destroyAll()` auf — die beiden werden **nicht** automatisch aufgeräumt.
 
-### 12. Timer: Zeitbasis, TTS und Testbarkeit
+In `app.on('window-all-closed')` muss explizit:
 
-Die Grenzen 1 bis 1440 Minuten sind definiert, nicht aber Wiederholung,
-Abbruch, Benennung, Anzeige und Verhalten bei Standby. Mindestens fuer V1
-festlegen: monotone Zeitberechnung versus `setTimeout`, Umgang mit sehr langen
-Delays, Timer-ID, Reinigung nach Ablauf sowie dass ein TTS-Fehler den Timer
-nicht wiederholt ansagt. Timer muessen mit Fake-Timern getestet werden, ohne
-reale Minuten zu warten.
+- `sandboxBrowser.close()` aufgerufen werden
+- Alle laufenden Timer via `system-actions`-Cleanup gecancelt werden
 
-## Fehlende Tests und Akzeptanzkriterien
+Der Plan muss das als konkreten Schritt in den `main.ts`-Änderungen (§4) führen.
 
-Der bestehende Testplan ist ein guter Start, deckt aber diese faelschbaren
-Faelle noch nicht ab:
+---
 
-- Parallel: zwei Action-Requests mit vertauschter Fertigstellungsreihenfolge;
-	Ergebnisreihenfolge, requestId und Historieneintraege pruefen.
-- Race: `action:result` waehrend Worker-Stream, Router-Idle-Swap und App-
-	Shutdown; keine vermischten `llm:chunk`/`llm:done`, keine unhandled
-	rejections.
-- Browser: Redirect auf unzulaessiges Protokoll, `did-fail-load`, Timeout mit
-	spaetem Load-Event, Browserfenster manuell geschlossen, Renderer-Crash und
-	Abbruch bei Shutdown.
-- Search-Provider: Consent/CAPTCHA/HTTP-Fehler/Markup-Aenderung als
-	unterscheidbare Diagnosen; URL- und Ergebnis-Session-Isolation.
-- Sanitizer: bidi, zero-width, homoglyphische ACTION-Tags, HTML-Entities,
-	leergewaschene Strings und Gesamt-Tokenbudget.
-- Programme: persistierter `updater`, veralteter `appx`-Identifier,
-	`spawn`-`error`, Leerzeichen im Pfad, Alias-Konflikt und Fuzzy-Gleichstand.
-- Plattform: Windows-Guard, nicht unterstuetzte Plattform, Lautstaerke ohne
-	verfuegbare Implementierung und Fehler bei `LockWorkStation`.
+### M4 — Spikes als Blocker-Gates im Plan markieren
 
-## Empfohlene Umsetzungsreihenfolge
+Die Spec nennt zwei offene Spikes:
 
-1. **Vertrag und Tests zuerst:** Bus-Payloads mit `requestId`, diskriminierte
-	 Parser-Union, strikte ACTION-Syntax und Unit-Tests fuer Rueckwaertskompatibilitaet.
-2. **Router-Turn-Modell:** serialisierte Assistant-Ausgabe, Ergebnis-Queue,
-	 Historien-/DB-Eigentum, Shutdown-Guard sowie Race-Tests implementieren.
-3. **Programmausfuehrung isoliert:** vorhandene Program Utilities wiederverwenden,
-	 `updater` hart blockieren, `appx` technisch verifizieren und alle Spawn-
-	 Fehlerpfade testen.
-4. **Systemaktionen isoliert:** Windows-Guard, Timer-Registry mit IDs und
-	 Fake-Timer-Tests; Lautstaerke erst nach dem technischen Spike festlegen.
-5. **Browser-Grundgeruest:** Lifecycle, Navigation-Guards, Timeout/Abort und
-	 Crash-/Close-Tests noch ohne echten Suchprovider.
-6. **Search-Provider und Schleuse:** Fixtures, kanonische Sanitization,
-	 Ergebnis-Session und Diagnosevertrag; erst dann die aktionsfreie Summary.
-7. **End-to-End:** Alle sechs Aktionen mit kontrollierten Fakes und danach die
-	 manuellen Voice-Tests. Dabei explizit parallele Eingaben, Shutdown und
-	 Folgefragen auf Suchergebnisse pruefen.
+- **appx-Spike** (Implementierungsschritt 3): `explorer.exe shell:AppsFolder\<AUMID>` vs. PowerShell — muss auf echtem Store-Eintrag (Spotify) verifiziert werden **bevor** `program-launcher.ts` implementiert wird
+- **set_volume-Spike** (Implementierungsschritt 4): Package-Kandidat auf Adminrecht-Freiheit + Electron-Kompatibilität prüfen **bevor** Dependency ins Lockfile kommt
+
+Im Plan müssen diese als explizite Blocker-Gates stehen: "Schritt X startet erst nach Spike-Abschluss."
+
+---
+
+### M5 — Namenskollision `router-service.test.ts` auflösen
+
+Es gibt zwei Testdateien mit identischem Namen:
+
+- `src/services/llm/router-service.test.ts` — Spec B Integrations-Harness (kommt mit dem dev-Merge)
+- `tests/services/llm/router-service.test.ts` — alte Mock-Tests (existieren heute)
+
+Die Spec warnt davor ("nicht verwechseln"), sagt aber nicht was zu tun ist. Die Mock-Tests überlappen inhaltlich mit der Integration-Harness. Empfehlung: **Die alte Datei nach `tests/services/llm/router-service-mock.test.ts` umbenennen** (oder löschen wenn die Abdeckung durch die Integrations-Tests vollständig ist). Muss vor Implementierungsschritt 2 entschieden sein.
+
+---
+
+### M6 — `RouterService.subscriptions` ist nach dem Umbau unvollständig
+
+Aktuell: `readonly subscriptions = ['chat:message'] as const`.
+
+Nach dem Umbau subscribed RouterService auch auf `action:result` und `action:notify` (§3). Das Array muss auf `['chat:message', 'action:result', 'action:notify'] as const` erweitert werden. Wenn das vergessen wird, kommen keine Action-Ergebnisse beim Router an — kein Fehler, nur Stille.
+
+---
+
+## Minor — Implementierung beachten
+
+### Mi1 — ActionService darf nie `context.db.insert()` direkt aufrufen
+
+"Historien-Eigentum bleibt beim RouterService. ActionService fasst Historie/DB nie an." (Spec §3)
+
+`AppContext` hat `context.db` und jeder Service mit AppContext-Zugang könnte direkt schreiben. Im Plan notieren: ActionService bekommt **keinen** direkten `AppContext`-Zugang — nur Bus-Referenz und spezifische Infrastruktur-Deps (ProgramLauncher, SearchService, system-actions).
+
+### Mi2 — `conversation_id: 1` nach dev-Merge obsolet
+
+Nach Spec B nutzt `ConversationStore` eine Per-Boot-Session-ID. Der aktuelle Code hat hardcoded `1`. Das ist nach dem dev-Merge gefixt. Bei der Action-Layer-Implementierung sicherstellen: Kein neuer Code schreibt irgendwo `conversation_id: 1` hard — alles läuft über `persistMessage()`.
+
+### Mi3 — AbortSignal ↔ Electron BrowserWindow-Brücke
+
+Electron `BrowserWindow` kennt keinen nativen AbortSignal. Die Brücke muss explizit gebaut werden:
+
+```ts
+signal.addEventListener('abort', () => win.webContents.stop(), { once: true });
+```
+
+Zusätzlich: Ein `did-finish-load`-Handler der nach dem Abort feuert muss das Result verwerfen (Spec §6: "ein spätes `did-finish-load` nach Abbruch erzeugt keine veraltete Summary"). Das ist ein subtiler Lifecycle-Punkt der in Schritt 5 explizit getestet werden muss.
+
+### Mi4 — `show_browser`-Session ist nicht requestId-indiziert
+
+Die Ergebnis-Session hat `{ requestId, results[] }`, aber `show_browser` schaut **nicht** nach dem requestId der Suche. Es gibt nur **eine** aktuelle Session. Der requestId in der Session gehört zum `web_search`-Request, nicht zum `show_browser`-Request.
+
+Ein Implementierer könnte fälschlicherweise versuchen die Session per requestId zu finden. Plan muss klarstellen: Session = single-slot, bei `show_browser` immer die aktuelle (oder keine), kein requestId-Lookup.
+
+### Mi5 — Timer-Monotonizität: Konkreten Mechanismus festlegen
+
+"Monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout`)" ist richtig motiviert, aber offen. Praktische Empfehlung: `Date.now()`-Startzeit merken, im Callback prüfen ob `Date.now() - start >= durationMs`, sonst `setTimeout(remaining)` neu ansetzen. Das ist einfach und testbar mit `vi.useFakeTimers`. Der Plan muss eine Entscheidung treffen.
+
+### Mi6 — `show_browser`-Race bei gleichzeitiger neuer Suche
+
+`SandboxBrowser` startet mit `show: false`. `show_browser` ruft `show(url)` auf. Wenn parallel eine neue Suche läuft (Partition-Clear + neue Navigation), zeigt `show()` kurzzeitig eine leere oder falsche Seite.
+
+Empfehlung: Die Ergebnis-Session bekommt ein `loaded: boolean`-Flag, das erst nach erfolgreichem `did-finish-load` der Ergebnis-URL gesetzt wird. `show()` nur wenn `loaded === true`.
+
+### Mi7 — `ipc-programs.ts` vs. `ProgramLauncher`: Zuständigkeit dokumentieren
+
+Beide benutzen `program-utils.ts`. Im Plan explizit notieren: `ProgramLauncher` registriert **keinen** IPC. `ipc-programs.ts` **startet nie** Programme. Zuständigkeiten überlappen nicht — aber der Reflex, beides zu vereinen, ist naheliegend.
+
+---
+
+## Zusammenfassung Prioritäten
+
+| #     | Typ          | Titel                                                          |
+| ----- | ------------ | -------------------------------------------------------------- |
+| K1    | **Kritisch** | `dev` in `feat/action-layer` mergen — erster Schritt überhaupt |
+| K2    | **Kritisch** | Interface-Entscheidung: wer diskriminiert Route vs. Action     |
+| K3    | **Kritisch** | LLM-Provider-Zugang für SearchService + VRAM-Race klären       |
+| K4    | **Kritisch** | `hadTag` für ACTION-Tags fixen                                 |
+| M1    | Major        | Photoshop-Beispiel aus Routing-Prompt entfernen                |
+| M2    | Major        | `emitAssistantResponse` Promise-Chain-Muster konkretisieren    |
+| M3    | Major        | SandboxBrowser/Timer-Cleanup in `main.ts` verdrahten           |
+| M4    | Major        | Spikes als Blocker-Gates im Plan markieren                     |
+| M5    | Major        | Namenskollision `router-service.test.ts` auflösen              |
+| M6    | Major        | `subscriptions`-Array in RouterService erweitern               |
+| Mi1–7 | Minor        | Siehe oben                                                     |

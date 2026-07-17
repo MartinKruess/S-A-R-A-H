@@ -18,11 +18,13 @@ export type BusEvents = {
   'voice:play-audio':    { audio: number[]; sampleRate: number };
   'voice:done':          Record<string, never>;
   'voice:error':         { message: string };
+  'voice:capability':    { stt: boolean; tts: boolean };
   'voice:interrupted':   Record<string, never>;
   'voice:wake':          Record<string, never>;
   'voice:playback-done': Record<string, never>;
   'perf:timing':         { label: string; ms: number; meta?: Record<string, unknown> };
   'boot:status':         { step: string; message?: string };
+  'storage:degraded':    { message: string };
 };
 
 /** All valid bus topic strings */

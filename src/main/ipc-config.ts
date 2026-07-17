@@ -1,12 +1,13 @@
 import * as path from 'path';
 import * as os from 'os';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfig } from '../core/config-schema.js';
 import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
+import { isValidOptionalTitle } from './ipc-validation.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -75,6 +76,10 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
   );
 
   ipcMain.handle('select-folder', async (event, title?: string) => {
+    if (!isValidOptionalTitle(title)) {
+      console.warn('[IPC] invalid payload for select-folder');
+      return null;
+    }
     const win = BrowserWindow.fromWebContents(event.sender) ?? getMainWindow();
     if (!win) return null;
     const result = await dialog.showOpenDialog(win, {
@@ -86,13 +91,16 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
   });
 
   ipcMain.handle('open-dialog', (_event, view: string) => {
+    if (typeof view !== 'string' || view.length === 0 || view.length > 50) {
+      console.warn('[IPC] invalid payload for open-dialog');
+      return;
+    }
     const existing = dialogWindows.get(view);
     if (existing && !existing.isDestroyed()) {
       existing.focus();
       return;
     }
 
-    const { screen } = require('electron');
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const w = Math.round(screenW * 0.8);
     const h = Math.round(screenH * 0.8);

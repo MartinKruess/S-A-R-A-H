@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
-import type { StorageProvider, Filter } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
+import { MESSAGES_PAGE_MAX_LIMIT } from './storage.interface.js';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS kv_store (
@@ -126,6 +127,20 @@ export class SqliteStorage implements StorageProvider {
 
     const result = this.db.prepare(`DELETE FROM ${table} WHERE ${where}`).run(...values);
     return result.changes;
+  }
+
+  async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
+    if (!Number.isInteger(query.limit) || query.limit <= 0 || query.limit > MESSAGES_PAGE_MAX_LIMIT) {
+      throw new Error(`Invalid limit: ${query.limit} (must be an integer in 1..${MESSAGES_PAGE_MAX_LIMIT})`);
+    }
+    if (!Number.isInteger(query.excludeConversationId)) {
+      throw new Error(`Invalid excludeConversationId: ${query.excludeConversationId} (must be an integer)`);
+    }
+    // messages.id is an INTEGER PRIMARY KEY (rowid alias): ORDER BY id DESC is a
+    // backwards rowid scan that stops after `limit` matches — no extra index needed.
+    return this.db
+      .prepare('SELECT * FROM messages WHERE conversation_id != ? ORDER BY id DESC LIMIT ?')
+      .all(query.excludeConversationId, query.limit) as MessageRow[];
   }
 
   async close(): Promise<void> {

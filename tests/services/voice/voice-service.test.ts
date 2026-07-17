@@ -164,12 +164,12 @@ describe('VoiceService', () => {
     expect(service.status).toBe('running');
   });
 
-  it('sets error status if init fails', async () => {
+  it('stays running with degraded capability if only STT init fails', async () => {
     (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('init fail'));
 
     await service.init();
 
-    expect(service.status).toBe('error');
+    expect(service.status).toBe('running');
   });
 
   // --- 3. Registers hotkey in push-to-talk mode ---
@@ -685,5 +685,39 @@ describe('VoiceService', () => {
     // The state stays speaking until TTS queue empties
     await flush();
     await flush();
+  });
+});
+
+describe('VoiceService partial failure (voice:capability)', () => {
+  it('keeps STT alive and reports capability when TTS init fails', async () => {
+    const bus = new MessageBus();
+    const emitted: Array<{ topic: string; data: object }> = [];
+    bus.on('voice:capability', (msg) => emitted.push({ topic: msg.topic, data: msg.data }));
+    const context = createMockContext(bus, 'push-to-talk');
+    const tts = createMockTts();
+    (tts.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('piper broken'));
+    const service = new VoiceService(context, createMockStt(), tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+
+    await service.init();
+
+    expect(service.status).toBe('running');
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].data).toEqual({ stt: true, tts: false });
+    await service.destroy();
+  });
+
+  it('reports error status only when both capabilities fail', async () => {
+    const bus = new MessageBus();
+    const context = createMockContext(bus, 'push-to-talk');
+    const stt = createMockStt();
+    const tts = createMockTts();
+    (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('whisper broken'));
+    (tts.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('piper broken'));
+    const service = new VoiceService(context, stt, tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+
+    await service.init();
+
+    expect(service.status).toBe('error');
+    await service.destroy();
   });
 });
