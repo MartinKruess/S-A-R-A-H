@@ -68,4 +68,18 @@ describe('EmbeddedBrowserSearchProvider', () => {
     const provider = new EmbeddedBrowserSearchProvider({ fetchPageHtml } as unknown as SandboxBrowser);
     await expect(provider.search('hotels', new AbortController().signal)).rejects.toBeInstanceOf(SearchDiagnosisError);
   });
+
+  it('propagates markup-changed diagnosis when both engines return unrecognizable content', async () => {
+    const fetchPageHtml = vi.fn()
+      .mockRejectedValueOnce(new Error('load-failed'))
+      .mockResolvedValueOnce('<html><body>unrecognizable markup</body></html>');
+    const provider = new EmbeddedBrowserSearchProvider({ fetchPageHtml } as unknown as SandboxBrowser);
+    try {
+      await provider.search('hotels', new AbortController().signal);
+      expect.fail('should have thrown SearchDiagnosisError');
+    } catch (err) {
+      expect(err).toBeInstanceOf(SearchDiagnosisError);
+      expect((err as SearchDiagnosisError).diagnosis).toBe('markup-changed');
+    }
+  });
 });

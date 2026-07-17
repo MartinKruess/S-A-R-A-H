@@ -6,15 +6,17 @@ const MAX_SNIPPET = 300;
 const MAX_RESULTS = 8;
 const TOTAL_BUDGET = 2000;
 
-const INVISIBLES = /[​‌‍؜ª­®¦©﻿]/g;
+const INVISIBLES = /[​-‏‪-‮⁦-⁩﻿]/g;
 
 const ENTITIES: Record<string, string> = {
   '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' ',
 };
 
 function decodeEntitiesOnce(s: string): string {
-  return s.replace(/&(?:amp|lt|gt|quot|#39|nbsp);/g, (m) => ENTITIES[m] ?? m)
-    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCodePoint(Number(code)));
+  return s.replace(/&(?:amp|lt|gt|quot|#39|nbsp);|&#(\d+);/g, (m, code?: string) => {
+    if (code) return String.fromCodePoint(Number(code));
+    return ENTITIES[m] ?? m;
+  });
 }
 
 function cleanText(s: string, max: number): string {

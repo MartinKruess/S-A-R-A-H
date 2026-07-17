@@ -7,14 +7,34 @@ function raw(title: string, snippet = 'snippet', url = 'https://example.com/a'):
 
 describe('sanitizeResults', () => {
   it('strips bidi and zero-width characters', () => {
-    // Input has U+00AE (®) and U+200B (zero-width space)
-    const [r] = sanitizeResults([raw('Hotel® LETOH​ Kiel')]);
+    // Input contains U+202E (right-to-left override) and U+200B (zero-width space)
+    const [r] = sanitizeResults([raw('Hotel‮ LETOH​ Kiel')]);
     expect(r.title).toBe('Hotel LETOH Kiel');
+  });
+
+  it('preserves legitimate visible characters (® and ©)', () => {
+    // ® (U+00AE) and © (U+00A9) should NOT be stripped
+    const [r1] = sanitizeResults([raw('Marke® bleibt')]);
+    expect(r1.title).toContain('®');
+    const [r2] = sanitizeResults([raw('Copyright © 2026')]);
+    expect(r2.title).toContain('©');
+  });
+
+  it('strips isolate characters (U+2066–U+2069)', () => {
+    // Left-to-right isolate (⁦) and pop isolate (⁩) should be stripped
+    const [r] = sanitizeResults([raw('Text⁦normal⁩here')]);
+    expect(r.title).toBe('Textnormalhere');
   });
 
   it('decodes HTML entities exactly once', () => {
     const [r] = sanitizeResults([raw('Fish &amp;amp; Chips')]);
     expect(r.title).toBe('Fish &amp; Chips'); // einmal dekodiert, nicht doppelt
+  });
+
+  it('does not double-decode numeric entities', () => {
+    // '&amp;#39;s' should decode to '&#39;s' (not "'s")
+    const [r] = sanitizeResults([raw("&amp;#39;s Diner")]);
+    expect(r.title).toBe("&#39;s Diner");
   });
 
   it('clamps title to 150 and snippet to 300 chars', () => {

@@ -71,6 +71,7 @@ export class EmbeddedBrowserSearchProvider implements SearchProvider {
       const results = sanitizeResults(engine.extract(html));
       if (results.length > 0) return results;
       console.warn(`[Search] ${engine.name} returned no extractable results (markup changed?)`);
+      lastDiagnosis = 'markup-changed';
     }
     throw new SearchDiagnosisError(lastDiagnosis, 'all engines');
   }
