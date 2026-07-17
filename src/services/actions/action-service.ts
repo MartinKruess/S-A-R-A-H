@@ -54,6 +54,10 @@ export class ActionService implements SarahService {
         return { ok: false, speak: action === 'web_search' ? 'Meine Suche klemmt gerade.' : 'Das kann ich noch nicht.' };
       })
       .then((result) => {
+        console.log(
+          `[Actions] ${action}:${JSON.stringify(param)} → ok=${result.ok}` +
+            (result.speak != null ? ` speak=${JSON.stringify(result.speak)}` : ' (silent)'),
+        );
         // Exactly ONE result per request — also for silent successes (Spec §3).
         this.bus.emit(this.id, 'action:result', {
           requestId,

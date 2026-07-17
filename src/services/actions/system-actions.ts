@@ -44,7 +44,12 @@ export class SystemActions {
   private nextTimerId = 1;
 
   constructor(opts: { execFn?: ExecFn; onNotify?: (speak: string) => void; platform?: string } = {}) {
-    this.execFn = opts.execFn ?? ((cmd, args, cb) => { nodeExecFile(cmd, args, (err) => cb(err)); });
+    this.execFn = opts.execFn ?? ((cmd, args, cb) => {
+      nodeExecFile(cmd, args, (err, _stdout, stderr) => {
+        if (err && stderr) console.warn('[SystemActions] exec stderr:', String(stderr).trim().slice(0, 300));
+        cb(err);
+      });
+    });
     this.onNotify = opts.onNotify ?? (() => {});
     this.platform = opts.platform ?? process.platform;
   }
@@ -59,6 +64,8 @@ export class SystemActions {
     const script = `${VOLUME_SCRIPT_PREFIX}${scalar})`;
     return new Promise((resolve) => {
       this.execFn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err) => {
+        if (err) console.warn('[SystemActions] setVolume failed:', `${percent}%`, err.message);
+        else console.log('[SystemActions] setVolume ok:', `${percent}% (scalar ${scalar}) — system master volume set`);
         resolve(err ? { ok: false, speak: 'Die Lautstärke ließ sich nicht ändern.' } : { ok: true });
       });
     });

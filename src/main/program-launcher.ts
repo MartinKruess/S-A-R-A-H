@@ -62,6 +62,10 @@ export class ProgramLauncher {
 
   async launch(query: string, programs: ProgramEntry[]): Promise<LaunchResult> {
     const match = matchProgram(query, programs);
+    console.log(
+      `[ProgramLauncher] query=${JSON.stringify(query)} programs=${programs.length} → ${match.kind}` +
+        (match.kind === 'hit' ? ` (${match.program.name}, type=${match.program.type}, path=${match.program.path})` : ''),
+    );
     if (match.kind === 'ambiguous') {
       return { ok: false, speak: `Ich habe mehrere Treffer: ${match.candidates.join(' und ')}. Welches meinst du?` };
     }
@@ -83,11 +87,16 @@ export class ProgramLauncher {
   /** Store apps: verified spike (17.07.) — explorer.exe shell:AppsFolder\<AUMID>. */
   private launchAppx(program: ProgramEntry): Promise<LaunchResult> {
     const aumid = program.path.replace(/^appx:/, '');
+    console.log(`[ProgramLauncher] launchAppx explorer.exe shell:AppsFolder\\${aumid}`);
     return new Promise((resolve) => {
       this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
+        // NOTE: explorer.exe returns exit 0 even for a stale/missing AUMID, so
+        // this "ok" only means "explorer accepted the request", not "app is up".
         if (err) {
+          console.warn('[ProgramLauncher] launchAppx failed:', aumid, err.message);
           resolve({ ok: false, speak: `${program.name} ließ sich nicht starten — vielleicht ist die App nicht mehr installiert.` });
         } else {
+          console.log('[ProgramLauncher] launchAppx explorer accepted (exit 0 — no proof the app is up)');
           resolve({ ok: true });
         }
       });
