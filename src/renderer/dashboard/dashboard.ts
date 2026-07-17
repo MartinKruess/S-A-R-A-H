@@ -71,12 +71,14 @@ chatInput.addEventListener('keydown', (e) => {
   }
 });
 
-// Streaming chunks
+// Streaming chunks. A chunk without an open bubble is a late assistant output
+// (search summary, action error, timer notify) – it gets its own bubble (F2).
 sarah.onChatChunk((data) => {
-  if (currentBubble) {
-    currentBubble.textContent += data.text;
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+  if (!currentBubble) {
+    currentBubble = addBubble('assistant', '');
   }
+  currentBubble.textContent += data.text;
+  chatMessages.scrollTop = chatMessages.scrollHeight;
 });
 
 // Done
