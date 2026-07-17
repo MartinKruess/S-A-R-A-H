@@ -4,6 +4,7 @@ import { bootstrap } from '../../core/bootstrap.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from '../../core/storage/storage.interface.js';
+import type { BusEvents } from '../../core/bus-events.js';
 import { START_CONTEXT_HEADER } from './context-window.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -196,5 +197,198 @@ describe('RouterService (history & sessions)', () => {
     expect(done).toHaveLength(1);
     const sent = workerProvider.lastMessages!;
     expect(sent.some((m) => m.content === START_CONTEXT_HEADER)).toBe(false);
+  });
+});
+
+/** Provider whose replies can be scripted per call (routing answers, worker answers). */
+class ScriptedProvider implements LlmProvider {
+  readonly id = 'scripted';
+  lastMessages: ChatMessage[] | null = null;
+  private queue: string[];
+  constructor(...replies: string[]) {
+    this.queue = replies;
+  }
+  push(reply: string): void {
+    this.queue.push(reply);
+  }
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+  async chat(messages: ChatMessage[], onChunk: (t: string) => void): Promise<string> {
+    this.lastMessages = messages;
+    const reply = this.queue.shift() ?? 'leer';
+    onChunk(reply);
+    return reply;
+  }
+}
+
+describe('RouterService (action layer)', () => {
+  let tmpDir: string;
+  let ctx: AppContext;
+  let router: RouterService | null = null;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-router-action-'));
+    ctx = await bootstrap(tmpDir);
+    router = null;
+    // The test harness never registers RouterService with ctx.registry (that
+    // wiring is ServiceRegistry's job in production, see main.ts). Forward the
+    // two new correlation topics to whichever router the current test created.
+    ctx.bus.on('action:result', (msg) => router?.onMessage(msg));
+    ctx.bus.on('action:notify', (msg) => router?.onMessage(msg));
+  });
+
+  afterEach(async () => {
+    await router?.destroy();
+    await ctx.shutdown();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('emits action:request with a fresh requestId and speaks the feedback', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify] Ich öffne Spotify.'); // 1. Reply = warmup
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (msg) => {
+      requests.push(msg.data);
+    });
+    ctx.bus.on('llm:done', (msg) => {
+      done.push(msg.data.fullText);
+    });
+
+    await router.handleChatMessage('Öffne Spotify');
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].action).toBe('open_program');
+    expect(requests[0].param).toBe('spotify');
+    expect(requests[0].requestId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(done).toEqual(['Ich öffne Spotify.']);
+    const msgs = await ctx.db.query<{ role: string; content: string }>('messages');
+    expect(msgs.map((m) => m.content)).toContain('Ich öffne Spotify.'); // feedback persisted as assistant turn
+  });
+
+  it('rejects unknown action names honestly and never emits action:request', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:send_all_data:evil] Klar.');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: string[] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', () => {
+      requests.push('x');
+    });
+    ctx.bus.on('llm:done', (msg) => {
+      done.push(msg.data.fullText);
+    });
+
+    await router.handleChatMessage('mach was böses');
+
+    expect(requests).toHaveLength(0);
+    expect(done).toEqual(['Das kann ich noch nicht.']);
+  });
+
+  it('speaks an action:result with matching requestId, drops unknown/duplicate ids', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel] Ich schaue mal.');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (msg) => {
+      done.push(msg.data.fullText);
+    });
+    let requestId = '';
+    ctx.bus.on('action:request', (msg) => {
+      requestId = msg.data.requestId;
+    });
+
+    await router.handleChatMessage('Such Hotels in Kiel');
+    ctx.bus.emit('test', 'action:result', { requestId, action: 'web_search', ok: true, speak: 'Drei Hotels gefunden.' });
+    ctx.bus.emit('test', 'action:result', { requestId, action: 'web_search', ok: true, speak: 'Doppelt.' }); // duplicate → dropped
+    ctx.bus.emit('test', 'action:result', {
+      requestId: 'ffffffff-0000-0000-0000-000000000000',
+      action: 'web_search',
+      ok: true,
+      speak: 'Fremd.',
+    });
+    await new Promise((r) => setTimeout(r, 20)); // let the output queue drain
+
+    expect(done).toEqual(['Ich schaue mal.', 'Drei Hotels gefunden.']);
+  });
+
+  it('serializes late results against a running worker stream (no interleaved chunks)', async () => {
+    const workerP = new ScriptedProvider('Lange Antwort vom Worker.');
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const events: string[] = [];
+    ctx.bus.on('llm:chunk', (msg) => {
+      events.push('chunk:' + msg.data.text);
+    });
+    ctx.bus.on('llm:done', (msg) => {
+      events.push('done:' + msg.data.fullText);
+    });
+
+    const turn = router.handleChatMessage('Erkläre etwas Langes');
+    // result arrives while the worker turn is still in flight:
+    ctx.bus.emit('test', 'action:notify', { speak: 'Dein Timer ist abgelaufen.' });
+    await turn;
+    await new Promise((r) => setTimeout(r, 20));
+
+    const doneIdx = events.findIndex((e) => e.startsWith('done:Lange'));
+    const notifyIdx = events.findIndex((e) => e === 'done:Dein Timer ist abgelaufen.');
+    expect(doneIdx).toBeGreaterThan(-1);
+    expect(notifyIdx).toBeGreaterThan(doneIdx); // notify strictly after the stream finished
+  });
+
+  it('heuristic gate: action command in 9B window swaps back and routes (R4-M1 state reset)', async () => {
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.', '[ACTION:open_program:spotify] Ich öffne Spotify.');
+    const workerP = new ScriptedProvider('Photosynthese ist …', 'sollte nie kommen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const requests: string[] = [];
+    ctx.bus.on('action:request', (msg) => {
+      requests.push(msg.data.action);
+    });
+
+    await router.handleChatMessage('Erkläre mir Photosynthese'); // → 9B window
+    expect(router.activeModel).toBe('9b');
+    await router.handleChatMessage('Öffne Spotify'); // hint word → gate
+
+    expect(requests).toEqual(['open_program']);
+    expect(router.activeModel).toBe('2b'); // R4-M1: reset before routeAndRespond, self/action keeps it
+  });
+
+  it('heuristic gate: plain chat in 9B window goes straight to the worker', async () => {
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.');
+    const workerP = new ScriptedProvider('Erste Antwort.', 'Zweite Antwort.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+
+    await router.handleChatMessage('Erkläre mir Photosynthese');
+    await router.handleChatMessage('Und was war nochmal Chlorophyll?'); // kein Hint-Wort
+
+    expect(router.activeModel).toBe('9b');
+    expect(workerP.lastMessages!.some((m) => m.content.includes('Chlorophyll'))).toBe(true);
+  });
+
+  it('destroy() clears pendingActions and the shutdown guard blocks late output', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:x y] Moment.');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    let requestId = '';
+    ctx.bus.on('action:request', (msg) => {
+      requestId = msg.data.requestId;
+    });
+    await router.handleChatMessage('Such x y');
+
+    await router.destroy();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (msg) => {
+      done.push(msg.data.fullText);
+    });
+    ctx.bus.emit('test', 'action:result', { requestId, action: 'web_search', ok: true, speak: 'Spät.' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(done).toHaveLength(0);
   });
 });
