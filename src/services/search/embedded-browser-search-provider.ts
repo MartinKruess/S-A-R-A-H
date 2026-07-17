@@ -19,10 +19,43 @@ function stripTags(html: string): string {
   return html.replace(/<[^>]*>/g, '');
 }
 
+/**
+ * DDG wraps every result URL as `//duckduckgo.com/l/?uddg=<encoded target>`.
+ * Unwrap it to the real https target; drop ads (they self-redirect to
+ * duckduckgo.com/y.js). Returns null for anything that is not a real external
+ * http(s) URL — the sanitizer would reject those anyway, and reporting them
+ * as results was the bug that made every DDG search look like "no results".
+ */
+function unwrapDdgHref(href: string): string | null {
+  const absolute = href.startsWith('//') ? `https:${href}` : href;
+  let url: URL;
+  try {
+    url = new URL(absolute);
+  } catch {
+    return null;
+  }
+  if (url.hostname.endsWith('duckduckgo.com') && url.pathname.startsWith('/l/')) {
+    const target = url.searchParams.get('uddg'); // URLSearchParams already decodes it once
+    if (!target) return null;
+    try {
+      const resolved = new URL(target);
+      const isHttp = resolved.protocol === 'http:' || resolved.protocol === 'https:';
+      // A target still on duckduckgo.com is an ad/tracker hop, not a real result.
+      if (isHttp && !resolved.hostname.endsWith('duckduckgo.com')) return target;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  return url.protocol === 'http:' || url.protocol === 'https:' ? absolute : null;
+}
+
 export function extractDuckDuckGo(html: string): SearchResult[] {
   const results: SearchResult[] = [];
   for (const m of html.matchAll(DDG_RESULT)) {
-    results.push({ url: m[1], title: stripTags(m[2]), snippet: stripTags(m[3]) });
+    const url = unwrapDdgHref(m[1]);
+    if (!url) continue;
+    results.push({ url, title: stripTags(m[2]), snippet: stripTags(m[3]) });
   }
   return results;
 }
@@ -37,9 +70,14 @@ export function extractBing(html: string): SearchResult[] {
 
 export function detectBlockPage(html: string): 'consent' | 'captcha' | null {
   const lower = html.toLowerCase();
-  if (lower.includes('captcha')) return 'captcha';
-  if (lower.includes('consent') || lower.includes('bevor sie fortfahren')) return 'consent';
-  return null;
+  if (/\bcaptcha\b/.test(lower)) return 'captcha';
+  // Only a real consent interstitial should block — not the bare word "consent"
+  // (privacy footers, cookie scripts) that appears on perfectly good result pages.
+  const isConsentWall =
+    lower.includes('bevor sie fortfahren') || // Bing/Google EU pre-consent phrase
+    /action="[^"]*consent/.test(lower) || // a form posting to a consent endpoint
+    lower.includes('id="bnp_container"'); // Bing's consent banner container
+  return isConsentWall ? 'consent' : null;
 }
 
 export class EmbeddedBrowserSearchProvider implements SearchProvider {

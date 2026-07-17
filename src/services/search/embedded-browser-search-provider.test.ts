@@ -8,14 +8,24 @@ import {
 } from './embedded-browser-search-provider.js';
 import type { SandboxBrowser } from '../../main/sandbox-browser.js';
 
+// DDG wraps every result URL in a protocol-relative redirect: the real target
+// sits URL-encoded in the `uddg` param, and the `&` is HTML-entity-escaped in the
+// serialized DOM. Ads self-redirect to duckduckgo.com/y.js and must be dropped.
+const ddgHref = (target: string): string =>
+  `//duckduckgo.com/l/?uddg=${encodeURIComponent(target)}&amp;rut=deadbeef`;
+
 const DDG_FIXTURE = `<html><body>
-<div class="result results_links results_links_deep web-result">
-  <h2 class="result__title"><a class="result__a" href="https://hotel-kiel.example/zimmer">Hotel Kiel – Zimmer &amp; Preise</a></h2>
-  <a class="result__snippet" href="https://hotel-kiel.example/zimmer">Zentral gelegenes Hotel in Kiel mit Förde-Blick.</a>
+<div class="result result--ad">
+  <h2 class="result__title"><a class="result__a" href="${ddgHref('https://duckduckgo.com/y.js?ad_domain=booking.com')}">Booking.com – Anzeige</a></h2>
+  <a class="result__snippet" href="${ddgHref('https://duckduckgo.com/y.js?ad_domain=booking.com')}">Anzeige für Hotels.</a>
 </div>
 <div class="result results_links results_links_deep web-result">
-  <h2 class="result__title"><a class="result__a" href="https://nordsee.example/kiel">Kiel Übernachtung</a></h2>
-  <a class="result__snippet" href="https://nordsee.example/kiel">Günstige Zimmer ab 49 Euro.</a>
+  <h2 class="result__title"><a class="result__a" href="${ddgHref('https://hotel-kiel.example/zimmer')}">Hotel Kiel – Zimmer &amp; Preise</a></h2>
+  <a class="result__snippet" href="${ddgHref('https://hotel-kiel.example/zimmer')}">Zentral gelegenes Hotel in Kiel mit Förde-Blick.</a>
+</div>
+<div class="result results_links results_links_deep web-result">
+  <h2 class="result__title"><a class="result__a" href="${ddgHref('https://nordsee.example/kiel')}">Kiel Übernachtung</a></h2>
+  <a class="result__snippet" href="${ddgHref('https://nordsee.example/kiel')}">Günstige Zimmer ab 49 Euro.</a>
 </div>
 </body></html>`;
 
@@ -26,12 +36,22 @@ const BING_FIXTURE = `<html><body><ol id="b_results">
 const CONSENT_FIXTURE = '<html><body><form action="/consent">Bevor Sie fortfahren… anonymized data</form></body></html>';
 
 describe('extractors', () => {
-  it('extracts DuckDuckGo results (title, url, snippet)', () => {
+  it('unwraps the DDG redirect to the real https target and drops ads', () => {
     const results = extractDuckDuckGo(DDG_FIXTURE);
-    expect(results).toHaveLength(2);
+    expect(results).toHaveLength(2); // the duckduckgo.com/y.js ad is dropped
     expect(results[0].title).toContain('Hotel Kiel');
-    expect(results[0].url).toBe('https://hotel-kiel.example/zimmer');
+    expect(results[0].url).toBe('https://hotel-kiel.example/zimmer'); // real target, not the /l/ redirect
     expect(results[0].snippet).toContain('Förde-Blick');
+    expect(results[1].url).toBe('https://nordsee.example/kiel');
+  });
+
+  it('keeps a direct http(s) href when a result is not wrapped', () => {
+    const html =
+      '<h2><a class="result__a" href="https://direct.example/x">Direkt</a></h2>' +
+      '<a class="result__snippet" href="https://direct.example/x">Ein Treffer.</a>';
+    const results = extractDuckDuckGo(html);
+    expect(results).toHaveLength(1);
+    expect(results[0].url).toBe('https://direct.example/x');
   });
 
   it('extracts Bing results', () => {
@@ -48,6 +68,11 @@ describe('extractors', () => {
     expect(detectBlockPage(CONSENT_FIXTURE)).toBe('consent');
     expect(detectBlockPage('<html>bitte lösen Sie das captcha</html>')).toBe('captcha');
     expect(detectBlockPage(DDG_FIXTURE)).toBeNull();
+  });
+
+  it('does not flag the bare word "consent" on a normal results page (no false positive)', () => {
+    const normal = `<html><body><footer><a href="/privacy">Manage consent</a></footer>${BING_FIXTURE}</body></html>`;
+    expect(detectBlockPage(normal)).toBeNull();
   });
 });
 
