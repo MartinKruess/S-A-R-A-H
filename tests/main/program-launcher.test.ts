@@ -3,7 +3,7 @@ import { matchProgram, ProgramLauncher, type ProgramEntry } from '../../src/main
 import { EventEmitter } from 'events';
 
 function prog(over: Partial<ProgramEntry> & { name: string; path: string }): ProgramEntry {
-  return { type: 'exe', verified: true, aliases: [], ...over };
+  return { type: 'exe', verified: true, aliases: [], source: 'detected', ...over };
 }
 
 const PROGRAMS: ProgramEntry[] = [
@@ -79,7 +79,7 @@ describe('ProgramLauncher.launch', () => {
     const result = await launcher.launch('discord', PROGRAMS);
     expect(spawnFn).not.toHaveBeenCalled();
     expect(result.ok).toBe(false);
-    expect(result.speak).toBe('Der Eintrag für Discord zeigt auf einen Updater – ich starte den nicht.');
+    expect(result.speak).toBe('Der Eintrag für Discord zeigt auf einen Updater — ich starte den nicht.');
   });
 
   it('launches appx via explorer.exe shell:AppsFolder (verified spike) and announces launchers neutrally', async () => {

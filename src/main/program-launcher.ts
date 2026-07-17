@@ -1,14 +1,8 @@
 // src/main/program-launcher.ts
 import { spawn as nodeSpawn, execFile as nodeExecFile } from 'child_process';
+import type { ProgramEntry } from '../core/config-schema.js';
 
-export interface ProgramEntry {
-  name: string;
-  path: string;
-  type: 'exe' | 'launcher' | 'appx' | 'updater';
-  verified: boolean;
-  aliases: string[];
-  duplicateGroup?: string;
-}
+export type { ProgramEntry } from '../core/config-schema.js';
 
 export interface LaunchResult {
   ok: boolean;
@@ -78,7 +72,7 @@ export class ProgramLauncher {
 
     const program = match.program;
     if (program.type === 'updater') {
-      return { ok: false, speak: `Der Eintrag für ${program.name} zeigt auf einen Updater – ich starte den nicht.` };
+      return { ok: false, speak: `Der Eintrag für ${program.name} zeigt auf einen Updater — ich starte den nicht.` };
     }
     if (program.type === 'appx') {
       return this.launchAppx(program);
@@ -86,13 +80,13 @@ export class ProgramLauncher {
     return this.launchExe(program);
   }
 
-  /** Store apps: verified spike (17.07.) – explorer.exe shell:AppsFolder\<AUMID>. */
+  /** Store apps: verified spike (17.07.) — explorer.exe shell:AppsFolder\<AUMID>. */
   private launchAppx(program: ProgramEntry): Promise<LaunchResult> {
     const aumid = program.path.replace(/^appx:/, '');
     return new Promise((resolve) => {
       this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
         if (err) {
-          resolve({ ok: false, speak: `${program.name} ließ sich nicht starten – vielleicht ist die App nicht mehr installiert.` });
+          resolve({ ok: false, speak: `${program.name} ließ sich nicht starten — vielleicht ist die App nicht mehr installiert.` });
         } else {
           resolve({ ok: true });
         }
