@@ -171,6 +171,8 @@ function mockFetchCapture(): { body: () => Record<string, unknown> } {
 }
 
 describe('OllamaProvider per-call temperature', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it('passes temperature into the request options', async () => {
     const cap = mockFetchCapture();
     const provider = new OllamaProvider('http://x', 'm', { num_ctx: 2048 });
