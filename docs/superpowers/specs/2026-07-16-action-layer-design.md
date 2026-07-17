@@ -1,6 +1,6 @@
 # Action-Layer V1 — Design
 
-**Datum:** 2026-07-16 · **Rev. 4** (17.07.: Doppel-Review konsolidiert — Copilot K1–K4/M1–M6/Mi1–Mi7 + frisches Review F1–F11, Protokolle in `problems/talkabouts.md`; 9B-Fenster-Entscheidung „Heuristik-Gate" von Martin. Rev. 3: an gemergte Spec A+B angepasst. Rev. 2: erstes Copilot-Review)
+**Datum:** 2026-07-16 · **Rev. 5** (17.07.: Rev.-4-Review eingearbeitet — R4-M1..M3, R4-Mi1..Mi4. Rev. 4: Doppel-Review konsolidiert — Copilot K1–K4/M1–M6/Mi1–Mi7 + frisches Review F1–F11, Protokolle in `problems/talkabouts.md`; 9B-Fenster-Entscheidung „Heuristik-Gate" von Martin. Rev. 3: an gemergte Spec A+B angepasst. Rev. 2: erstes Copilot-Review)
 **Branch:** `feat/action-layer`
 **Status:** Entwurf, bereit für die Plan-Phase
 
@@ -59,6 +59,7 @@ Der Text hinter dem Tag ist Sarahs gesprochene Rückmeldung — sie geht wie bei
 - Der Worker bleibt nach einem 9B-Turn warm (Folgefragen bleiben schnell; das 5-Minuten-Idle-Timeout bleibt unverändert).
 - Im 9B-Fenster läuft vor dem Worker-Dispatch eine **Aktions-Heuristik**: eine exportierte, testbare Wortliste (`ACTION_HINT_WORDS`, z. B. „öffne/öffnen/starte", „such/suche", „zeig", „timer/wecker", „lautstärke/lauter/leiser", „sperr/sperre") gegen die normalisierte Nachricht. Details (Normalisierung, Wortgrenzen) legt der Plan fest.
 - **Treffer** → Swap zurück zum Router (`vramManager.swapModels`), dann normales `routing.route()` — die Heuristik entscheidet **nur**, ob sich der Swap lohnt; sie parst nie Parameter und führt **nie** selbst aus. Fehlklassifikation kostet schlimmstenfalls einen unnötigen Swap (harmlos, Router kann `ROUTE:9b` zurückgeben).
+- **State-Konsistenz (R4-M1):** Das Gate setzt `activeModel = '2b'` **vor** dem `routeAndRespond`-Aufruf. Heute setzt nur die 9B-Route den State (`router-service.ts:147`), die Self-Route lässt ihn unverändert — ohne den Reset bliebe nach einem Gate-Self-Turn `activeModel === '9b'` stehen und die Folgenachricht würde qwen kalt laden, obwohl phi4-mini im VRAM liegt.
 - **Kein Treffer** → direkt an den Worker wie bisher.
 - **Rest-Risiko (dokumentiert, akzeptiert):** Ungewöhnlich formulierte Kommandos ohne Signalwort rutschen im 9B-Fenster als Chat durch. V2 darf das verfeinern (Intent-Klassifikator o. ä.).
 
@@ -79,7 +80,7 @@ Der Text hinter dem Tag ist Sarahs gesprochene Rückmeldung — sie geht wie bei
 | Topic | Payload |
 |---|---|
 | `action:request` | `{ requestId: string; action: string; param: string }` — kein `mode`-Feld (F10): ob gesprochen wird, entscheidet wie bisher der VoiceService anhand seines Modus beim Konsum der `llm:*`-Events |
-| `action:result` | `{ requestId: string; action: string; ok: boolean; speak?: string }` |
+| `action:result` | `{ requestId: string; action: string; ok: boolean; speak?: string }` — **genau eines pro Request**, auch bei stillem Erfolg (dann ohne `speak`); räumt den `pendingActions`-Entry (R4-Mi1) |
 | `action:notify` | `{ speak: string }` — für nutzerungebundene Ereignisse (Timer-Ablauf), neutral angesagt, keine requestId-Bindung |
 
 `requestId` = `crypto.randomUUID()`, erzeugt vom RouterService beim Parsen des Tags. `speak` ist optional: erfolgreiches Programm-Öffnen bleibt still (Sarah hat die Aktion schon angekündigt). Such-Zusammenfassungen und alle Fehler kommen als `speak`.
@@ -102,7 +103,8 @@ Regeln:
 
 - Eingehende `action:result` werden über die Warteschlange dieser Methode ausgegeben — trifft ein Suchergebnis während eines laufenden Worker-Streams ein, wartet es, bis der Stream fertig ist.
 - **Sprech-Reihenfolge:** Wer zuerst *fertig* ist, spricht zuerst — unabhängige Action-Ergebnisse müssen nicht auf früher gestellte, noch laufende Anfragen warten. Garantiert wird nur: nie mitten in eine laufende Ausgabe (Serialisierung), und Historie/DB in exakt der gesprochenen Reihenfolge.
-- Der Router hält eine Map `pendingActions: Map<requestId, …>`. Ergebnisse ohne bekannten `requestId` (z. B. nach `destroy()` oder doppelt) werden verworfen und geloggt.
+- Der Router hält eine Map `pendingActions: Map<string, { action: string }>` (R4-Mi1) — der Value dient der Plausibilitätsprüfung des Results (`result.action` muss zum Request passen). Lifecycle: Entry entsteht beim Emit von `action:request`; **ActionService emittiert für jeden Request genau ein `action:result`** (auch stille Erfolge, dann ohne `speak`) — dessen Empfang entfernt den Entry, bevor die Ausgabe in die Queue geht. `destroy()` leert die Map (der Shutdown-Guard verhindert ohnehin späte Emissionen). Ergebnisse ohne bekannten `requestId` (z. B. nach `destroy()` oder doppelt) werden verworfen und geloggt.
+- **Allowlist-Import (R4-Mi4):** RouterService prüft `parsed.action` gegen die Allowlist **vor** dem Emit von `action:request` — importiert dafür die Namensliste aus `services/actions/action-schemas.ts` (Richtung `llm → actions`, kein Zyklus: action-schemas importiert nichts aus llm). Es gibt **keine** zweite Allowlist-Kopie im Router.
 - Aktionen werden nur geparst/emittiert, wenn `status === 'running'`. Nach `destroy()` emittiert nichts mehr auf den Bus (Shutdown-Guard in `emitAssistantResponse`).
 - Timer-Abläufe kommen als `action:notify` — bewusst **ohne** Bindung an die auslösende, längst vergangene User-Nachricht; die Ansage ist neutral formuliert („Dein 10-Minuten-Timer ist abgelaufen.").
 - **Historien-Eigentum bleibt beim RouterService.** ActionService fasst Historie/DB nie an.
@@ -125,6 +127,9 @@ Regeln:
 | `src/main/sandbox-browser.ts` | neu | Isoliertes BrowserWindow inkl. vollem Navigations-/Lifecycle-Vertrag (§6) |
 | `src/main/program-launcher.ts` | neu | Start ausschließlich aus gescannter Programmliste. Nutzt die **Daten** aus `program-utils.ts` (Aliase, Typ-Klassifikation, `duplicateGroup`) — aber Achtung (F5): einen Namens-**Matcher** gibt es dort nicht, der ist Neubau nach der Semantik in §5. `ProgramLauncher` registriert keinen IPC; `ipc-programs.ts` startet nie Programme (Mi7) |
 | `src/renderer/dashboard/dashboard.ts` | ändern | Renderer-Vertrag F2: `llm:chunk` ohne offene Bubble → neue Assistant-Bubble |
+| `src/services/voice/voice-service.ts` | ändern | F9/R4-M2: TTS-Deferral — bei `listening` werden `llm:chunk`/`llm:done` für TTS gepuffert und nach Ende der Aufnahme abgespielt (Chat-Bubble unabhängig davon sofort) |
+| `src/services/llm/llm-provider.interface.ts` | ändern | F8/R4-M3: `ChatOptions` um optionales `temperature?: number` erweitern |
+| `src/services/llm/providers/ollama-provider.ts` | ändern | F8/R4-M3: `temperature` in den Ollama-Request-Body übernehmen |
 | `src/services/llm/route-parser.ts` | ändern | `[ACTION:…]`-Union, strikte Syntax (§3) |
 | `src/services/llm/routing-prompt.ts` | ändern | ACTION-Beispiele rein, `ROUTE:self`-Programmbeispiele raus |
 | `src/services/llm/router-service.ts` | ändern | Action-Zweig, `emitAssistantResponse()`, `pendingActions`, Heuristik-Gate im 9B-Fenster (§3), Subscription `action:result`/`action:notify` — **`subscriptions`-Array entsprechend erweitern (M6), sonst kommt still nichts an**. Achtung (Spec B): `runWorker`/self-Route persistieren bereits über `persistMessage()` — das Refactoring zieht diese bestehenden Aufrufe in `emitAssistantResponse()` zusammen, baut keinen zweiten Schreibpfad |
@@ -145,8 +150,8 @@ Keine neuen externen Dateien, keine Compose-Änderung, nichts zu packagen. Einzi
 | `web_search` | `z.string().min(2).max(200)` | SearchService (§7) |
 | `show_browser` | `z.string().min(1).max(100)` (Index 1–8 oder Stichwort; leerer Param → Zod-Fehler wie jede ungültige Aktion, F10) | Nur gegen die aktuelle Ergebnis-Session (§7). Stichwort-Match nur bei eindeutigem Treffer, sonst Rückfrage. **Nur gemerkte, kanonisch validierte URLs, nie LLM-URLs** |
 | `set_volume` | `z.coerce.number().int().min(0).max(100)` | Wert außerhalb → Ablehnung mit `speak`, kein stilles Klemmen. **Implementierung erst nach Spike** (§5a) |
-| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout` bei Standby); Ablauf → `action:notify` mit Dauer („Dein 10-Minuten-Timer ist abgelaufen."), einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf. **Kein Abbruch in V1** (bewusste Entscheidung 16.07. — Timer laufen einfach ab, „Stopp den Timer" wird ehrlich abgelehnt wie jede unbekannte Aktion) |
-| `lock_screen` | kein Param | `execFile('rundll32.exe', ['user32.dll,LockWorkStation'])` — fester Binary-Name + festes Args-Array, keine Interpolation; `error`/Exit-Code behandelt |
+| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; Zeitbasis (R4-Mi2, entschieden): `Date.now()`-Startzeit merken, im `setTimeout`-Callback prüfen ob `Date.now() - startMs >= durationMs`, sonst `setTimeout(remaining)` nachlegen — korrekt nach Standby, testbar mit `vi.useFakeTimers`, kein `process.hrtime` nötig; Ablauf → `action:notify` mit Dauer („Dein 10-Minuten-Timer ist abgelaufen."), einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf. **Kein Abbruch in V1** (bewusste Entscheidung 16.07. — Timer laufen einfach ab, „Stopp den Timer" wird ehrlich abgelehnt wie jede unbekannte Aktion) |
+| `lock_screen` | `z.literal('')` (R4-Mi3 — Parser liefert `''` bei fehlendem Param; jeder Nicht-Leer-Param wie `[ACTION:lock_screen:jetzt]` → Zod-Fehler → „Das kann ich noch nicht.", nie stiller Start) | `execFile('rundll32.exe', ['user32.dll,LockWorkStation'])` — fester Binary-Name + festes Args-Array, keine Interpolation; `error`/Exit-Code behandelt |
 
 ### 5a. Plattform-Guard & Lautstärke-Spike (Review-Punkt 10)
 
