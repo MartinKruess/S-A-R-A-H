@@ -121,20 +121,30 @@ export class RouterService implements SarahService {
       console.warn('[Router] No route tag in 2B response, falling back to self');
     }
 
-    if (result.route === 'self') {
-      this.context.bus.emit(this.id, 'llm:chunk', { text: result.feedback });
-      this.context.bus.emit(this.id, 'llm:done', { fullText: result.feedback });
-      this.history.push({ role: 'assistant', content: result.feedback });
-      await this.persistMessage('assistant', result.feedback);
+    if (result.parsed.kind === 'action') {
+      // Task 4 wires the real action branch; until then behave like self-route.
+      console.warn('[Router] ACTION tag before action branch exists:', result.parsed.action);
+      this.context.bus.emit(this.id, 'llm:chunk', { text: result.parsed.feedback });
+      this.context.bus.emit(this.id, 'llm:done', { fullText: result.parsed.feedback });
+      this.history.push({ role: 'assistant', content: result.parsed.feedback });
+      await this.persistMessage('assistant', result.parsed.feedback);
+      return;
+    }
+
+    if (result.parsed.route === 'self') {
+      this.context.bus.emit(this.id, 'llm:chunk', { text: result.parsed.feedback });
+      this.context.bus.emit(this.id, 'llm:done', { fullText: result.parsed.feedback });
+      this.history.push({ role: 'assistant', content: result.parsed.feedback });
+      await this.persistMessage('assistant', result.parsed.feedback);
       return;
     }
 
     // Routes: 9b, backend, extern, vision — all go to 9B for now
-    const busTarget = result.route === 'vision' ? '9b' as const : result.route;
+    const busTarget = result.parsed.route === 'vision' ? '9b' as const : result.parsed.route;
     this.context.bus.emit(this.id, 'llm:routing', {
       from: '2b',
       to: busTarget,
-      feedback: result.feedback,
+      feedback: result.parsed.feedback,
     });
 
     const llmConfig = this.context.parsedConfig.llm;

@@ -1,11 +1,10 @@
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import { buildRoutingPrompt } from './routing-prompt.js';
-import { parseRouteTag, type RouteTarget } from './route-parser.js';
+import { parseRouteTag, type ParsedRoute } from './route-parser.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
 
 export interface RoutingResult {
-  route: RouteTarget;
-  feedback: string;
+  parsed: ParsedRoute;
   tookMs: number;
   hadTag: boolean;
 }
@@ -21,9 +20,10 @@ export class RoutingService {
     const start = performance.now();
     const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1 });
     const tookMs = Math.round(performance.now() - start);
-    const { route, feedback } = parseRouteTag(response);
-    const hadTag = response.trimStart().startsWith('[ROUTE:');
-    return { route, feedback, tookMs, hadTag };
+    const parsed = parseRouteTag(response);
+    const trimmed = response.trimStart();
+    const hadTag = trimmed.startsWith('[ROUTE:') || trimmed.startsWith('[ACTION:');
+    return { parsed, tookMs, hadTag };
   }
 
   async warmup(): Promise<void> {
