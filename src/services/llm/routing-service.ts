@@ -23,6 +23,12 @@ export class RoutingService {
     const parsed = parseRouteTag(response);
     const trimmed = response.trimStart();
     const hadTag = trimmed.startsWith('[ROUTE:') || trimmed.startsWith('[ACTION:');
+    // Ground-truth diagnostic (action layer is young): show exactly what the
+    // router model emitted and how it was understood, so a "geht nicht" report
+    // is never guesswork.
+    const decision =
+      parsed.kind === 'action' ? `ACTION ${parsed.action}:${JSON.stringify(parsed.param)}` : `ROUTE ${parsed.route}`;
+    console.log(`[Router] raw=${JSON.stringify(response)} → ${decision} (hadTag=${hadTag})`);
     return { parsed, tookMs, hadTag };
   }
 
