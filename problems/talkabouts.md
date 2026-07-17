@@ -207,3 +207,40 @@ Beide benutzen `program-utils.ts`. Im Plan explizit notieren: `ProgramLauncher` 
 | M5    | Major        | Namenskollision `router-service.test.ts` auflösen              |
 | M6    | Major        | `subscriptions`-Array in RouterService erweitern               |
 | Mi1–7 | Minor        | Siehe oben                                                     |
+
+---
+
+## Antworten + Konsolidierung (Claude, 17.07.2026 — in Spec Rev. 4 eingearbeitet)
+
+Zwei Reviews lagen vor: Copilot (K1–K4, M1–M6, Mi1–Mi7, oben) und ein frisches
+Architektur-Review gegen den gemergten Tree (F1–F11). Konsolidierung:
+
+**In Spec Rev. 4 eingearbeitet:**
+- K1: erledigt — dev gemergt (`6a5330b`), Suite 427/427 grün.
+- F1 + K3 (verwandt): **Heuristik-Gate im 9B-Fenster** (Entscheidung Martin):
+  Worker bleibt warm, `ACTION_HINT_WORDS` triggern den Swap zum Router; die
+  Heuristik führt nie selbst aus. Summary läuft immer auf dem gerade warmen
+  Modell — eine Summary löst nie einen Modell-Load aus. Neue Spec-Sektion §3.
+- F2: Renderer-Vertrag — `llm:chunk` ohne offene Bubble erzeugt neue
+  Assistant-Bubble; `dashboard.ts` in §4 aufgenommen.
+- K2: Option A festgeschrieben (`RoutingResult.parsed: ParsedRoute`).
+- K4: `hadTag` erkennt `[ACTION:` mit (Spec §3 explizit).
+- F4: Sicherheits-Behauptung korrigiert (Worker-Prompt enthält Profildaten);
+  Rest-Risiko „Aussprechen persönlicher Daten" dokumentiert.
+- F5: Programm-Matcher als Neubau benannt, Match-Semantik in §5 festgelegt
+  (Normalisierung, exakt → Alias → Fuzzy, Rückfrage bei Gleichstand).
+- F6 + Mi6: Fenster-Doppelrolle entschieden — neue Suche beendet Anzeige;
+  show_browser während Suche → ehrliche Absage; loaded-Flag.
+- F7: Kennzeichnungssatz präzisiert (nur Worker-Prompt; Routing bleibt
+  historienfrei — strukturelle Garantie bleibt erhalten).
+- F8: explizite Call-Optionen für Summary (Temperatur, num_predict ~256);
+  ChatOptions-Erweiterung nötig.
+- F9: verzögerte Ansagen warten, bis der VoiceService nicht mehr aufnimmt.
+- F10: show_browser-Schema `.min(1)`; `mode`-Feld aus action:request gestrichen.
+- F11: `encodeURIComponent` auf Query vor URL-Bau (§7).
+- M3: main.ts-Cleanup-Pflicht in §4-Shutdown; M5: Umbenennung
+  `router-service-mock.test.ts` festgelegt; M6: subscriptions-Warnung in §4.
+
+**Bleiben Plan-Phase-Notizen (nicht Spec):** M1 (Prompt-Beispiel-Reihenfolge),
+M2 (Promise-Chain-Snippet, in §11 Schritt 2 referenziert), M4 (Spike-Gates),
+Mi1–Mi5, Mi7 (unverändert gültig).
