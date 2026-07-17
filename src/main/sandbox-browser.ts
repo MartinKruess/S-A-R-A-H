@@ -140,21 +140,50 @@ export class SandboxBrowser {
     const wc = win.webContents;
     return new Promise<boolean>((resolve) => {
       let settled = false;
+      let redirects = 0;
+
+      const cleanup = (): void => {
+        settled = true;
+        clearTimeout(timeout);
+        wc.removeListener('did-finish-load', onFinish);
+        wc.removeListener('did-fail-load', onFail);
+        wc.removeListener('will-redirect', onRedirect);
+        wc.removeListener('render-process-gone', onGone);
+      };
+      const fail = (): void => {
+        if (settled) return;
+        cleanup();
+        resolve(false);
+      };
+
       const onFinish = (): void => {
         if (settled) return;
-        settled = true;
-        wc.removeListener('did-fail-load', onFail);
+        cleanup();
         win.show();
         resolve(true);
       };
-      const onFail = (): void => {
-        if (settled) return;
-        settled = true;
-        wc.removeListener('did-finish-load', onFinish);
-        resolve(false);
+      const onFail = (): void => fail();
+      const onRedirect = (event: { preventDefault(): void }, redirectUrl: string): void => {
+        redirects += 1;
+        if (!isHttpUrl(redirectUrl) || redirects > MAX_REDIRECTS) {
+          event.preventDefault();
+          wc.stop();
+          fail();
+        }
       };
-      wc.once('did-finish-load', onFinish);
-      wc.once('did-fail-load', onFail);
+      const onGone = (): void => {
+        fail();
+        win.destroy();
+      };
+      const timeout = setTimeout(() => {
+        wc.stop();
+        fail();
+      }, LOAD_TIMEOUT_MS);
+
+      wc.on('did-finish-load', onFinish);
+      wc.on('did-fail-load', onFail);
+      wc.on('will-redirect', onRedirect);
+      wc.on('render-process-gone', onGone);
       win.loadURL(url).catch(() => onFail());
     });
   }

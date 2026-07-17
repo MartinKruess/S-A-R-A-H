@@ -104,4 +104,29 @@ describe('SandboxBrowser.show', () => {
     const { browser } = makeBrowser();
     await expect(browser.show('javascript:alert(1)')).resolves.toBe(false);
   });
+
+  it('aborts on redirect to a non-http scheme', async () => {
+    const { browser, windows } = makeBrowser();
+    const p = browser.show('https://example.com/seite');
+    await new Promise((r) => setTimeout(r, 5));
+    const evt = { preventDefault: vi.fn() };
+    windows[0].webContents.emit('will-redirect', evt, 'file:///x');
+    await expect(p).resolves.toBe(false);
+    expect(evt.preventDefault).toHaveBeenCalled();
+    expect(windows[0].webContents.stop).toHaveBeenCalled();
+  });
+
+  it('render-process-gone during show() resolves false; next call gets fresh window', async () => {
+    const { browser, windows } = makeBrowser();
+    const p = browser.show('https://example.com/seite');
+    await new Promise((r) => setTimeout(r, 5));
+    windows[0].webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    await expect(p).resolves.toBe(false);
+
+    const p2 = browser.show('https://example.com/seite');
+    await new Promise((r) => setTimeout(r, 5));
+    expect(windows).toHaveLength(2); // frisches Fenster
+    windows[1].webContents.emit('did-finish-load');
+    await expect(p2).resolves.toBe(true);
+  });
 });
