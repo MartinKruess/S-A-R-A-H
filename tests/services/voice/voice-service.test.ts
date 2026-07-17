@@ -721,3 +721,39 @@ describe('VoiceService partial failure (voice:capability)', () => {
     await service.destroy();
   });
 });
+
+describe('TTS deferral while listening (F9)', () => {
+  it('buffers llm output while listening and enqueues it after the recording ends', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const service = new VoiceService(createMockContext(bus), createMockStt(), tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+    await service.init();
+
+    // Zustand wie bei gedrücktem PTT herstellen (gleiches Muster wie die bestehenden State-Tests):
+    // Harness note: this file drives onMessage() directly (see neighboring tests using
+    // `service.onMessage(makeMsg(...))`) rather than the bus, since VoiceService's own
+    // bus subscription wiring lives in ServiceRegistry, not in VoiceService itself.
+    (service as unknown as { setState: (s: string) => void }).setState('listening');
+
+    service.onMessage(makeMsg('llm:chunk', { text: 'Dein Timer ist abgelaufen.' }));
+    service.onMessage(makeMsg('llm:done', { fullText: 'Dein Timer ist abgelaufen.' }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).not.toHaveBeenCalled(); // während der Aufnahme: still
+
+    (service as unknown as { setState: (s: string) => void }).setState('processing');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).toHaveBeenCalledWith('Dein Timer ist abgelaufen.'); // danach: gesprochen
+  });
+
+  it('does not defer when idle', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const service = new VoiceService(createMockContext(bus), createMockStt(), tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+    await service.init();
+
+    service.onMessage(makeMsg('llm:chunk', { text: 'Hallo.' }));
+    service.onMessage(makeMsg('llm:done', { fullText: 'Hallo.' }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).toHaveBeenCalled();
+  });
+});
