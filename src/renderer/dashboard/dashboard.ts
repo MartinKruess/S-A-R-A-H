@@ -93,6 +93,11 @@ sarah.onChatError((data) => {
   addBubble('error', data.message);
 });
 
+// One-time persistence warning (storage degraded — Sarah keeps talking, RAM only)
+sarah.onStorageDegraded((data) => {
+  addBubble('error', `⚠️ ${data.message}`);
+});
+
 // ── Voice Transcript → Chat Bubble ──
 sarah.voice.onTranscript((data) => {
   addBubble('user', data.text);

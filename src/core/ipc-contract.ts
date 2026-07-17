@@ -26,6 +26,7 @@ export interface IpcEvents {
   'llm:chunk':         BusEvents['llm:chunk'];
   'llm:done':          BusEvents['llm:done'];
   'llm:error':         BusEvents['llm:error'];
+  'storage:degraded':  BusEvents['storage:degraded'];
   'voice:state':       BusEvents['voice:state'];
   'voice:listening':   BusEvents['voice:listening'];
   'voice:transcript':  BusEvents['voice:transcript'];
