@@ -2652,17 +2652,17 @@ git commit -m "feat(actions): wire action layer into main with ordered registrat
 
 **Files:** keine neuen — Verifikation + ggf. Fixes.
 
-- [ ] **Step 1: Komplette Suite mit Typecheck**
+- [x] **Step 1: Komplette Suite mit Typecheck** — 508 Tests / 50 Dateien grün, Typecheck (beide tsconfigs) grün, posttest hat better-sqlite3 für Electron zurückgebaut.
 
 Run: `npm test`
 Expected: Typecheck (beide tsconfigs) + alle Vitest-Suites grün. Der posttest-Hook baut better-sqlite3 wieder für Electron — danach ist die App startbar.
 
-- [ ] **Step 2: Build**
+- [x] **Step 2: Build** — exit 0.
 
 Run: `npm run build`
 Expected: exit 0.
 
-- [ ] **Step 3: Commit (nur falls Fixes nötig waren)**
+- [x] **Step 3: Commit (nur falls Fixes nötig waren)** — keine Fixes nötig, alles ohne Änderung grün.
 
 ```bash
 git add -A src tests
