@@ -5,7 +5,11 @@ import { SandboxBrowser, type SandboxWindow } from '../../src/main/sandbox-brows
 class FakeWebContents extends EventEmitter {
   stop = vi.fn();
   executeJavaScript = vi.fn().mockResolvedValue('<html>seite</html>');
-  session = { clearStorageData: vi.fn().mockResolvedValue(undefined), clearCache: vi.fn().mockResolvedValue(undefined) };
+  session = {
+    clearStorageData: vi.fn().mockResolvedValue(undefined),
+    clearCache: vi.fn().mockResolvedValue(undefined),
+    cookies: { set: vi.fn().mockResolvedValue(undefined) },
+  };
 }
 
 class FakeWindow extends EventEmitter implements SandboxWindow {
@@ -53,6 +57,24 @@ describe('SandboxBrowser.fetchPageHtml', () => {
     windows[0].webContents.emit('will-redirect', evt, 'file:///x');
     await expect(p).rejects.toThrow('Blocked redirect');
     expect(evt.preventDefault).toHaveBeenCalled();
+  });
+
+  it('seeds Bing consent cookies before a bing.com fetch, not for other hosts', async () => {
+    const { browser, windows } = makeBrowser();
+    const bing = browser.fetchPageHtml('https://www.bing.com/search?q=x', new AbortController().signal);
+    await new Promise((r) => setTimeout(r, 5));
+    windows[0].webContents.emit('did-finish-load');
+    await bing;
+    const cookieNames = windows[0].webContents.session.cookies.set.mock.calls.map((c) => c[0].name);
+    expect(cookieNames).toContain('SRCHHPGUSR');
+    expect(windows[0].webContents.session.cookies.set.mock.calls[0][0].domain).toBe('.bing.com');
+
+    const other = browser.fetchPageHtml('https://html.duckduckgo.com/html/?q=x', new AbortController().signal);
+    await new Promise((r) => setTimeout(r, 5));
+    windows[0].webContents.emit('did-finish-load');
+    await other;
+    // still only the bing seeding — no new cookie writes for duckduckgo
+    expect(windows[0].webContents.session.cookies.set.mock.calls.every((c) => c[0].domain === '.bing.com')).toBe(true);
   });
 
   it('abort signal stops loading; a late did-finish-load is ignored', async () => {

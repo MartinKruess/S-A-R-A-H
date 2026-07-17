@@ -12,7 +12,20 @@ export interface SandboxWindow {
     once(event: string, listener: (...args: never[]) => void): void;
     removeListener(event: string, listener: (...args: never[]) => void): void;
     emit?(event: string, ...args: unknown[]): boolean;
-    session: { clearStorageData(): Promise<void>; clearCache(): Promise<void> };
+    session: {
+      clearStorageData(): Promise<void>;
+      clearCache(): Promise<void>;
+      cookies?: {
+        set(details: {
+          url: string;
+          name: string;
+          value: string;
+          domain?: string;
+          path?: string;
+          secure?: boolean;
+        }): Promise<void>;
+      };
+    };
   };
   loadURL(url: string): Promise<void>;
   show(): void;
@@ -20,6 +33,49 @@ export interface SandboxWindow {
   destroy(): void;
   isDestroyed(): boolean;
   once(event: 'closed', listener: () => void): void;
+}
+
+/**
+ * Bing gates cookieless EU clients behind a "Bevor Sie fortfahren" consent
+ * interstitial. Seeding the cookies a returning visitor already has skips that
+ * wall. We set them ourselves, so this is not tracking and the session stays
+ * isolated (storage is still cleared before every fetch). Best-effort: a failed
+ * cookie must never block the search.
+ */
+async function seedConsentCookies(
+  session: SandboxWindow['webContents']['session'],
+  targetUrl: string,
+): Promise<void> {
+  if (!session.cookies) return;
+  let host: string;
+  try {
+    host = new URL(targetUrl).hostname;
+  } catch {
+    return;
+  }
+  if (!/(^|\.)bing\.com$/.test(host)) return;
+  const dob = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const jar: readonly { name: string; value: string }[] = [
+    { name: 'SRCHHPGUSR', value: 'SRCHLANG=de' },
+    { name: 'SRCHD', value: 'AF=NOFORM' },
+    { name: 'SRCHUSR', value: `DOB=${dob}` },
+    { name: '_EDGE_V', value: '1' },
+    { name: '_EDGE_S', value: 'F=1' },
+  ];
+  for (const c of jar) {
+    try {
+      await session.cookies.set({
+        url: 'https://www.bing.com',
+        name: c.name,
+        value: c.value,
+        domain: '.bing.com',
+        path: '/',
+        secure: true,
+      });
+    } catch {
+      // best effort
+    }
+  }
 }
 
 function isHttpUrl(raw: string): boolean {
@@ -73,6 +129,7 @@ export class SandboxBrowser {
     const wc = win.webContents;
     await wc.session.clearStorageData();
     await wc.session.clearCache();
+    await seedConsentCookies(wc.session, url); // skip Bing's EU consent wall (search only)
 
     return new Promise<string>((resolve, reject) => {
       let settled = false;
