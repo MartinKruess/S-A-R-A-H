@@ -12,3 +12,4 @@ resources/
 
 # Claude Code local (per-machine) settings — shared settings go in settings.json
 .claude/settings.local.json
+sarah-live.log
