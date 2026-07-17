@@ -248,6 +248,15 @@ export class VoiceService implements SarahService {
       // LLM still producing — stay in speaking state, queue will resume
       return;
     }
+    if (this._voiceState !== 'speaking') {
+      // The queue can also drain because deferred sentences from a finished
+      // turn were flushed (F9) while a NEW turn is already in flight
+      // (state 'listening'/'processing') or has already reset (state
+      // 'idle'). That is not "the current turn is done" — only a turn that
+      // actually reached 'speaking' may be completed here. The new turn's
+      // own llm:chunk will move state to 'speaking' and re-arm this check.
+      return;
+    }
     // All done
     this.context.bus.emit(this.id, 'voice:done', {});
 
