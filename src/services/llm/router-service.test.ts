@@ -383,12 +383,21 @@ describe('RouterService (action layer)', () => {
 
     await router.destroy();
     const done: string[] = [];
+    const chunks: string[] = [];
     ctx.bus.on('llm:done', (msg) => {
       done.push(msg.data.fullText);
     });
+    ctx.bus.on('llm:chunk', (msg) => {
+      chunks.push(msg.data.text);
+    });
     ctx.bus.emit('test', 'action:result', { requestId, action: 'web_search', ok: true, speak: 'Spät.' });
+    // action:result is blocked by the cleared pendingActions map above; action:notify has no such
+    // correlation check, so this is what actually proves the status guard inside
+    // emitAssistantResponse's queued job (`if (this.status !== 'running') return;`) blocks late output.
+    ctx.bus.emit('test', 'action:notify', { speak: 'Später Timer.' });
     await new Promise((r) => setTimeout(r, 20));
 
     expect(done).toHaveLength(0);
+    expect(chunks).toHaveLength(0);
   });
 });
