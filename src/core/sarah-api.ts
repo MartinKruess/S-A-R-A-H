@@ -52,5 +52,6 @@ export interface SarahApi {
   onChatChunk(cb: (data: BusEvents['llm:chunk']) => void): () => void;
   onChatDone(cb: (data: BusEvents['llm:done']) => void): () => void;
   onChatError(cb: (data: BusEvents['llm:error']) => void): () => void;
+  onStorageDegraded(cb: (data: BusEvents['storage:degraded']) => void): () => void;
   voice: SarahVoiceApi;
 }

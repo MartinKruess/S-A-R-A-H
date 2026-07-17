@@ -58,10 +58,11 @@ describe('EncryptedStorage', () => {
 
   describe('with SqliteStorage', () => {
     let storage: EncryptedStorage;
+    let rawStorage: SqliteStorage;
 
     beforeEach(() => {
-      const sqlite = new SqliteStorage(path.join(tmpDir, 'sarah.db'));
-      storage = new EncryptedStorage(sqlite, keyManager.getOrCreateKey());
+      rawStorage = new SqliteStorage(path.join(tmpDir, 'sarah.db'));
+      storage = new EncryptedStorage(rawStorage, keyManager.getOrCreateKey());
     });
 
     afterEach(async () => {
@@ -78,6 +79,19 @@ describe('EncryptedStorage', () => {
     it('encrypts kv values', async () => {
       await storage.set('key', { data: 'sensitive' });
       expect(await storage.get('key')).toEqual({ data: 'sensitive' });
+    });
+
+    it('decrypts message content in queryMessagesPage results', async () => {
+      await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'geheimer Inhalt' });
+
+      const rawRows = await rawStorage.queryMessagesPage({ excludeConversationId: 99, limit: 10 });
+      expect(rawRows[0].content).not.toBe('geheimer Inhalt');
+
+      const rows = await storage.queryMessagesPage({ excludeConversationId: 99, limit: 10 });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].content).toBe('geheimer Inhalt');
+      expect(rows[0].role).toBe('user');
+      expect(rows[0].conversation_id).toBe(1);
     });
   });
 });

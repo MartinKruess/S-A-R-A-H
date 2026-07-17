@@ -183,6 +183,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
   forwardToRenderers(bus, 'llm:chunk');
   forwardToRenderers(bus, 'llm:done');
   forwardToRenderers(bus, 'llm:error');
+  forwardToRenderers(bus, 'storage:degraded');
 
   // ── Performance timing collector ──
   let perfStart = 0;

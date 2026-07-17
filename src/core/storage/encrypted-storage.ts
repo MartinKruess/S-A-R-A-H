@@ -1,4 +1,4 @@
-import type { StorageProvider, Filter } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
 import { encrypt, decrypt } from '../crypto/crypto.js';
 
 /** Columns that should NOT be encrypted (structural, used for filtering). */
@@ -53,8 +53,22 @@ export class EncryptedStorage implements StorageProvider {
     return this.inner.delete(table, filter);
   }
 
+  async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
+    const rows = await this.inner.queryMessagesPage(query);
+    // Only `content` is an encrypted column in MessageRow — the rest are passthrough.
+    return rows.map((row) => ({ ...row, content: this.decryptString(row.content) }));
+  }
+
   async close(): Promise<void> {
     await this.inner.close();
+  }
+
+  private decryptString(value: string): string {
+    try {
+      return JSON.parse(decrypt(value, this.key)) as string;
+    } catch {
+      return value;
+    }
   }
 
   private encryptRow(row: Record<string, unknown>): Record<string, unknown> {

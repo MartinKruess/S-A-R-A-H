@@ -145,7 +145,9 @@ export const LlmSchema = z.object({
     .default('normal'),
   workerOptions: z
     .object({
-      num_ctx: z.number().default(4096),
+      // Floor = largest response reserve (NUM_PREDICT_MAP.ausführlich 3000 +
+      // RESPONSE_SAFETY_TOKENS 256) plus headroom for system prompt + history (H3).
+      num_ctx: z.number().int().min(4096).default(4096),
     })
     .default({ num_ctx: 4096 }),
   options: z

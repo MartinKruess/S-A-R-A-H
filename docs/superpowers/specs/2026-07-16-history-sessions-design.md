@@ -1,6 +1,6 @@
 # History & Sessions — Design (Spec B)
 
-**Datum:** 2026-07-16 · **Rev. 2** (Copilot-Review H1–H6 eingearbeitet, gegen Code verifiziert)
+**Datum:** 2026-07-16 · **Rev. 3** (Copilot-Review H1–H6 eingearbeitet; Rev. 3: gegen Code verifiziert, Abschnitt 5 präzisiert — Reserve aus per-Call `NUM_PREDICT_MAP`, nicht Config)
 **Status:** Entwurf, wartet auf Review
 **Quelle:** `docs/analyze-fabel.md` 3.3, 3.4, 5.2 + Kontextbudget-Fund
 **Harte Vorbedingung:** Spec A / A8 (einmaliger Service-Init) — sonst entstehen zwei Sessions pro Start (H3).
@@ -67,7 +67,7 @@ Damit: keine Mehrfach-Einleitung bei künftigen Starts, keine System-Zeile zwisc
 Fix:
 
 - **Eine Wahrheit:** `num_ctx` kommt aus `config.llm.workerOptions` (verifiziert: wird in `main.ts:75` bereits von dort an den Provider gereicht) und wird an den Trimmer durchgereicht.
-- **Antwort-Reserve ist nur belastbar, wenn die Antwort begrenzt ist:** `num_predict` wird gemeinsam mit `num_ctx` als validiertes Paar definiert (Config-Schema, `num_predict` bekommt einen Default statt optional-unbegrenzt); Reserve = `num_predict` + fester Sicherheitsaufschlag. Achtung: bestehende responseStyle-Token-Logik (externe Calls kriegen Bonus-Tokens) darf nicht kaputtgehen — der Plan verifiziert die Stelle.
+- **Antwort-Reserve ist nur belastbar, wenn die Antwort begrenzt ist.** Code-verifiziert: Das effektive `num_predict` kommt **pro Call** aus `NUM_PREDICT_MAP[responseStyle]` (`worker-service.ts` — kurz 512 / mittel 1600 / ausführlich 3000); der Config-Wert `options.num_predict` ist nur ein Provider-Fallback und wird im Worker-Pfad immer überschrieben. Die Reserve wird daher aus dem **tatsächlichen per-Call-Wert** berechnet (`NUM_PREDICT_MAP[responseStyle]` + fester Sicherheitsaufschlag), nicht aus einem Config-Feld. Die geplanten Bonus-Tokens für externe Calls (Spec C) existieren noch nicht — das Design darf sie nur nicht verbauen: Reserve-Berechnung nimmt den per-Call-Wert entgegen, statt eine Konstante einzubacken.
 - Trimm-Budget = `num_ctx − Reserve − System-Prompt-Schätzung − Startwissen-Block`. Getrimmt wird: erst Startwissen (älteste zuerst), dann älteste Live-Historie.
 - **Garantien:** Haupt-System-Prompt und die aktuelle User-Nachricht überleben immer. Eine **übergroße Einzelnachricht** (größer als Restbudget) wird sicher gekürzt und geloggt — nie still aus dem Prompt verloren.
 

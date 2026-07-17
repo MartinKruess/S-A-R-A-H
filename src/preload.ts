@@ -64,6 +64,11 @@ const api: SarahApi = {
     ipcRenderer.on('llm:error', handler);
     return () => ipcRenderer.removeListener('llm:error', handler);
   },
+  onStorageDegraded: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
+    ipcRenderer.on('storage:degraded', handler);
+    return () => ipcRenderer.removeListener('storage:degraded', handler);
+  },
 
   // Voice API
   voice: {
