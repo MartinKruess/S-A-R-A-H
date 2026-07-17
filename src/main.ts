@@ -6,6 +6,13 @@ import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
 import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
 import { PERFORMANCE_PROFILE_MAP } from './services/llm/llm-types.js';
 import { VoiceService } from './services/voice/voice-service.js';
+import { SandboxBrowser } from './main/sandbox-browser.js';
+import { ProgramLauncher } from './main/program-launcher.js';
+import { SystemActions } from './services/actions/system-actions.js';
+import { ActionService } from './services/actions/action-service.js';
+import { SearchService } from './services/search/search-service.js';
+import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browser-search-provider.js';
+import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summarize-results.js';
 import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
@@ -18,6 +25,8 @@ let appContext: AppContext | null = null;
 const dialogWindows = new Map<string, BrowserWindow>();
 let stopSystemMetrics: (() => void) | null = null;
 let stopVoiceLevel: (() => void) | null = null;
+let sandboxBrowser: SandboxBrowser | null = null;
+let systemActions: SystemActions | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -77,6 +86,33 @@ app.whenReady().then(async () => {
   };
   const workerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.workerModel, workerOptions);
   const routerService = new RouterService(appContext, routerProvider, workerProvider);
+
+  // --- Action layer (Spec Action-Layer V1) ---
+  sandboxBrowser = new SandboxBrowser();
+  const programLauncher = new ProgramLauncher();
+  systemActions = new SystemActions();
+  // Summary runs on whichever model is warm right now — never triggers a load (Spec §3).
+  const summarize = (prompt: string): Promise<string> => {
+    const provider = routerService.activeModel === '9b' ? workerProvider : routerProvider;
+    return provider.chat([{ role: 'user', content: prompt }], () => {}, {
+      num_predict: SUMMARY_NUM_PREDICT,
+      temperature: SUMMARY_TEMPERATURE,
+    });
+  };
+  const searchService = new SearchService(
+    new EmbeddedBrowserSearchProvider(sandboxBrowser),
+    sandboxBrowser,
+    summarize,
+  );
+  const actionService = new ActionService(appContext.bus, {
+    launcher: programLauncher,
+    getPrograms: () => appContext!.parsedConfig.resources.programs,
+    search: searchService,
+    system: systemActions,
+  });
+  appContext.registry.register(searchService);
+  appContext.registry.register(actionService);
+
   appContext.registry.register(routerService);
 
   // Plain class, deliberately not a SarahService/registry entry (YAGNI —
@@ -166,6 +202,10 @@ app.on('window-all-closed', async () => {
     stopVoiceLevel();
     stopVoiceLevel = null;
   }
+  // Infrastructure cleanup (M3): SandboxBrowser and timers are not registry
+  // services — registry.destroyAll() does not reach them.
+  sandboxBrowser?.close();
+  systemActions?.clearAllTimers();
   if (appContext) {
     await appContext.shutdown();
   }
