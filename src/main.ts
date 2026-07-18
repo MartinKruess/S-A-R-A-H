@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
@@ -35,6 +36,33 @@ let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
+
+/**
+ * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
+ * credentials like SPOTIFY_CLIENT_ID don't have to be set in the shell each
+ * launch. Never runs in a packaged build; existing env vars win. No dependency.
+ */
+function loadDevEnv(): void {
+  if (app.isPackaged) return;
+  try {
+    const content = fs.readFileSync(path.join(app.getAppPath(), '.env'), 'utf-8');
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  } catch {
+    // No .env in dev — fine, fall back to real env vars.
+  }
+}
+loadDevEnv();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
