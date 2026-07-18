@@ -36,6 +36,11 @@ const SET_SINK_ID_TIMEOUT_MS = 2000;
 /** Path to the capture AudioWorklet module, relative to the renderer root. */
 const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
 
+/** Number of most-recent capture chunks kept warm in the pre-roll ring buffer.
+ *  At 16kHz with 2048-sample chunks, 3 chunks ≈ 384ms — enough to cover the
+ *  mic-warm→recording handoff so the very start of an utterance isn't clipped. */
+const PRE_ROLL_CHUNKS = 3;
+
 /**
  * Feature-detect `HTMLAudioElement.setSinkId`. Electron on current Chromium
  * has it, but older Electron builds or unusual sandboxing may not — without
@@ -65,6 +70,13 @@ export class AudioBridge {
   private captureGain: GainNode | null = null;
   private capturing = false;
   private workletLoaded = false;
+  /** True only while an utterance is actively streamed to main. Decoupled from
+   *  `capturing` (mic graph warm) so the mic can stay hot between utterances. */
+  private recording = false;
+  /** Ring buffer of the most-recent capture chunks, kept even while not
+   *  recording. Flushed at the start of an utterance so the leading samples
+   *  captured during the warm→record handoff reach STT (fixes clipped starts). */
+  private preRoll: Float32Array[] = [];
 
   private playbackCtx: AudioContext | null = null;
   private currentPlaybackSource: AudioBufferSourceNode | null = null;
@@ -130,6 +142,16 @@ export class AudioBridge {
       this.currentInputDeviceId = initialConfig.audio.inputDeviceId;
       this.currentOutputDeviceId = initialConfig.audio.outputDeviceId;
       this.muted = initialConfig.audio.inputMuted;
+
+      // Pre-warm the mic if voice input is enabled at all. Acquiring the mic
+      // fresh on the first utterance costs ~200–500ms (getUserMedia + resume +
+      // worklet), which clips the sentence start. Warming here keeps the graph
+      // hot so 'listening' only flips `recording` on. Optional chaining so a
+      // config without `controls` simply doesn't warm.
+      const voiceMode = initialConfig.controls?.voiceMode;
+      if (voiceMode === 'push-to-talk' || voiceMode === 'keyword') {
+        void this.startCapture();
+      }
     } catch (err) {
       console.warn('[AudioBridge] initial config fetch failed:', err);
     }
@@ -190,9 +212,19 @@ export class AudioBridge {
   private handleStateChange(state: string): void {
     if (state === 'listening') {
       this.stopPlayback();
-      void this.startCapture();
-    } else if (this.capturing) {
-      this.stopCapture();
+      this.recording = true;
+      // Ensure the mic graph is warm (it usually already is from start() or a
+      // previous utterance). We deliberately do NOT tear it down on the way out
+      // — the mic stays warm so the next utterance has no acquisition latency.
+      if (!this.capturing) void this.startCapture();
+      // Flush pre-roll AFTER recording is true so the leading chunks captured
+      // during the warm handoff reach STT ahead of the live stream.
+      this.flushPreRoll();
+    } else {
+      // Any non-listening state: stop streaming this utterance but keep the mic
+      // warm. Capture is torn down only by destroy() and the device-change reset
+      // path in applyAudioConfig.
+      this.recording = false;
     }
   }
 
@@ -337,10 +369,20 @@ export class AudioBridge {
       this.workletNode = new AudioWorkletNode(this.captureCtx, 'capture-processor');
 
       this.workletNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => {
-        // Mute short-circuits IPC (Lücke #13): the GainNode still produces
-        // zeros, but we skip the send to avoid flooding STT with silence.
-        if (this.muted) return;
         const samples = event.data.samples;
+
+        // Always keep the pre-roll ring buffer topped up (even while not
+        // recording) so the warm→record handoff doesn't clip the utterance
+        // start. Retain only the most recent PRE_ROLL_CHUNKS chunks.
+        this.preRoll.push(samples);
+        if (this.preRoll.length > PRE_ROLL_CHUNKS) {
+          this.preRoll.shift();
+        }
+
+        // Only stream to main while actively recording an utterance. Mute still
+        // short-circuits IPC (Lücke #13): the GainNode produces zeros, but we
+        // skip the send to avoid flooding STT with silence.
+        if (!this.recording || this.muted) return;
         sarah.voice.sendAudioChunk(Array.from(samples));
       };
 
@@ -386,9 +428,22 @@ export class AudioBridge {
     return await navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
   }
 
+  /** Send the buffered pre-roll chunks to main in capture order, then clear
+   *  the buffer. Called at the start of an utterance so the leading samples
+   *  captured during the warm→record handoff reach STT. Respects mute. */
+  private flushPreRoll(): void {
+    if (!this.muted) {
+      for (const chunk of this.preRoll) {
+        sarah.voice.sendAudioChunk(Array.from(chunk));
+      }
+    }
+    this.preRoll = [];
+  }
+
   private stopCapture(): void {
     if (!this.capturing) return;
     this.capturing = false;
+    this.preRoll = [];
 
     this.workletNode?.disconnect();
     this.captureGain?.disconnect();

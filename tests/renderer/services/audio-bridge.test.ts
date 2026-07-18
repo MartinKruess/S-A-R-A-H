@@ -268,7 +268,7 @@ describe('AudioBridge', () => {
     });
   });
 
-  it('stops capture when state changes from listening to processing', async () => {
+  it('keeps the mic warm when state changes from listening to processing', async () => {
     await bridge.start();
     stateChangeCb({ state: 'listening' });
 
@@ -277,7 +277,81 @@ describe('AudioBridge', () => {
     });
 
     stateChangeCb({ state: 'processing' });
-    expect(mockTrack.stop).toHaveBeenCalledOnce();
+
+    // Mic graph stays warm across the utterance boundary — the stream is NOT
+    // torn down, only `recording` flips off. Re-acquisition latency was the
+    // root cause of clipped sentence starts.
+    expect(mockTrack.stop).not.toHaveBeenCalled();
+    const internal = bridge as unknown as { recording: boolean; capturing: boolean };
+    expect(internal.recording).toBe(false);
+    expect(internal.capturing).toBe(true);
+  });
+
+  it('warms capture on start() when voiceMode is push-to-talk, before any state change', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+
+    await bridge.start();
+
+    // Warm-on-start acquires the mic and builds the gain graph up front — with
+    // NO 'listening' state change having fired yet.
+    await vi.waitFor(() => {
+      expect((navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+      expect(captureCtxInstance.createGain).toHaveBeenCalled();
+    });
+    const internal = bridge as unknown as { recording: boolean; capturing: boolean };
+    expect(internal.capturing).toBe(true);
+    // Warming is not recording — nothing streamed to main until 'listening'.
+    expect(internal.recording).toBe(false);
+    expect(sarahVoiceMock.sendAudioChunk).not.toHaveBeenCalled();
+  });
+
+  it('does not re-acquire the mic across listening → idle → listening cycles', async () => {
+    await bridge.start();
+
+    const getUserMediaMock = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+
+    stateChangeCb({ state: 'listening' });
+    await vi.waitFor(() => {
+      expect(getUserMediaMock).toHaveBeenCalled();
+    });
+
+    stateChangeCb({ state: 'idle' });
+    stateChangeCb({ state: 'listening' });
+    // Give any (unwanted) re-acquisition a tick to show up.
+    await Promise.resolve();
+
+    // Mic stayed warm — acquired exactly once for both cycles.
+    expect(getUserMediaMock).toHaveBeenCalledOnce();
+  });
+
+  it('buffers chunks while warm and flushes the pre-roll on listening', async () => {
+    // Warm-on-start so the capture worklet exists before any 'listening'.
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    await bridge.start();
+
+    await vi.waitFor(() => {
+      expect(captureCtxInstance._workletNode.port.onmessage).not.toBeNull();
+    });
+
+    const port = captureCtxInstance._workletNode.port;
+
+    // A chunk arrives while warm but NOT recording (state still idle): it must
+    // be buffered into the pre-roll, not streamed to main.
+    // Use exactly Float32-representable values so the round-trip is lossless.
+    port.onmessage?.({ data: { samples: new Float32Array([0.5, 0.25]) } } as MessageEvent);
+    expect(sarahVoiceMock.sendAudioChunk).not.toHaveBeenCalled();
+
+    // On 'listening', the buffered pre-roll chunk is flushed to main so the
+    // leading samples aren't lost.
+    stateChangeCb({ state: 'listening' });
+    expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledTimes(1);
+    expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledWith([0.5, 0.25]);
   });
 
   it('closes AudioContext instances on destroy', async () => {
