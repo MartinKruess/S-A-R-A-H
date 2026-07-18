@@ -1,6 +1,13 @@
 # Talkabouts — offene Bugs & Feature-Ideen
 
-> Stand 18.07.2026. **Bug 1** (Spotify-Start meldete fälschlich „nicht installiert") ist **gefixt** (PR #23: `launchAppx` ignoriert den Explorer-Exit-Code, verifiziert per `tasklist` + `ProgramEntry.processName`) und hier entfernt.
+> Stand 18.07.2026.
+
+## ✅ Umgesetzt (auf `dev`)
+
+- **Bug 1** — Spotify-Start-Fehlmeldung („nicht installiert" obwohl gestartet): `launchAppx` ignoriert den Explorer-Exit-Code, verifiziert per `tasklist` + `ProgramEntry.processName` → **PR #23**.
+- **STT-Qualität** — Windows-Mic-Pegel (Nutzerseite) + Input-Normalisierung + `vad_filter` + Modell `small`→`large-v3-turbo` (int8) + Mic-Warm-Halten gegen abgeschnittene Satzanfänge → **PR #24**.
+- **Füllsätze V1** — gesprochene Brücke über die Modell-Swap-Pause: 2B→9B `frontendThinking`, 9B→2B `switchingBack`, via Main-only Event `llm:filler` (`src/services/llm/filler-phrases.ts`) → **PR #25**. Die übrigen §11-Kategorien (Hintergrund/Deep-Search/Programm-Ladestatus/Coding/Memory/Fehler) warten aufs Backend-/Task-System (Architektur §1–21).
+- **Gate-Fix** — Infinitive/höfliche Befehle („kannst du Spotify **starten**") werden erkannt: Wortanfang-Stämme `ACTION_HINT_STEMS` → **PR #26**.
 
 ---
 
@@ -558,6 +565,8 @@ Die Präsentation erfolgt dann beispielsweise:
 ---
 
 # 11. Lückenfüller und Statusmeldungen
+
+> **Status:** V1 umgesetzt (PR #25) — nur die Swap-Bridge-Kategorien `frontendThinking` (§11.1) und `switchingBack` (9B→2B-Gate, nicht im Doc, im Code ergänzt) sind verkabelt. Alle übrigen Kategorien unten sind definiert, aber noch NICHT ausgelöst (brauchen das Backend-/Hintergrundaufgaben-System aus §1–10).
 
 Die Texte sollen nicht nach konkreten Themen ausgewählt werden.
 
