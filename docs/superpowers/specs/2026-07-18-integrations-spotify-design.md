@@ -45,7 +45,7 @@ interface OAuthProvider {
 
 Methoden:
 - `connect(providerId): Promise<void>` — PKCE erzeugen, **Loopback-Server** auf `http://127.0.0.1:8888/callback` starten, `shell.openExternal(buildAuthorizationUrl(...))`, Code+State abfangen, `authorizationCodeGrant(config, callbackUrl, { pkceCodeVerifier, expectedState })`, Tokens speichern, Server schließen. Timeout (5 min) + Fehler → Server schließen, Reject.
-- `getAccessToken(providerId): Promise<string | null>` — Token-Blob laden; gültig (`expiresAt - now > 60s`) → zurückgeben; sonst `refreshTokenGrant` → rotierten Refresh-Token persistieren → neuen Access-Token. Refresh-Fehler (widerrufen) → Verbindung als getrennt markieren, `null`.
+- `getAccessToken(providerId): Promise<string | null>` — Token-Blob laden; gültig (`expiresAt - now > 60s`) → zurückgeben; sonst `refreshTokenGrant` → neuen Access-Token. **Refresh-Token nur persistieren, wenn der Response einen neuen liefert (`refresh_token` ist im Refresh-Response OPTIONAL — Spotify rotiert nicht garantiert), sonst den bestehenden behalten** (Review-P3). Refresh-Fehler (widerrufen) → Verbindung als getrennt markieren, `null`.
 - `disconnect(providerId): Promise<void>` — Token-Eintrag löschen.
 - `getStatus(providerId): { connected: boolean; expiresAt?: number }`.
 - `listConnections(): ConnectionInfo[]` — alle registrierten Provider + Status.
@@ -57,7 +57,7 @@ const config = new client.Configuration(
   clientId, undefined, client.None(),                  // Public-Client, kein Secret
 );
 ```
-Redirect-URI **fest** `http://127.0.0.1:8888/callback` (Spotify verlangt exakte Vorregistrierung + Loopback-IP `127.0.0.1`, nicht `localhost`). Scopes: `user-modify-playback-state user-read-playback-state`.
+Redirect-URI `http://127.0.0.1:8888/callback` (Loopback-IP `127.0.0.1`, nicht `localhost`). **Fester Port ist erforderlich** (Review-P1): Spotify verlangt eine **exakt vorregistrierte** Redirect-URI und unterstützt KEINE variablen Loopback-Ports (ein `:0`-Zufallsport nach RFC 8252 würde `INVALID_CLIENT: Invalid redirect URI` liefern). Port per env `SPOTIFY_REDIRECT_PORT` (Default `8888`) konfigurierbar, damit ein Konflikt durch env + Dashboard-Eintrag lösbar ist. Scopes: `user-modify-playback-state user-read-playback-state`.
 
 ### 2. Token-Store (`src/services/integrations/token-store.ts`)
 Verschlüsselte Datei `connections.enc` in `userData`, Verschlüsselung über den bestehenden **`KeyManager`** (`src/core/crypto/key-manager.ts`, safeStorage + Maschinen-Fallback) — kein Klartext-Token auf Platte, keine DB-Kopplung (Secrets bleiben aus `config`/`messages` raus). Format:
@@ -114,8 +114,8 @@ Analog `SystemActions`; bekommt `OAuthConnectionService` injiziert. Nutzt `fetch
 - **Tokens verschlüsselt** (KeyManager/safeStorage), nie in `config`/DB/Logs.
 
 ## Edge-Cases
-- Port 8888 belegt → Connect-Fehler mit klarer Meldung (selten, Server nur kurz offen).
-- `SPOTIFY_CLIENT_ID` fehlt → Provider erscheint als „nicht konfiguriert", Connect deaktiviert + Hinweis.
+- Redirect-Port (`SPOTIFY_REDIRECT_PORT`, Default 8888) belegt → Connect bricht mit klarer Meldung ab („Port … ist belegt — in `SPOTIFY_REDIRECT_PORT` einen freien Port setzen und im Spotify-Dashboard eintragen"). Server ist nur während des Connect-Flows offen.
+- `SPOTIFY_CLIENT_ID` fehlt → Provider erscheint als „nicht konfiguriert", Connect-Button deaktiviert, **konkreter Hinweis mit Verweis auf den Einrichtungs-Abschnitt** (Review-P2): „Spotify-Client-ID fehlt — App im Spotify-Dashboard anlegen, Redirect-URI `http://127.0.0.1:8888/callback` eintragen, Client-ID als `SPOTIFY_CLIENT_ID` setzen (siehe Einrichtung unten)."
 - Refresh-Token widerrufen → Status „getrennt", Volume-Befehl bittet um Neu-Verbinden.
 - Kein aktives Spotify-Gerät → ehrliche Meldung (kein stiller Fehlschlag).
 
@@ -136,5 +136,5 @@ Analog `SystemActions`; bekommt `OAuthConnectionService` injiziert. Nutzt `fetch
 2. `OAuthConnectionService` (connect/loopback/refresh/getAccessToken) + Tests.
 3. IPC (`ipc-connections.ts` + Contract + preload + sarah-api).
 4. Settings-Tab „Integrationen" + `connections-section`.
-5. `SpotifyActions` + Actions/Schemas/Dispatch/main-Wiring + Routing/Gate + Tests.
-6. Manueller End-to-End-Test (Martin): Verbinden → „Musik auf 30 %".
+5. `SpotifyActions` + Actions/Schemas/Dispatch/main-Wiring + Routing/Gate-Wörter + Tests.
+6. Manueller End-to-End-Test (Martin) — **erst NACH Schritt 5**, sonst greifen die Gate-Wörter/Actions noch nicht (Review-P5): Verbinden → „Musik auf 30 %".
