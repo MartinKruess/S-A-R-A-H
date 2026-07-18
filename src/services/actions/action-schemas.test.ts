@@ -49,9 +49,19 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Zeig mir das zweite')).toBe(true);
   });
 
+  it('matches infinitive and polite phrasings (the "kannst du … starten" bug)', () => {
+    expect(looksLikeActionCommand('Kannst du zuerst Spotify starten bitte?')).toBe(true);
+    expect(looksLikeActionCommand('Kannst du bitte Chrome öffnen?')).toBe(true);
+    expect(looksLikeActionCommand('Würdest du das zweite Ergebnis zeigen?')).toBe(true);
+    expect(looksLikeActionCommand('Kannst du Hotels in Kiel suchen?')).toBe(true);
+    expect(looksLikeActionCommand('Google mal das Wetter')).toBe(true);
+    expect(looksLikeActionCommand('Kannst du den Bildschirm sperren?')).toBe(true);
+  });
+
   it('does not match plain chat, including hint substrings inside words', () => {
     expect(looksLikeActionCommand('Was war das Kolosseum?')).toBe(false);
-    expect(looksLikeActionCommand('Die Eröffnung war 80 n. Chr.')).toBe(false); // 'öffnung' ≠ Wort 'öffne'
+    expect(looksLikeActionCommand('Die Eröffnung war 80 n. Chr.')).toBe(false); // 'öffnung' mid-word ≠ Stamm 'öffn' am Wortanfang
+    expect(looksLikeActionCommand('Ich möchte das nicht versuchen')).toBe(false); // 'such' in "versuchen" nicht am Wortanfang
     expect(looksLikeActionCommand('Erzähl mir mehr davon')).toBe(false);
   });
 });
