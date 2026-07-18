@@ -4,6 +4,7 @@ import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { MessageBus } from '../../core/message-bus.js';
 import type { ProgramLauncher, ProgramEntry, LaunchResult } from '../../main/program-launcher.js';
 import type { SystemActions } from './system-actions.js';
+import type { SpotifyActions } from './spotify-actions.js';
 import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
 
 /** Structural view of SearchService (Task 9) — keeps this task testable standalone. */
@@ -17,6 +18,7 @@ export interface ActionDeps {
   getPrograms: () => ProgramEntry[];
   search: SearchLike;
   system: SystemActions;
+  spotify: SpotifyActions;
 }
 
 /**
@@ -89,6 +91,10 @@ export class ActionService implements SarahService {
         return this.deps.search.showResult(parsed.data as string);
       case 'set_volume':
         return this.deps.system.setVolume(parsed.data as number);
+      case 'spotify_volume':
+        return this.deps.spotify.setVolume(parsed.data as number);
+      case 'spotify_volume_adjust':
+        return this.deps.spotify.adjustVolume(parsed.data as number);
       case 'set_timer':
         return this.deps.system.setTimer(parsed.data as number);
       case 'lock_screen':

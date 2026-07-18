@@ -10,6 +10,9 @@ export const ACTION_SCHEMAS = {
   web_search: z.string().min(2).max(200),
   show_browser: z.string().min(1).max(100),
   set_volume: z.coerce.number().int().min(0).max(100),
+  spotify_volume: z.coerce.number().int().min(0).max(100),
+  // Signed delta; the parser delivers e.g. "-25" for a relative change.
+  spotify_volume_adjust: z.coerce.number().int().min(-100).max(100),
   set_timer: z.coerce.number().int().min(1).max(1440),
   // Parser delivers '' for a param-less tag; any non-empty param is invalid (R4-Mi3).
   lock_screen: z.literal(''),
@@ -41,6 +44,7 @@ export const ACTION_HINT_STEMS: readonly string[] = [
   'öffn', 'start', 'such', 'google', 'zeig',
   'timer', 'wecker',
   'lautstärke', 'lauter', 'leiser',
+  'spotify', 'musik',
   'sperr', 'bildschirm',
 ];
 

@@ -9,6 +9,7 @@ import { VoiceService } from './services/voice/voice-service.js';
 import { SandboxBrowser } from './main/sandbox-browser.js';
 import { ProgramLauncher } from './main/program-launcher.js';
 import { SystemActions } from './services/actions/system-actions.js';
+import { SpotifyActions } from './services/actions/spotify-actions.js';
 import { ActionService } from './services/actions/action-service.js';
 import { SearchService } from './services/search/search-service.js';
 import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browser-search-provider.js';
@@ -32,7 +33,7 @@ let stopSystemMetrics: (() => void) | null = null;
 let stopVoiceLevel: (() => void) | null = null;
 let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
-// Kept reachable so the next task can pass it to SpotifyActions(oauth).
+// Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
 
 function createWindow(): void {
@@ -111,20 +112,11 @@ app.whenReady().then(async () => {
     sandboxBrowser,
     summarize,
   );
-  const actionService = new ActionService(appContext.bus, {
-    launcher: programLauncher,
-    getPrograms: () => appContext!.parsedConfig.resources.programs,
-    search: searchService,
-    system: systemActions,
-  });
-  appContext.registry.register(searchService);
-  appContext.registry.register(actionService);
-
   // --- Integrations / OAuth connection layer (Spec Integrationen V1) ---
+  // Built BEFORE the ActionService so SpotifyActions can take the oauth instance.
   // AppContext does not expose its KeyManager, so construct a fresh one over the
   // same userData dir (KeyManager is idempotent — reuses the existing sarah.key).
-  // `oauth` is kept in module scope so the next task can wire SpotifyActions(oauth)
-  // into the ActionService deps above.
+  // `oauth` is kept in module scope so the IPC connection handlers can read it.
   const keyManager = new KeyManager(app.getPath('userData'));
   const tokenStore = new TokenStore(app.getPath('userData'), keyManager);
   oauth = new OAuthConnectionService({
@@ -132,6 +124,17 @@ app.whenReady().then(async () => {
     tokenStore,
     redirectPort: redirectPort(),
   });
+  const spotifyActions = new SpotifyActions(oauth);
+
+  const actionService = new ActionService(appContext.bus, {
+    launcher: programLauncher,
+    getPrograms: () => appContext!.parsedConfig.resources.programs,
+    search: searchService,
+    system: systemActions,
+    spotify: spotifyActions,
+  });
+  appContext.registry.register(searchService);
+  appContext.registry.register(actionService);
 
   appContext.registry.register(routerService);
 

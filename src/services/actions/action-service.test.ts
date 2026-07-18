@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ActionService } from './action-service.js';
 import type { SearchLike } from './action-service.js';
 import { SystemActions } from './system-actions.js';
+import type { SpotifyActions } from './spotify-actions.js';
 import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
@@ -16,22 +17,31 @@ function makeSearch(over: {
   };
 }
 
+function makeSpotify(): SpotifyActions {
+  return {
+    setVolume: vi.fn().mockResolvedValue({ ok: true }),
+    adjustVolume: vi.fn().mockResolvedValue({ ok: true }),
+  } as unknown as SpotifyActions;
+}
+
 function makeService(over: {
   launcher?: Partial<ProgramLauncher>;
   search?: Parameters<typeof makeSearch>[0];
-} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService } {
+  spotify?: SpotifyActions;
+} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
   bus.on('action:result', (msg) => { results.push(msg.data); });
   const launcher = { launch: vi.fn().mockResolvedValue({ ok: true }), ...over.launcher } as ProgramLauncher;
   const search = makeSearch(over.search);
   const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
-  const service = new ActionService(bus, { launcher, getPrograms: () => [], search, system });
+  const spotify = over.spotify ?? makeSpotify();
+  const service = new ActionService(bus, { launcher, getPrograms: () => [], search, system, spotify });
   // Production wiring happens in ServiceRegistry.initAll() (bus.on per subscription,
   // before init()) — ActionService itself deliberately never self-subscribes, so tests
   // replicate that wiring here, same as router-service.test.ts does for its subscriptions.
   bus.on('action:request', (msg) => service.onMessage(msg));
-  return { bus, results, service };
+  return { bus, results, service, spotify };
 }
 
 async function request(bus: MessageBus, action: string, param: string): Promise<void> {
@@ -71,6 +81,22 @@ describe('ActionService', () => {
     expect(results[0]).toEqual({ requestId: 'rid-1', action: 'web_search', ok: false, speak: 'Meine Suche klemmt gerade.' });
   });
 
+  it('dispatches spotify_volume to SpotifyActions.setVolume with the parsed number', async () => {
+    const spotify = makeSpotify();
+    const { bus, service } = makeService({ spotify });
+    await service.init();
+    await request(bus, 'spotify_volume', '40');
+    expect(spotify.setVolume).toHaveBeenCalledWith(40);
+  });
+
+  it('dispatches spotify_volume_adjust to SpotifyActions.adjustVolume with the signed number', async () => {
+    const spotify = makeSpotify();
+    const { bus, service } = makeService({ spotify });
+    await service.init();
+    await request(bus, 'spotify_volume_adjust', '-25');
+    expect(spotify.adjustVolume).toHaveBeenCalledWith(-25);
+  });
+
   it('timer expiry emits action:notify via the bus wiring', async () => {
     vi.useFakeTimers();
     const bus = new MessageBus();
@@ -79,7 +105,7 @@ describe('ActionService', () => {
     const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
-      getPrograms: () => [], search: makeSearch(), system,
+      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(),
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();

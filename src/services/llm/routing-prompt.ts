@@ -9,7 +9,9 @@ These are commands, not conversation. Emit the action — do NOT just talk about
 - open_program:<program name> — open/start/launch an installed program ("Öffne Spotify", "Starte Chrome")
 - web_search:<query> — search the web ("Such Hotels in Kiel", "Google mal Wetter")
 - show_browser:<index or keyword> — show a search result ("Zeig mir das zweite", "Öffne das erste Hotel")
-- set_volume:<0-100> — set system volume ("Stell die Lautstärke auf 50", "Mach leiser" → choose a number)
+- spotify_volume:<0-100> — set Spotify/music volume to an absolute value ("Musik auf 50", "Spotify auf 30 Prozent")
+- spotify_volume_adjust:<signed> — change Spotify/music volume relatively ("Spotify leiser" → -25, "etwas leiser" → -5, "10 Prozent leiser" → -10, "lauter" → +25)
+- set_volume:<0-100> — set SYSTEM volume, nur wenn ausdrücklich "Systemlautstärke" gesagt wird
 - set_timer:<minutes> — start a timer ("Timer auf 10 Minuten")
 - lock_screen — lock the screen ("Sperr den Bildschirm")
 
@@ -28,8 +30,10 @@ User: "Öffne Spotify" → [ACTION:open_program:spotify] Ich öffne Spotify für
 User: "Starte Chrome" → [ACTION:open_program:chrome] Chrome kommt sofort.
 User: "Such Hotels in Kiel" → [ACTION:web_search:hotels kiel] Ich schaue mal, Moment.
 User: "Zeig mir das zweite" → [ACTION:show_browser:2] Ich zeige es dir.
-User: "Stell die Lautstärke auf 50 Prozent" → [ACTION:set_volume:50] Mache ich.
-User: "Mach die Musik leiser" → [ACTION:set_volume:30] Ich mache es leiser.
+User: "Stell die Systemlautstärke auf 50 Prozent" → [ACTION:set_volume:50] Mache ich.
+User: "Mach die Musik leiser" → [ACTION:spotify_volume_adjust:-25] Ich mache Spotify leiser.
+User: "Spotify auf 40 Prozent" → [ACTION:spotify_volume:40] Mache ich.
+User: "Mach die Musik ein bisschen lauter" → [ACTION:spotify_volume_adjust:5] Ich drehe Spotify etwas auf.
 User: "Stell einen Timer auf 10 Minuten" → [ACTION:set_timer:10] Timer läuft.
 User: "Sperr den Bildschirm" → [ACTION:lock_screen] Bis gleich.
 User: "Sortiere meine PDFs" → [ROUTE:9b] Das schaue ich mir genauer an.
