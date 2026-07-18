@@ -30,6 +30,7 @@ export class OllamaProvider implements LlmProvider {
     const mergedOptions = {
       ...this.options,
       ...(options?.num_predict != null && { num_predict: options.num_predict }),
+      ...(options?.temperature != null && { temperature: options.temperature }),
     };
 
     const res = await fetch(`${this.baseUrl}/api/chat`, {

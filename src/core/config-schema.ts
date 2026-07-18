@@ -43,6 +43,9 @@ export const ProgramEntrySchema = z.object({
   verified: z.boolean(),
   aliases: z.array(z.string()),
   duplicateGroup: z.string().optional(),
+  // Image name (e.g. "Spotify.exe") used to verify an appx launch via tasklist,
+  // since explorer.exe's exit code is unreliable. Optional: unknown → no verify.
+  processName: z.string().optional(),
 });
 
 export const PdfCategorySchema = z.object({

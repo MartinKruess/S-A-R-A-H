@@ -45,6 +45,9 @@ export class VoiceService implements SarahService {
   private llmStreaming = false;
   private playbackUnsub: (() => void) | null = null;
 
+  /** Sentences deferred while the mic is open (F9) — flushed when listening ends. */
+  private deferredSentences: string[] = [];
+
   constructor(
     private context: AppContext,
     private stt: SttProvider,
@@ -70,8 +73,24 @@ export class VoiceService implements SarahService {
   }
 
   private setState(state: VoiceState): void {
+    const wasListening = this._voiceState === 'listening';
     this._voiceState = state;
     this.context.bus.emit(this.id, 'voice:state', { state });
+    if (wasListening && state !== 'listening' && this.deferredSentences.length > 0) {
+      for (const sentence of this.deferredSentences) {
+        this.ttsQueue?.enqueue(sentence);
+      }
+      this.deferredSentences = [];
+    }
+  }
+
+  /** Never play TTS into an open recording — defer until listening ends (F9). */
+  private enqueueOrDefer(sentence: string): void {
+    if (this._voiceState === 'listening') {
+      this.deferredSentences.push(sentence);
+      return;
+    }
+    this.ttsQueue?.enqueue(sentence);
   }
 
   private async transition(fn: () => Promise<void>): Promise<void> {
@@ -148,6 +167,7 @@ export class VoiceService implements SarahService {
     this.ttsQueue = null;
     this.sentenceBuffer.reset();
     this.llmStreaming = false;
+    this.deferredSentences = [];
 
     this.transitioning = false;
     this.clearConversationTimer();
@@ -189,7 +209,7 @@ export class VoiceService implements SarahService {
           this.context.bus.emit(this.id, 'voice:speaking', { text: sentence });
           this.llmStreaming = true;
         }
-        this.ttsQueue?.enqueue(sentence);
+        this.enqueueOrDefer(sentence);
       }
     } else if (msg.topic === 'llm:done') {
       if (!shouldSpeak) return;
@@ -199,7 +219,7 @@ export class VoiceService implements SarahService {
           this.setState('speaking');
           this.context.bus.emit(this.id, 'voice:speaking', { text: remainder });
         }
-        this.ttsQueue?.enqueue(remainder);
+        this.enqueueOrDefer(remainder);
       }
       this.llmStreaming = false;
       // If queue is already empty (e.g., very short response already played), trigger completion
@@ -211,7 +231,7 @@ export class VoiceService implements SarahService {
         // Already speaking — flush what we have and let queue finish
         const remainder = this.sentenceBuffer.flush();
         if (remainder) {
-          this.ttsQueue?.enqueue(remainder);
+          this.enqueueOrDefer(remainder);
         }
         this.llmStreaming = false;
       } else if (this._voiceState === 'processing') {
@@ -226,6 +246,15 @@ export class VoiceService implements SarahService {
   private onTtsQueueEmpty(): void {
     if (this.llmStreaming) {
       // LLM still producing — stay in speaking state, queue will resume
+      return;
+    }
+    if (this._voiceState !== 'speaking') {
+      // The queue can also drain because deferred sentences from a finished
+      // turn were flushed (F9) while a NEW turn is already in flight
+      // (state 'listening'/'processing') or has already reset (state
+      // 'idle'). That is not "the current turn is done" — only a turn that
+      // actually reached 'speaking' may be completed here. The new turn's
+      // own llm:chunk will move state to 'speaking' and re-arm this check.
       return;
     }
     // All done

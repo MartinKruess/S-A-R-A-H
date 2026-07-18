@@ -721,3 +721,128 @@ describe('VoiceService partial failure (voice:capability)', () => {
     await service.destroy();
   });
 });
+
+describe('TTS deferral while listening (F9)', () => {
+  it('buffers llm output while listening and enqueues it after the recording ends', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const service = new VoiceService(createMockContext(bus), createMockStt(), tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+    await service.init();
+
+    // Zustand wie bei gedrücktem PTT herstellen (gleiches Muster wie die bestehenden State-Tests):
+    // Harness note: this file drives onMessage() directly (see neighboring tests using
+    // `service.onMessage(makeMsg(...))`) rather than the bus, since VoiceService's own
+    // bus subscription wiring lives in ServiceRegistry, not in VoiceService itself.
+    (service as unknown as { setState: (s: string) => void }).setState('listening');
+
+    service.onMessage(makeMsg('llm:chunk', { text: 'Dein Timer ist abgelaufen.' }));
+    service.onMessage(makeMsg('llm:done', { fullText: 'Dein Timer ist abgelaufen.' }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).not.toHaveBeenCalled(); // während der Aufnahme: still
+
+    (service as unknown as { setState: (s: string) => void }).setState('processing');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).toHaveBeenCalledWith('Dein Timer ist abgelaufen.'); // danach: gesprochen
+  });
+
+  it('does not defer when idle', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const service = new VoiceService(createMockContext(bus), createMockStt(), tts, createMockWakeWord(), createMockAudio(), createMockHotkey());
+    await service.init();
+
+    service.onMessage(makeMsg('llm:chunk', { text: 'Hallo.' }));
+    service.onMessage(makeMsg('llm:done', { fullText: 'Hallo.' }));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(tts.speak).toHaveBeenCalled();
+  });
+
+  // Regression test for the review finding: flushing turn-1's deferred sentences
+  // while turn-2 is already in flight (double PTT press) must not let the TTS
+  // queue draining falsely signal "conversation done" and corrupt turn-2's state.
+  it('does not corrupt turn-2 completion detection when turn-1 leftovers flush mid double-PTT', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const stt = createMockStt();
+    const hotkey = createMockHotkey();
+
+    let transcribeCall = 0;
+    let resolveTurn2Transcribe: (value: string) => void;
+    (stt.transcribe as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      transcribeCall += 1;
+      if (transcribeCall === 1) {
+        // Turn 1's transcription resolves immediately.
+        return Promise.resolve('Turn eins Frage');
+      }
+      // Turn 2's transcription stays pending until resolved manually below —
+      // this keeps the service in 'processing' so we can observe it.
+      return new Promise<string>((resolve) => {
+        resolveTurn2Transcribe = resolve;
+      });
+    });
+
+    const service = new VoiceService(createMockContext(bus), stt, tts, createMockWakeWord(), createMockAudio(), hotkey);
+    await service.init();
+
+    const doneListener = vi.fn();
+    bus.on('voice:done', doneListener);
+
+    // Auto-respond to voice:play-audio with voice:playback-done so the TTS
+    // queue can actually drain (same pattern as the other streaming tests).
+    bus.on('voice:play-audio', () => {
+      setTimeout(() => bus.emit('renderer', 'voice:playback-done', {}), 0);
+    });
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    // --- Turn 1: PTT down/up — transcribed, sent to the router, now "generating" ---
+    onDown();
+    onUp();
+    await flush();
+    expect(service.voiceState).toBe('processing');
+
+    // --- User presses PTT again while turn 1 is still generating (no chunk yet) ---
+    onDown();
+    expect(service.voiceState).toBe('listening');
+
+    // --- Turn 1's LLM output arrives while turn 2 is being recorded — deferred ---
+    service.onMessage(makeMsg('llm:chunk', { text: 'Antwort auf Turn eins.' }));
+    service.onMessage(makeMsg('llm:done', {}));
+    await flush();
+    expect(tts.speak).not.toHaveBeenCalled();
+
+    // --- User releases PTT: turn-2 recording ends, flush happens, turn-2 STT starts ---
+    onUp();
+    await flush();
+
+    // Turn 1's deferred sentence is flushed into the TTS queue and spoken.
+    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn eins.');
+
+    // Let the flushed audio fully play out (voice:play-audio -> voice:playback-done).
+    await flush();
+    await flush();
+    await flush();
+
+    // Turn 2's STT is still pending — the flushed queue draining must NOT have
+    // reset the state machine or signaled completion for the in-flight turn 2.
+    expect(doneListener).not.toHaveBeenCalled();
+    expect(service.voiceState).toBe('processing');
+
+    // --- Turn 2 completes normally ---
+    resolveTurn2Transcribe!('Turn zwei Frage');
+    await flush();
+    expect(service.voiceState).toBe('processing'); // now waiting for turn 2's LLM
+
+    service.onMessage(makeMsg('llm:chunk', { text: 'Antwort auf Turn zwei.' }));
+    service.onMessage(makeMsg('llm:done', {}));
+    await flush();
+    await flush();
+    await flush();
+
+    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn zwei.');
+    expect(doneListener).toHaveBeenCalledOnce();
+    expect(service.voiceState).toBe('idle');
+  });
+});

@@ -1,8 +1,10 @@
 # Action-Layer V1 — Design
 
-**Datum:** 2026-07-16 · **Rev. 2** (Copilot-Review aus `problems/talkabouts.md` eingearbeitet)
+**Datum:** 2026-07-16 · **Rev. 5** (17.07.: Rev.-4-Review eingearbeitet — R4-M1..M3, R4-Mi1..Mi4. Rev. 4: Doppel-Review konsolidiert — Copilot K1–K4/M1–M6/Mi1–Mi7 + frisches Review F1–F11, Protokolle in `problems/talkabouts.md`; 9B-Fenster-Entscheidung „Heuristik-Gate" von Martin. Rev. 3: an gemergte Spec A+B angepasst. Rev. 2: erstes Copilot-Review)
 **Branch:** `feat/action-layer`
-**Status:** Entwurf, wartet auf Review
+**Status:** Entwurf, bereit für die Plan-Phase
+
+**Vorbedingungen — erfüllt:** Spec A (Foundation-Hardening, `ab72650`, PR #21) und Spec B (History & Sessions, `0f451a7`, PR #22) sind in `dev` gemerged; `dev` ist in diesen Branch gemergt (`6a5330b`, Suite 427/427 grün). Der RouterService hat: single-flight `init()`, `ConversationStore`-Boot in `doInit()` (per-Boot-Session, transientes Startwissen), `buildContextWindow` (echtes `num_ctx`-Budget) und `persistMessage()` (degradationssichere Persistenz, wirft nie, einmalige `storage:degraded`-Warnung). Diese Spec baut darauf auf.
 
 ---
 
@@ -23,7 +25,7 @@ Das schließt die in `docs/analyze-fabel.md` §5.1 benannte Lücke: Der Router e
 
 ## 2. Nicht-Ziele (V2+)
 
-- **Ganze Webseiten lesen/zusammenfassen** — V1 fasst nur Suchergebnis-Snippets zusammen (passen ins 4096-Token-Kontextfenster). Entscheidung lokal vs. Backend für lange Seiten ist vertagt.
+- **Ganze Webseiten lesen/zusammenfassen** — V1 fasst nur Suchergebnis-Snippets zusammen (passen in das konfigurierte `num_ctx`-Fenster; seit Spec B erzwingt das Config-Schema `workerOptions.num_ctx ≥ 4096`, der Prompt-Bau läuft über `buildContextWindow`). Entscheidung lokal vs. Backend für lange Seiten ist vertagt.
 - **Mehrschritt-Aktionen** („such X und öffne dann Y").
 - **Programme schließen/steuern** (Prozesse killen, Media-Steuerung) — bewusst nach hinten geschoben.
 - **Timer-Persistenz** — V1-Timer leben im Speicher, App-Neustart verwirft sie (bekannte Einschränkung).
@@ -46,7 +48,22 @@ Der Routing-Prompt (`routing-prompt.ts`) lernt neben `[ROUTE:x]` einen zweiten T
 
 **Wichtig (Review-Punkt 6):** Die bestehenden `[ROUTE:self]`-Beispiele fürs Programmöffnen („Öffne Photoshop" → `ROUTE:self`) werden aus dem Prompt **entfernt** — sie trainieren sonst gegen die ACTION-Tags.
 
-Der Text hinter dem Tag ist Sarahs gesprochene Rückmeldung — sie geht wie beim `self`-Pfad **sofort** an TTS, während die Aktion läuft. Kein VRAM-Swap für Aktionen: alles läuft über das warme Router-Modell (phi4-mini), Latenz ~0,5–1s.
+Der Text hinter dem Tag ist Sarahs gesprochene Rückmeldung — sie geht wie beim `self`-Pfad **sofort** an TTS, während die Aktion läuft. Im 2B-Fenster kein VRAM-Swap für Aktionen: alles läuft über das warme Router-Modell (phi4-mini), Latenz ~0,5–1s.
+
+### 9B-Fenster: Heuristik-Gate (F1/K3, Entscheidung Martin 17.07.)
+
+**Problem:** Bei `activeModel === '9b'` geht heute jede Nachricht direkt an den Worker (`handleChatMessage`), ohne Routing — Aktionskommandos wären bis zum Idle-Timeout tot, und qwen würde „Ich öffne Spotify!" behaupten, ohne dass etwas passiert.
+
+**Entscheidung — Heuristik-Gate:**
+
+- Der Worker bleibt nach einem 9B-Turn warm (Folgefragen bleiben schnell; das 5-Minuten-Idle-Timeout bleibt unverändert).
+- Im 9B-Fenster läuft vor dem Worker-Dispatch eine **Aktions-Heuristik**: eine exportierte, testbare Wortliste (`ACTION_HINT_WORDS`, z. B. „öffne/öffnen/starte", „such/suche", „zeig", „timer/wecker", „lautstärke/lauter/leiser", „sperr/sperre") gegen die normalisierte Nachricht. Details (Normalisierung, Wortgrenzen) legt der Plan fest.
+- **Treffer** → Swap zurück zum Router (`vramManager.swapModels`), dann normales `routing.route()` — die Heuristik entscheidet **nur**, ob sich der Swap lohnt; sie parst nie Parameter und führt **nie** selbst aus. Fehlklassifikation kostet schlimmstenfalls einen unnötigen Swap (harmlos, Router kann `ROUTE:9b` zurückgeben).
+- **State-Konsistenz (R4-M1):** Das Gate setzt `activeModel = '2b'` **vor** dem `routeAndRespond`-Aufruf. Heute setzt nur die 9B-Route den State (`router-service.ts:147`), die Self-Route lässt ihn unverändert — ohne den Reset bliebe nach einem Gate-Self-Turn `activeModel === '9b'` stehen und die Folgenachricht würde qwen kalt laden, obwohl phi4-mini im VRAM liegt.
+- **Kein Treffer** → direkt an den Worker wie bisher.
+- **Rest-Risiko (dokumentiert, akzeptiert):** Ungewöhnlich formulierte Kommandos ohne Signalwort rutschen im 9B-Fenster als Chat durch. V2 darf das verfeinern (Intent-Klassifikator o. ä.).
+
+**Summary ohne VRAM-Race (löst K3):** Die Such-Zusammenfassung läuft immer auf dem **gerade warmen** Modell — 2B-Fenster: phi4-mini, 9B-Fenster: qwen3:8b (Qualität eher besser; die Spec nannte das Upgrade ohnehin einen Einzeiler). Harte Regel: **Eine Summary löst nie einen Modell-Load aus.** Den konkreten Zugang (Provider-Paar + `activeModel`-Abfrage, z. B. als Callback an den SearchService) legt der Plan fest.
 
 ### Tag-Syntax (strikt, Review-Punkt 6)
 
@@ -55,13 +72,15 @@ Der Text hinter dem Tag ist Sarahs gesprochene Rückmeldung — sie geht wie bei
 - Unbekannter ACTION-Name → ungültiges Routing-Ergebnis: wird **nicht** als 9B-Route behandelt und **nie** ausgeführt; Sarah antwortet ehrlich („Das kann ich noch nicht."), `console.warn` mit Rohstring.
 - `hadTag` erfasst ACTION-Tags mit (sonst falsche Warnungen/Metriken).
 - `ParsedRoute` wird diskriminierte Union: `{ kind: 'route', … } | { kind: 'action', action, param, feedback }`.
+- **Diskriminierungs-Eigentum (K2, Option A):** `RoutingService.route()` liefert weiterhin `RoutingResult`; das bekommt eine `parsed: ParsedRoute`-Property (die Union), `tookMs`/`hadTag` bleiben flache Felder. `RouterService` verzweigt auf `parsed.kind`. Kein Parser-Bypass am RoutingService vorbei.
+- `hadTag` erkennt `[ACTION:` zusätzlich zu `[ROUTE:` (K4 — sonst warnt der Fallback-Pfad bei jeder korrekten Aktion).
 
 ### Bus-Verträge mit Korrelation (Review-Punkt 1)
 
 | Topic | Payload |
 |---|---|
-| `action:request` | `{ requestId: string; action: string; param: string; mode: 'chat' \| 'voice' }` |
-| `action:result` | `{ requestId: string; action: string; ok: boolean; speak?: string }` |
+| `action:request` | `{ requestId: string; action: string; param: string }` — kein `mode`-Feld (F10): ob gesprochen wird, entscheidet wie bisher der VoiceService anhand seines Modus beim Konsum der `llm:*`-Events |
+| `action:result` | `{ requestId: string; action: string; ok: boolean; speak?: string }` — **genau eines pro Request**, auch bei stillem Erfolg (dann ohne `speak`); räumt den `pendingActions`-Entry (R4-Mi1) |
 | `action:notify` | `{ speak: string }` — für nutzerungebundene Ereignisse (Timer-Ablauf), neutral angesagt, keine requestId-Bindung |
 
 `requestId` = `crypto.randomUUID()`, erzeugt vom RouterService beim Parsen des Tags. `speak` ist optional: erfolgreiches Programm-Öffnen bleibt still (Sarah hat die Aktion schon angekündigt). Such-Zusammenfassungen und alle Fehler kommen als `speak`.
@@ -72,7 +91,10 @@ Der RouterService bekommt eine zentrale, **serialisierte** Ausgabemethode:
 
 ```ts
 private async emitAssistantResponse(text: string): Promise<void>
-// exklusiv zuständig für: llm:chunk + llm:done, history.push, DB-Insert.
+// exklusiv zuständig für: llm:chunk + llm:done, history.push und Persistenz
+// über das bestehende persistMessage() aus Spec B (degradationssicher, wirft
+// nie, überspringt Inserts im RAM-Fallback, warnt genau einmal pro Lauf).
+// KEIN neuer/roher DB-Insert — persistMessage ist der einzige Schreibpfad.
 // Intern über eine Promise-Kette serialisiert — es läuft immer nur eine
 // Assistant-Ausgabe gleichzeitig (kein Mischen von Chunks zweier Antworten).
 ```
@@ -81,10 +103,14 @@ Regeln:
 
 - Eingehende `action:result` werden über die Warteschlange dieser Methode ausgegeben — trifft ein Suchergebnis während eines laufenden Worker-Streams ein, wartet es, bis der Stream fertig ist.
 - **Sprech-Reihenfolge:** Wer zuerst *fertig* ist, spricht zuerst — unabhängige Action-Ergebnisse müssen nicht auf früher gestellte, noch laufende Anfragen warten. Garantiert wird nur: nie mitten in eine laufende Ausgabe (Serialisierung), und Historie/DB in exakt der gesprochenen Reihenfolge.
-- Der Router hält eine Map `pendingActions: Map<requestId, …>`. Ergebnisse ohne bekannten `requestId` (z. B. nach `destroy()` oder doppelt) werden verworfen und geloggt.
+- Der Router hält eine Map `pendingActions: Map<string, { action: string }>` (R4-Mi1) — der Value dient der Plausibilitätsprüfung des Results (`result.action` muss zum Request passen). Lifecycle: Entry entsteht beim Emit von `action:request`; **ActionService emittiert für jeden Request genau ein `action:result`** (auch stille Erfolge, dann ohne `speak`) — dessen Empfang entfernt den Entry, bevor die Ausgabe in die Queue geht. `destroy()` leert die Map (der Shutdown-Guard verhindert ohnehin späte Emissionen). Ergebnisse ohne bekannten `requestId` (z. B. nach `destroy()` oder doppelt) werden verworfen und geloggt.
+- **Allowlist-Import (R4-Mi4):** RouterService prüft `parsed.action` gegen die Allowlist **vor** dem Emit von `action:request` — importiert dafür die Namensliste aus `services/actions/action-schemas.ts` (Richtung `llm → actions`, kein Zyklus: action-schemas importiert nichts aus llm). Es gibt **keine** zweite Allowlist-Kopie im Router.
 - Aktionen werden nur geparst/emittiert, wenn `status === 'running'`. Nach `destroy()` emittiert nichts mehr auf den Bus (Shutdown-Guard in `emitAssistantResponse`).
 - Timer-Abläufe kommen als `action:notify` — bewusst **ohne** Bindung an die auslösende, längst vergangene User-Nachricht; die Ansage ist neutral formuliert („Dein 10-Minuten-Timer ist abgelaufen.").
 - **Historien-Eigentum bleibt beim RouterService.** ActionService fasst Historie/DB nie an.
+- **Startwissen bleibt unangetastet (Spec B, H5):** Action-Ergebnisse gehen in `history` + Persistenz, nie ins transiente `startContext`-Array. Der Prompt-Bau für Worker-Antworten läuft unverändert über `buildContextWindow` — der Action-Layer ändert daran nichts.
+- **Renderer-Vertrag für nachgelaufene Ausgaben (F2 — Blocker aus dem Review):** Der Dashboard-Renderer verwirft heute `llm:chunk` ohne offene `currentBubble` — verzögerte Ausgaben (Such-Summary, Action-Fehler-`speak`, `action:notify`) wären im Chat unsichtbar. Neue Regel: Trifft `llm:chunk` ohne offene Bubble ein, legt der Renderer eine **neue Assistant-Bubble** an; `llm:done` schließt sie wie gehabt. `dashboard.ts` steht dafür in der Änderungsliste (§4).
+- **Verzögerte Ansagen vs. Mikrofon (F9):** Steht der VoiceService auf `listening` (PTT gedrückt, Aufnahme läuft), werden verzögerte Sprachausgaben (`action:result`/`action:notify`) **aufgeschoben**, bis die Aufnahme endet — Sarahs eigene Ansage darf nicht ins Transkript spielen. Chat-Bubble erscheint sofort, nur TTS wartet.
 
 ## 4. Komponenten & Datei-Struktur
 
@@ -97,18 +123,22 @@ Regeln:
 | `src/services/search/embedded-browser-search-provider.ts` | neu | Nutzt SandboxBrowser; DuckDuckGo-HTML-Endpoint primär, Bing-Fallback; unterscheidbare Fehlerdiagnosen (§8) |
 | `src/services/search/search-service.ts` | neu | `SarahService`; orchestriert Suche → Schleuse → Zusammenfassung; hält genau **eine** aktuelle Ergebnis-Session (§7) |
 | `src/services/search/sanitize-web-text.ts` | neu | Text-Schleuse (§6, Container 2) |
-| `src/services/search/summarize-results.ts` | neu | Aktionsfreier Zusammenfassungs-Prompt; bekommt nur Titel + Snippets, **keine URLs** |
+| `src/services/search/summarize-results.ts` | neu | Aktionsfreier Zusammenfassungs-Prompt; bekommt nur Titel + Snippets, **keine URLs**. Läuft auf dem gerade warmen Modell (§3). Call-Optionen explizit (F8): niedrige Temperatur, `num_predict`-Cap ~256 — Achtung: per-Call-Temperatur braucht eine kleine `ChatOptions`-Erweiterung im Provider-Interface (heute nur `num_predict`/`keep_alive`/`signal`) |
 | `src/main/sandbox-browser.ts` | neu | Isoliertes BrowserWindow inkl. vollem Navigations-/Lifecycle-Vertrag (§6) |
-| `src/main/program-launcher.ts` | neu | Start ausschließlich aus gescannter Programmliste; **wiederverwendet** `program-utils.ts` (Aliase, `classifyProgramPath`, `duplicateGroup`) statt paralleler Logik |
+| `src/main/program-launcher.ts` | neu | Start ausschließlich aus gescannter Programmliste. Nutzt die **Daten** aus `program-utils.ts` (Aliase, Typ-Klassifikation, `duplicateGroup`) — aber Achtung (F5): einen Namens-**Matcher** gibt es dort nicht, der ist Neubau nach der Semantik in §5. `ProgramLauncher` registriert keinen IPC; `ipc-programs.ts` startet nie Programme (Mi7) |
+| `src/renderer/dashboard/dashboard.ts` | ändern | Renderer-Vertrag F2: `llm:chunk` ohne offene Bubble → neue Assistant-Bubble |
+| `src/services/voice/voice-service.ts` | ändern | F9/R4-M2: TTS-Deferral — bei `listening` werden `llm:chunk`/`llm:done` für TTS gepuffert und nach Ende der Aufnahme abgespielt (Chat-Bubble unabhängig davon sofort) |
+| `src/services/llm/llm-provider.interface.ts` | ändern | F8/R4-M3: `ChatOptions` um optionales `temperature?: number` erweitern |
+| `src/services/llm/providers/ollama-provider.ts` | ändern | F8/R4-M3: `temperature` in den Ollama-Request-Body übernehmen |
 | `src/services/llm/route-parser.ts` | ändern | `[ACTION:…]`-Union, strikte Syntax (§3) |
 | `src/services/llm/routing-prompt.ts` | ändern | ACTION-Beispiele rein, `ROUTE:self`-Programmbeispiele raus |
-| `src/services/llm/router-service.ts` | ändern | Action-Zweig, `emitAssistantResponse()`, `pendingActions`, Subscription `action:result`/`action:notify` |
+| `src/services/llm/router-service.ts` | ändern | Action-Zweig, `emitAssistantResponse()`, `pendingActions`, Heuristik-Gate im 9B-Fenster (§3), Subscription `action:result`/`action:notify` — **`subscriptions`-Array entsprechend erweitern (M6), sonst kommt still nichts an**. Achtung (Spec B): `runWorker`/self-Route persistieren bereits über `persistMessage()` — das Refactoring zieht diese bestehenden Aufrufe in `emitAssistantResponse()` zusammen, baut keinen zweiten Schreibpfad |
 | `src/main.ts` | ändern | Instanziierung + Registry-Registrierung (Reihenfolge unten) |
 | `src/core/bus-events.ts` | ändern | Die drei neuen Topics |
 
 **Startreihenfolge (Review-Punkt 3):** In `main.ts` werden instanziiert und registriert: `SandboxBrowser`/`ProgramLauncher` (Infrastruktur, kein Service) → `SearchService` → `ActionService` → `RouterService` — alle **vor** dem ersten `registry.initAll()`, damit die Subscriptions stehen, bevor Nachrichten fließen. Der Plan verifiziert, wo `initAll()` heute aufgerufen wird (boot-sequence).
 
-**Shutdown:** `SearchService.destroy()` bricht laufende Suchen ab (AbortSignal), `SandboxBrowser` schließt sein Fenster und räumt Listener, `system-actions` cleart alle Timer. Späte Promises dürfen nach Shutdown keine Bus-Events mehr emittieren.
+**Shutdown:** `SearchService.destroy()` bricht laufende Suchen ab (AbortSignal), `SandboxBrowser` schließt sein Fenster und räumt Listener, `system-actions` cleart alle Timer. Späte Promises dürfen nach Shutdown keine Bus-Events mehr emittieren. **Achtung (M3):** `SandboxBrowser` und die Timer-Registry sind Infrastruktur, keine `SarahService`-Einträge — `registry.destroyAll()` räumt sie **nicht**; `main.ts` muss ihr Cleanup im Shutdown-Pfad (`window-all-closed`) explizit aufrufen.
 
 Keine neuen externen Dateien, keine Compose-Änderung, nichts zu packagen. Einzige mögliche neue Dependency: Lautstärke (§5 — Spike nötig).
 
@@ -116,12 +146,12 @@ Keine neuen externen Dateien, keine Compose-Änderung, nichts zu packagen. Einzi
 
 | Aktion | Param-Schema (Zod) | Ausführung |
 |---|---|---|
-| `open_program` | `z.string().min(1).max(100)` | Match gegen `config.resources.programs` via bestehender `program-utils`-Logik. **Exakter Treffer (Name oder Alias) schlägt Fuzzy**; Fuzzy darf nie still einen anderen Eintrag aus einer `duplicateGroup` wählen — bei Gleichstand ehrliche Rückfrage. Kein Treffer → `speak` mit Nächster-Treffer-Vorschlag. **LLM liefert nur Namen, nie Pfade.** Keine Argumente — nicht Teil des Datenmodells, werden nie aus LLM-Text abgeleitet |
+| `open_program` | `z.string().min(1).max(100)` | Match gegen `config.resources.programs`. **Der Matcher ist Neubau (F5)** — `program-utils.ts` liefert nur die Daten (Namen, Aliase, `duplicateGroup`). Semantik: beide Seiten normalisieren (lowercase, Trim, Umlaute vereinheitlichen) → Reihenfolge: exakter Name → exakter Alias → Präfix-/Enthält-Match. **Exakter Treffer schlägt Fuzzy**; Fuzzy darf nie still einen Eintrag aus einer `duplicateGroup` wählen — bei Gleichstand oder mehreren Fuzzy-Treffern gleicher Güte ehrliche Rückfrage. Kein Treffer → `speak` mit Nächster-Treffer-Vorschlag. **LLM liefert nur Namen, nie Pfade.** Keine Argumente — nicht Teil des Datenmodells, werden nie aus LLM-Text abgeleitet |
 | `web_search` | `z.string().min(2).max(200)` | SearchService (§7) |
-| `show_browser` | `z.string().max(100)` (Index 1–8 oder Stichwort) | Nur gegen die aktuelle Ergebnis-Session (§7). Stichwort-Match nur bei eindeutigem Treffer, sonst Rückfrage. **Nur gemerkte, kanonisch validierte URLs, nie LLM-URLs** |
+| `show_browser` | `z.string().min(1).max(100)` (Index 1–8 oder Stichwort; leerer Param → Zod-Fehler wie jede ungültige Aktion, F10) | Nur gegen die aktuelle Ergebnis-Session (§7). Stichwort-Match nur bei eindeutigem Treffer, sonst Rückfrage. **Nur gemerkte, kanonisch validierte URLs, nie LLM-URLs** |
 | `set_volume` | `z.coerce.number().int().min(0).max(100)` | Wert außerhalb → Ablehnung mit `speak`, kein stilles Klemmen. **Implementierung erst nach Spike** (§5a) |
-| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout` bei Standby); Ablauf → `action:notify` mit Dauer („Dein 10-Minuten-Timer ist abgelaufen."), einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf. **Kein Abbruch in V1** (bewusste Entscheidung 16.07. — Timer laufen einfach ab, „Stopp den Timer" wird ehrlich abgelehnt wie jede unbekannte Aktion) |
-| `lock_screen` | kein Param | `execFile('rundll32.exe', ['user32.dll,LockWorkStation'])` — fester Binary-Name + festes Args-Array, keine Interpolation; `error`/Exit-Code behandelt |
+| `set_timer` | `z.coerce.number().int().min(1).max(1440)` (Minuten) | Timer-Registry mit IDs; max. 5 parallel; Zeitbasis (R4-Mi2, entschieden): `Date.now()`-Startzeit merken, im `setTimeout`-Callback prüfen ob `Date.now() - startMs >= durationMs`, sonst `setTimeout(remaining)` nachlegen — korrekt nach Standby, testbar mit `vi.useFakeTimers`, kein `process.hrtime` nötig; Ablauf → `action:notify` mit Dauer („Dein 10-Minuten-Timer ist abgelaufen."), einmalig (TTS-Fehler löst keine Wiederholung aus); Cleanup nach Ablauf. **Kein Abbruch in V1** (bewusste Entscheidung 16.07. — Timer laufen einfach ab, „Stopp den Timer" wird ehrlich abgelehnt wie jede unbekannte Aktion) |
+| `lock_screen` | `z.literal('')` (R4-Mi3 — Parser liefert `''` bei fehlendem Param; jeder Nicht-Leer-Param wie `[ACTION:lock_screen:jetzt]` → Zod-Fehler → „Das kann ich noch nicht.", nie stiller Start) | `execFile('rundll32.exe', ['user32.dll,LockWorkStation'])` — fester Binary-Name + festes Args-Array, keine Interpolation; `error`/Exit-Code behandelt |
 
 ### 5a. Plattform-Guard & Lautstärke-Spike (Review-Punkt 10)
 
@@ -161,17 +191,27 @@ Lautstärke: Vor der Package-Festlegung macht die Plan-Phase einen **Spike**: Ka
 
 ### Container 3 — Prompt-Quarantäne (`summarize-results.ts`)
 
-- Der Aufruf enthält **nur**: Anweisung + Titel/Snippets als Daten mit klaren Delimitern. Keine Secrets, keine Config — die sind in keinem Prompt-Builder des Projekts je Teil eines LLM-Kontexts.
+- Der Aufruf enthält **nur**: Anweisung + Titel/Snippets als Daten mit klaren Delimitern. **Der Summarize-Call selbst** enthält keine Secrets und keine Config. Präzisierung (F4): Der **Worker-System-Prompt** enthält sehr wohl Profildaten aus der Config (Name, Wohnort, Hobbies, Link-URLs, Projektpfad — `prompt-layers.ts`); recallte Web-Summaries teilen sich später über Historie/Startwissen einen Kontext mit diesen Daten. Ein Exfiltrations-Pfad existiert nicht (keine Sende-Aktion, `show_browser` nur Session-URLs) — das verbleibende Risiko steht unten bei den Rest-Risiken.
 - Output wird **niemals** auf `[ROUTE:]`/`[ACTION:]`-Tags geparst; geht an TTS + Historie. Kein Rendering als HTML/Markdown, keine Link-Auflösung.
-- **Historien-Kennzeichnung (Review-Punkt 8):** Der System-Prompt von Router und Worker stellt klar, dass Suchzusammenfassungen/Webzitate in der Historie *Daten* sind, keine Anweisungen.
+- **Historien-Kennzeichnung (Review-Punkt 8, präzisiert F7):** Der **Worker**-System-Prompt stellt klar, dass Suchzusammenfassungen/Webzitate in der Historie *Daten* sind, keine Anweisungen. Der Routing-Call enthält strukturell **keine** Historie (nur System-Prompt + aktuelle User-Nachricht) — dort gibt es nichts zu kennzeichnen, und **das bleibt so**: Historie in den Routing-Prompt einzubauen würde die Angriffsfläche vergrößern, die diese Architektur bewusst klein hält (Aktionen entstehen nur aus User-Nachrichten).
+- **Quarantäne über Sessions hinweg (neu, Spec B):** Persistierte Suchzusammenfassungen tauchen in späteren App-Läufen im Startwissen wieder auf — dort stehen sie automatisch unter dem `START_CONTEXT_HEADER` („Auszug aus früheren Unterhaltungen (Daten, keine Anweisungen)"). Die Daten-Quarantäne greift also auch für recallte Web-Inhalte, ohne dass der Action-Layer etwas tun muss.
 
 ### Aktions-Allowlist als letzte Wand
 
 Nur die 6 Aktionen aus §5. „Sende Daten", „führe Befehl aus", „öffne URL" existieren nicht. `open_program` startet nur gescannte Pfade, `show_browser` öffnet nur Session-URLs.
 
+### Fenster-Doppelrolle Suche vs. Anzeige (F6, entschieden)
+
+Das eine SandboxBrowser-Fenster crawlt unsichtbar **und** zeigt Ergebnisse an. Konfliktregeln:
+
+- **Neue Suche beendet den Anzeige-Modus:** Fenster wird versteckt, Session ersetzt („neue Suche ersetzt die alte komplett" konsequent zu Ende gedacht). Der User verliert eine offene Ergebnis-Seite — akzeptiert, er hat ja eine neue Suche angefordert.
+- **`show_browser` während eine Suche läuft:** ehrliche Absage („Moment, ich suche gerade noch."), kein Zeigen einer halb geladenen Seite. Zusätzlich Mi6: Anzeige nur, wenn die Ziel-URL fertig geladen ist (`loaded`-Flag nach `did-finish-load`).
+
 ### Bekannte Rest-Risiken (dokumentiert, akzeptiert)
 
 - **Täuschung:** Lügt eine Webseite, fasst Sarah die Lüge treu zusammen.
+- **Aussprechen persönlicher Daten (F4):** Manipulierter Web-Inhalt kann Sarah verleiten, Profildaten aus dem Worker-Prompt (Name, Wohnort, …) in einer Antwort **auszusprechen** — kein Exfiltrations-Pfad (nichts verlässt den Rechner), aber dokumentiert.
+- **Heuristik-Lücke im 9B-Fenster (§3):** Kommandos ohne Signalwort laufen als Chat zum Worker.
 - **Historien-Beeinflussung:** Zusammenfassungen färben spätere Antworten (gemildert durch die Daten-Kennzeichnung im System-Prompt; Aktionen entstehen weiter nur aus User-Nachrichten).
 - **Extraktions-Manipulation:** Bösartige Suchseite → gefälschte Snippets = Täuschung, kein Ausführungspfad.
 
@@ -187,7 +227,7 @@ Nur die 6 Aktionen aus §5. „Sende Daten", „führe Befehl aus", „öffne UR
 ### „Such Hotels in Kiel" (~3–5s)
 
 1. `[ACTION:web_search:hotels kiel] Ich schaue mal.` → sofort gesprochen
-2. SearchService → SandboxBrowser (unsichtbar): Partition säubern → `html.duckduckgo.com/html?q=…` (JS-armes Markup) → Extraktion leer/Fehler → Bing-Fallback. Bot-Schutz/Consent/CAPTCHA/Markup-Änderung sind **unterscheidbare Diagnosen** im Log, für den User einheitlich „Meine Suche klemmt gerade."
+2. SearchService → SandboxBrowser (unsichtbar): Partition säubern → `html.duckduckgo.com/html?q=…` — der LLM-gelieferte Query wird vor dem URL-Bau **immer `encodeURIComponent`-kodiert** (F11, Container-1-Hygiene) → Extraktion leer/Fehler → Bing-Fallback. Bot-Schutz/Consent/CAPTCHA/Markup-Änderung sind **unterscheidbare Diagnosen** im Log, für den User einheitlich „Meine Suche klemmt gerade."
 3. Schleuse → **Ergebnis-Session** `{ requestId, results[≤8] }` — eine neue Suche **ersetzt** die alte komplett
 4. `summarize-results` (phi4-mini, aktionsfrei) → `action:result { requestId, speak }`
 5. Router-Queue: Historie + DB + TTS (nie mitten in einen anderen Stream)
@@ -210,6 +250,7 @@ Nur die 6 Aktionen aus §5. „Sende Daten", „führe Befehl aus", „öffne UR
 | Sandbox-Renderer-Crash | Laufende Anfrage schlägt **einmal** fehl; Neuaufbau beim nächsten Aufruf |
 | Fenster manuell geschlossen | Referenz geräumt; nächste Nutzung erzeugt frisch |
 | `show_browser` ohne Session | Ehrlicher Hinweis |
+| `show_browser` während laufender Suche | „Moment, ich suche gerade noch." (§6, F6) |
 | Timer-Limit | `speak`-Ablehnung („Ich habe schon 5 Timer laufen.") |
 | Nicht-Windows-Plattform | Einheitlich „unterstützt dein System nicht" (§5a) |
 | `action:result` nach Shutdown/unbekannte requestId | Verwerfen + Log, kein Bus-Event |
@@ -225,6 +266,8 @@ Der Code hat bereits: `type: 'exe' | 'launcher' | 'appx' | 'updater'` im Schema,
 - `route-parser`: ACTION-Varianten inkl. kaputt/bösartig, Doppelpunkte im Param, mehrfache/verschachtelte Tags (→ ungültig), Tag nicht am Anfang (→ kein Tag), `hadTag`-Korrektheit, Rückwärtskompatibilität aller ROUTE-Fälle
 - `action-schemas`: Grenzen (Volume 0/100/101/-1, Timer 1/1440/1441, Query-Längen)
 - **Parallelität/Races (Review):** zwei Requests mit vertauschter Fertigstellung → Reihenfolge, requestId-Zuordnung, Historieneinträge; `action:result` während Worker-Stream (keine vermischten chunk/done); Ergebnis nach `destroy()` → verworfen; unbekannte requestId → verworfen
+- **Test-Harness wiederverwenden (neu, Spec B):** `src/services/llm/router-service.test.ts` bringt seit Spec B ein Integrations-Setup mit (`bootstrap(tmpDir)` mit echter Temp-DB, `FakeProvider`, `FailingStorage`) — die Router-Turn-/Race-Tests docken dort an statt neu zu mocken. Zusätzlich prüfen: Action-Feedback-Persistenz bei degradierter DB (Antwortfluss ungestört, keine zweite Warnung — `persistMessage`-Pfad). **Namenskollision auflösen (M5):** `tests/services/llm/router-service.test.ts` (alte Mock-Tests) wird zu Beginn der Umsetzung nach `router-service-mock.test.ts` umbenannt.
+- **Heuristik-Gate (§3):** `ACTION_HINT_WORDS`-Treffer/Nicht-Treffer-Fälle (Signalwort am Satzanfang/-mitte, Groß-Klein, Umlaute), 9B-Fenster: Kommando triggert Swap+Routing, Chat-Nachricht geht direkt an Worker; Heuristik führt nie aus (kein `action:request` ohne Router-Tag).
 - Programm-Matcher: Updater (hart abgelehnt), appx, veraltete AUMID, Alias-Konflikt/`duplicateGroup`-Gleichstand → Rückfrage statt Raten, `spawn`-`error`, Pfad mit Leerzeichen
 - Extraktor gegen **HTML-Fixtures** (DuckDuckGo-HTML + Bing) + Fixtures für Consent-Seite/CAPTCHA → unterscheidbare Diagnosen
 - `sanitize-web-text`: bidi, zero-width, homoglyphe ACTION-Imitate, HTML-Entities, leergewaschene Strings, Einzellängen + Gesamtbudget, URL-Kanonisierung
@@ -236,11 +279,13 @@ Der Code hat bereits: `type: 'exe' | 'launcher' | 'appx' | 'updater'` im Schema,
 **Manuell (Martin, `npm start`):**
 
 - Alle 6 Aktionen per Stimme; Browser-Zeigen + Anschluss-Diskussion; zwei schnelle Befehle hintereinander; gefühlte Suchlatenz; Fehlerfälle (Fantasie-Programm, Suche ohne Netz)
+- **9B-Fenster-Szenario (F1):** erst komplexe Frage („Erkläre mir Photosynthese"), direkt danach „Öffne Spotify" → Aktion muss funktionieren (Heuristik-Gate greift); danach Folgefrage zur Photosynthese → gefühlte Latenz des erneuten Worker-Swaps bewerten
+- **Chat-Modus-Suche (F2):** Websuche im reinen Chat-Modus → Summary erscheint als eigene Bubble
 
 ## 11. Umsetzungsreihenfolge (für die Plan-Phase, aus dem Review übernommen)
 
 1. Vertrag + Tests zuerst: Bus-Payloads mit requestId, Parser-Union, strikte Syntax, Rückwärtskompatibilität
-2. Router-Turn-Modell: `emitAssistantResponse`, Queue, pendingActions, Shutdown-Guard, Race-Tests
+2. Router-Turn-Modell: `emitAssistantResponse` (Promise-Chain-Muster aus M2, kein Boolean-Lock), Queue, pendingActions, Shutdown-Guard, Heuristik-Gate (§3), Race-Tests
 3. Programmausführung isoliert (program-utils-Wiederverwendung, updater-Block, appx-Verifikation)
 4. Systemaktionen isoliert (Plattform-Guard, Timer-Registry, Lautstärke-Spike)
 5. Browser-Grundgerüst (Lifecycle, Navigation, Timeout/Abort, Crash-Tests — noch ohne Provider)

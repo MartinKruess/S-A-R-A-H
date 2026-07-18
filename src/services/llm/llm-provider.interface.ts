@@ -9,6 +9,8 @@ export interface ChatOptions {
   keep_alive?: number | string;
   /** Abort the in-flight request and stop streaming. */
   signal?: AbortSignal;
+  /** Per-call sampling temperature (e.g. 0.2 for tag/summary calls). */
+  temperature?: number;
 }
 
 export interface LlmProvider {

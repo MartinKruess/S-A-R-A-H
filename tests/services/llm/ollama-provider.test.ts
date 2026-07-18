@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { OllamaProvider } from '../../../src/services/llm/providers/ollama-provider';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { OllamaProvider } from '../../../src/services/llm/providers/ollama-provider.js';
 
 describe('OllamaProvider', () => {
   let provider: OllamaProvider;
@@ -157,5 +157,33 @@ describe('OllamaProvider', () => {
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
     expect(body.options).toBeUndefined();
     vi.restoreAllMocks();
+  });
+});
+
+function mockFetchCapture(): { body: () => Record<string, unknown> } {
+  let captured: Record<string, unknown> = {};
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    captured = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+    const line = JSON.stringify({ message: { content: 'ok' }, done: true }) + '\n';
+    return new Response(line, { status: 200 });
+  }));
+  return { body: () => captured };
+}
+
+describe('OllamaProvider per-call temperature', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('passes temperature into the request options', async () => {
+    const cap = mockFetchCapture();
+    const provider = new OllamaProvider('http://x', 'm', { num_ctx: 2048 });
+    await provider.chat([{ role: 'user', content: 'hi' }], () => {}, { temperature: 0.2 });
+    expect((cap.body().options as Record<string, unknown>).temperature).toBe(0.2);
+  });
+
+  it('omits temperature when not given', async () => {
+    const cap = mockFetchCapture();
+    const provider = new OllamaProvider('http://x', 'm', { num_ctx: 2048 });
+    await provider.chat([{ role: 'user', content: 'hi' }], () => {});
+    expect((cap.body().options as Record<string, unknown>).temperature).toBeUndefined();
   });
 });

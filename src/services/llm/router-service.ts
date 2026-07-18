@@ -10,6 +10,8 @@ import { WorkerService } from './worker-service.js';
 import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
 import { buildContextWindow } from './context-window.js';
 import { NUM_PREDICT_MAP } from './llm-types.js';
+import { isActionName, looksLikeActionCommand } from '../actions/action-schemas.js';
+import { randomUUID } from 'crypto';
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -21,7 +23,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export class RouterService implements SarahService {
   readonly id = 'router';
-  readonly subscriptions = ['chat:message'] as const;
+  readonly subscriptions = ['chat:message', 'action:result', 'action:notify'] as const;
   status: ServiceStatus = 'pending';
   activeModel: '2b' | '9b' = '2b';
 
@@ -33,6 +35,9 @@ export class RouterService implements SarahService {
   private conversationId: number = FALLBACK_CONVERSATION_ID;
   private startContext: ChatMessage[] = [];
   private persistenceWarned = false;
+  private outputQueue: Promise<void> = Promise.resolve();
+  private pendingActions = new Map<string, { action: string }>();
+  private turnInFlight: Promise<void> | null = null;
 
   constructor(
     private context: AppContext,
@@ -78,6 +83,7 @@ export class RouterService implements SarahService {
 
   async destroy(): Promise<void> {
     this.clearIdleTimer();
+    this.pendingActions.clear();
     this.history = [];
     this.status = 'stopped';
   }
@@ -88,6 +94,33 @@ export class RouterService implements SarahService {
       this.handleChatMessage(text, mode).catch(() => {
         this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES.connection });
       });
+    } else if (msg.topic === 'action:result') {
+      const { requestId, action, speak } = msg.data;
+      const pending = this.pendingActions.get(requestId);
+      if (!pending || pending.action !== action) {
+        console.warn('[Router] Dropping unknown/stale action:result', requestId, action);
+        return;
+      }
+      this.pendingActions.delete(requestId);
+      if (speak) this.speakAfterCurrentTurn(speak);
+    } else if (msg.topic === 'action:notify') {
+      this.speakAfterCurrentTurn(msg.data.speak);
+    }
+  }
+
+  /**
+   * action:result/action:notify can race in from the bus while a chat turn
+   * (routing decision + worker stream) is still running — e.g. a timer firing
+   * mid-answer. Wait for the in-flight turn to settle before enqueueing so the
+   * notification can never speak ahead of the turn's own response (no
+   * interleaved output, Spec §3). Once no turn is in flight, speak right away.
+   */
+  private speakAfterCurrentTurn(text: string): void {
+    const turn = this.turnInFlight;
+    if (turn) {
+      void turn.finally(() => this.emitAssistantResponse(text));
+    } else {
+      void this.emitAssistantResponse(text);
     }
   }
 
@@ -98,12 +131,37 @@ export class RouterService implements SarahService {
     }
 
     this.history.push({ role: 'user', content: text });
+
+    // Claim this turn's slot synchronously (before any await) so a
+    // concurrently racing action:result/action:notify (see
+    // speakAfterCurrentTurn) waits for this turn instead of jumping ahead.
+    const thisTurn = this.runTurn(text, mode);
+    this.turnInFlight = thisTurn;
+    try {
+      await thisTurn;
+    } finally {
+      if (this.turnInFlight === thisTurn) this.turnInFlight = null;
+    }
+  }
+
+  private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
     await this.persistMessage('user', text);
 
     try {
       if (this.activeModel === '9b') {
-        this.resetIdleTimer();
-        await this.runWorker(mode);
+        if (looksLikeActionCommand(text)) {
+          // Gate (Spec §3): swap the worker out, let the router really decide.
+          const llmConfig = this.context.parsedConfig.llm;
+          await this.vramManager.swapModels(llmConfig.workerModel).catch((err) => {
+            console.warn('[Router] Gate swap failed (non-fatal, routing anyway):', err);
+          });
+          this.activeModel = '2b'; // R4-M1: before routeAndRespond; the 9b route re-sets it
+          this.clearIdleTimer();
+          await this.routeAndRespond(text, mode);
+        } else {
+          this.resetIdleTimer();
+          await this.runWorker(mode);
+        }
       } else {
         await this.routeAndRespond(text, mode);
       }
@@ -121,24 +179,37 @@ export class RouterService implements SarahService {
       console.warn('[Router] No route tag in 2B response, falling back to self');
     }
 
-    if (result.route === 'self') {
-      this.context.bus.emit(this.id, 'llm:chunk', { text: result.feedback });
-      this.context.bus.emit(this.id, 'llm:done', { fullText: result.feedback });
-      this.history.push({ role: 'assistant', content: result.feedback });
-      await this.persistMessage('assistant', result.feedback);
+    if (result.parsed.kind === 'action') {
+      const { action, param, feedback } = result.parsed;
+      if (!isActionName(action)) {
+        console.warn('[Router] Unknown action name, refusing:', action, 'raw param:', param);
+        await this.emitAssistantResponse('Das kann ich noch nicht.');
+        return;
+      }
+      const requestId = randomUUID();
+      this.pendingActions.set(requestId, { action });
+      this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
+      await this.emitAssistantResponse(feedback);
+      return;
+    }
+
+    if (result.parsed.route === 'self') {
+      await this.emitAssistantResponse(result.parsed.feedback);
       return;
     }
 
     // Routes: 9b, backend, extern, vision — all go to 9B for now
-    const busTarget = result.route === 'vision' ? '9b' as const : result.route;
+    const busTarget = result.parsed.route === 'vision' ? '9b' as const : result.parsed.route;
     this.context.bus.emit(this.id, 'llm:routing', {
       from: '2b',
       to: busTarget,
-      feedback: result.feedback,
+      feedback: result.parsed.feedback,
     });
 
     const llmConfig = this.context.parsedConfig.llm;
-    await this.vramManager.swapModels(llmConfig.routerModel);
+    await this.vramManager.swapModels(llmConfig.routerModel).catch((err) => {
+      console.warn('[Router] Swap failed (non-fatal, worker call proceeds):', err);
+    });
     this.context.bus.emit(this.id, 'llm:model-swap', {
       loading: llmConfig.workerModel,
       unloading: llmConfig.routerModel,
@@ -154,14 +225,39 @@ export class RouterService implements SarahService {
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
     const messages = this.buildMessages(systemPrompt, responseStyle);
 
-    const { fullText, tookMs } = await this.worker.stream(messages, responseStyle, (chunk) => {
-      this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
+    // The whole stream is ONE queue job: late action results wait, chunks never interleave.
+    await this.enqueueOutput(async () => {
+      if (this.status !== 'running') return;
+      const { fullText, tookMs } = await this.worker.stream(messages, responseStyle, (chunk) => {
+        this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
+      });
+      this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
+      this.history.push({ role: 'assistant', content: fullText });
+      await this.persistMessage('assistant', fullText);
+      this.context.bus.emit(this.id, 'llm:done', { fullText });
     });
-    this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
+  }
 
-    this.history.push({ role: 'assistant', content: fullText });
-    await this.persistMessage('assistant', fullText);
-    this.context.bus.emit(this.id, 'llm:done', { fullText });
+  /** Serialize every assistant output; a failed job never blocks the queue. */
+  private enqueueOutput(job: () => Promise<void>): Promise<void> {
+    this.outputQueue = this.outputQueue.then(job).catch((err) => {
+      console.warn('[Router] Output job failed:', err);
+    });
+    return this.outputQueue;
+  }
+
+  /**
+   * The single exit for assistant text (Spec §3): llm:chunk + llm:done,
+   * history.push and persistence via persistMessage — never a raw insert.
+   */
+  private emitAssistantResponse(text: string): Promise<void> {
+    return this.enqueueOutput(async () => {
+      if (this.status !== 'running') return; // shutdown guard
+      this.context.bus.emit(this.id, 'llm:chunk', { text });
+      this.context.bus.emit(this.id, 'llm:done', { fullText: text });
+      this.history.push({ role: 'assistant', content: text });
+      await this.persistMessage('assistant', text);
+    });
   }
 
   private buildMessages(systemPrompt: string, responseStyle: string): ChatMessage[] {

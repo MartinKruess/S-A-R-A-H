@@ -25,6 +25,9 @@ export type BusEvents = {
   'perf:timing':         { label: string; ms: number; meta?: Record<string, unknown> };
   'boot:status':         { step: string; message?: string };
   'storage:degraded':    { message: string };
+  'action:request':      { requestId: string; action: string; param: string };
+  'action:result':       { requestId: string; action: string; ok: boolean; speak?: string };
+  'action:notify':       { speak: string };
 };
 
 /** All valid bus topic strings */
