@@ -73,7 +73,11 @@ class SttHandler(BaseHTTPRequestHandler):
             self._send_text(400, f"File not found: {file_path}")
             return
 
-        segments, _ = model.transcribe(file_path, language=language, beam_size=5)
+        # vad_filter drops non-speech/silence (Silero VAD) so Whisper stops
+        # hallucinating "garbage" text on quiet or near-silent input.
+        segments, _ = model.transcribe(
+            file_path, language=language, beam_size=5, vad_filter=True
+        )
         text = "".join(segment.text for segment in segments)
 
         self._send_text(200, text)

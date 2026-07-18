@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { SttProvider } from '../stt-provider.interface.js';
+import { normalizeUtterance } from '../normalize-audio.js';
 
 const SERVER_PORT = 8786;
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
@@ -77,7 +78,9 @@ export class FasterWhisperProvider implements SttProvider {
   }
 
   async transcribe(audio: Float32Array, sampleRate: number, language = 'de'): Promise<string> {
-    const wavBuffer = this.encodeWav(audio, sampleRate);
+    // Normalize the utterance level before Whisper — the capture path applies no
+    // AGC, so this is what stops "only works when I shout" quiet/clipped input.
+    const wavBuffer = this.encodeWav(normalizeUtterance(audio), sampleRate);
     const tmpDir = process.env.TEMP ?? process.env.TMP ?? '/tmp';
     const tmpPath = path.join(tmpDir, `sarah-stt-${Date.now()}.wav`);
     fs.writeFileSync(tmpPath, wavBuffer);
