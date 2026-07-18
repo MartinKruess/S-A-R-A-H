@@ -1,148 +1,176 @@
-# Talkabouts - Plan-Review-Protokoll
-
-# Action-Layer V1 — Spec-Review (2026-07-17)
-
-                   |
-
-| M5 | Major | Namenskollision `router-service.test.ts` auflösen |
-| M6 | Major | `subscriptions`-Array in RouterService erweitern |
-| Mi1–7 | Minor | Siehe oben |
+# Talkabouts — Beobachtete Bugs & Analyse
 
 ---
 
-**Bleiben Plan-Phase-Notizen (nicht Spec):** M1 (Prompt-Beispiel-Reihenfolge),
-M2 (Promise-Chain-Snippet, in §11 Schritt 2 referenziert), M4 (Spike-Gates),
-Mi1–Mi5, Mi7 (unverändert gültig).
+## Bug 1: Spotify-Start — Fehlmeldung obwohl Spotify startet
+
+### Beobachtung
+
+1. Sarah sagt „Okay, ich starte Spotify" (LLM-Feedback aus dem Router)
+2. Spotify startet sichtbar im Hintergrund
+3. Direkt danach: „Spotify ließ sich nicht starten — vielleicht ist die App nicht mehr installiert."
+
+### Ursache (Code-Analyse)
+
+`ProgramLauncher.launchAppx()` in `src/main/program-launcher.ts`:
+
+```typescript
+this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
+  if (err) {
+    resolve({
+      ok: false,
+      speak: `${program.name} ließ sich nicht starten — ...`,
+    });
+  } else {
+    resolve({ ok: true });
+  }
+});
+```
+
+**Das Problem:** `explorer.exe shell:AppsFolder\<AUMID>` startet den App-Launch und beendet sich sofort — die eigentliche Startarbeit erledigt der _laufende Windows-Shell-Service_ asynchron im Hintergrund.
+
+In der Praxis kann es passieren, dass `explorer.exe` einen **Nicht-Null-Exit-Code** zurückgibt (weil es den Request nur delegiert hat), obwohl der Shell-Service die App danach korrekt hochfährt. Der Code-Kommentar sagt zwar „exit 0 even for stale AUMID", aber in bestimmten Windows-Konfigurationen (z.B. wenn ein zweiter Explorer-Prozess startet und sich nach Delegation beendet) kommt tatsächlich ein Nicht-Null-Code an.
+
+Resultat: `err !== null` → Fehlermeldung, während Spotify gleichzeitig startet.
+
+### Warum stimmt die Timing-Beobachtung?
+
+Der User beobachtet: „Es überprüft viel zu schnell ob das Ding fertig ist."
+
+`execFile` feuert den Callback sobald explorer.exe sich beendet — das passiert in Millisekunden. Ob die App wirklich läuft, ist zu diesem Zeitpunkt noch unbekannt.
+
+### Lösungsansatz
+
+Nach dem `execFile`-Callback (egal ob Fehler oder nicht) eine **kurze Wartezeit + Prozess-Verifikation** einbauen:
+
+```typescript
+// Nach execFile-Callback: 2-3 Sekunden warten, dann tasklist prüfen
+setTimeout(() => {
+  execFile(
+    'tasklist',
+    ['/FI', `IMAGENAME eq Spotify.exe`, '/FO', 'CSV', '/NH'],
+    (err2, stdout) => {
+      const running = stdout?.includes('Spotify.exe');
+      resolve(
+        running
+          ? { ok: true }
+          : { ok: false, speak: `${program.name} ließ sich nicht starten.` },
+      );
+    },
+  );
+}, 2500);
+```
+
+Das würde sowohl False-Negatives (Explorer sagt Fehler, App läuft trotzdem) als auch das zu-frühe Prüfen lösen. Der Prozessname müsste pro App konfigurierbar sein (neues Feld `processName` in `ProgramEntry`).
+
+**Alternativ:** `launchAppx` ignoriert `err` generell (da der Kommentar sagt: exit 0 selbst bei falscher AUMID) und gibt immer `{ ok: true }` zurück — Verifikation dann optional via `processName`.
 
 ---
 
-# Action-Layer V1 — Spec-Review Rev. 4 (2026-07-17)
+## Bug 2: Lautstärke — System-Master statt App-Lautstärke, und Relativ vs. Absolut
 
-**Grundlage:** `2026-07-16-action-layer-design.md` Rev. 4 + Working Tree nach `dev`-Merge (`6a5330b`, Suite 427/427 grün).
-Alle K- und die meisten M/Mi-Punkte des vorigen Reviews sind eingearbeitet. Neue Befunde unten.
+### Teilproblem 2a: Bleibt bei 100%
 
----
+#### Beobachtung
 
-## Kritisch — keine
+Beim Befehl „Lautstärke auf 50%" verändert sich zwar etwas im System-Sound-Panel, aber der Regler bleibt bei 100%.
 
-Alle vier K-Punkte des Rev.-3-Reviews sind adressiert. Keine neuen kritischen Blocker.
+#### Was der Code macht
 
----
+`SystemActions.setVolume(percent)` in `src/services/actions/system-actions.ts`:
 
-## Major — 3 neue Punkte
+```typescript
+const scalar = String(Math.round(percent) / 100); // 50 → "0.5"
+// PowerShell-Script: [Audio]::SetVolume(0.5)
+// → SetMasterVolumeLevelScalar(0.5f) auf IAudioEndpointVolume
+```
 
-### R4-M1 — Heuristik-Gate: `activeModel`-State nach Self-Route inkonsistent
+Für `setVolume(50)` sollte der Scalar `0.5` korrekt produziert und der Systemlautstärke-Regler auf 50% gesetzt werden.
 
-Das Heuristik-Gate setzt im 9B-Fenster `vramManager.swapModels(workerModel)` — unlädt qwen, phi4-mini wird beim nächsten Aufruf automatisch geladen. Dann ruft es `routeAndRespond(text, mode)` auf.
+#### Mögliche Ursachen für „bleibt bei 100%"
 
-**Problem:** Wenn `routeAndRespond` auf `self` routed (Heuristik hat korrekt getriggert, Aktion-Tag kommt aber zurück), gibt es eine Antwort und kehrt zurück — **ohne `activeModel` zu ändern**. `activeModel` bleibt `'9b'`.
+**Hypothese A — LLM generiert relativen Delta statt absoluten Wert:**
+Das Routing-Prompt zeigt:
 
-Folge: Die nächste User-Nachricht trifft auf `activeModel === '9b'` → geht direkt zum Worker → Ollama lädt qwen, obwohl phi4-mini im VRAM liegt. Kein Fehler, aber unnötiger Cold-Load und falsche State-Logik.
+```
+"Mach die Musik leiser" → [ACTION:set_volume:30]
+```
 
-**Fix:** Das Heuristik-Gate setzt `activeModel = '2b'` **vor** dem `routeAndRespond`-Aufruf. Wenn `routeAndRespond` auf 9B routed, überschreibt es `activeModel = '9b'` intern ohnehin. Wenn es auf self routed, bleibt `activeModel = '2b'` korrekt.
+Das LLM weiß den aktuellen Wert nicht. Bei „Lautstärke um 50% erhöhen" könnte es `150` ausgeben (current=100 angenommen + 50). Zod-Schema `z.coerce.number().int().min(0).max(100)` würde `150` **ablehnen** → Aktion wird abgebrochen → keine Meldung, keine Änderung. Aber: der User sieht trotzdem etwas im Mixer → das könnte ein anderes Windows-Event sein.
 
-Der Plan muss diesen Teilschritt in §11 Schritt 2 (Router-Turn-Modell) explizit aufführen.
+**Hypothese B — Windows klemmt den Wert:**
+Falls die Zod-Validierung für Werte > 100 versehentlich umgangen wird (z.B. durch direkte Rohdaten), würde `SetMasterVolumeLevelScalar(1.5f)` von Windows auf `1.0f` (100%) geclampt — sichtbar als „bleibt bei 100%". Das wäre das Bug-Pattern, das der User beschreibt.
 
----
+**Hypothese C — PowerShell-Fehler ohne Speak:**
+Das PowerShell-Inline-Script schlägt fehl (z.B. wegen fehlendem Zugriff auf den Audio-Endpoint), aber `execFn` gibt `err = null` zurück (Exit 0 trotz Exception). In diesem Fall würde `{ ok: true }` returned und keine Fehlermeldung erscheinen — und die Lautstärke ändert sich nicht.
 
-### R4-M2 — `voice-service.ts` fehlt in §4 Datei-Struktur-Tabelle
+#### Zu prüfen
 
-F9 beschreibt ein neues Verhalten: „Steht der VoiceService auf `listening`, werden verzögerte Sprachausgaben aufgeschoben, bis die Aufnahme endet."
+- Was erzeugt das LLM exakt für „Lautstärke auf 50%"? → Logging ist vorhanden: `[Actions] set_volume:...` in der Main-Konsole prüfen
+- Gibt PowerShell einen Fehler aus? → In der Konsole nach `[SystemActions] setVolume failed` suchen
 
-Der aktuelle VoiceService-`onMessage`-Handler prüft nur `shouldSpeak` (`voiceMode !== 'off' && interactionMode !== 'chat'`). Es gibt **keine** Deferral-Logik für den `listening`-State. Die Implementierung von F9 erfordert eine Änderung in `src/services/voice/voice-service.ts` — diese Datei steht nicht in §4.
+### Teilproblem 2b: System-Lautstärke statt App-Lautstärke (Feature-Idee)
 
-Konkret: Wenn `_voiceState === 'listening'`, muss `llm:chunk`/`llm:done` für TTS gepuffert werden. Die Chat-Bubble erscheint sofort (Dashboard ist von VoiceService unabhängig). Nach Ende der Aufnahme (`voice:transcript` → Übergang zu `processing`) wird der Puffer abgespielt.
+#### Beobachtung / Wunsch
 
-**§4 Datei-Struktur muss `src/services/voice/voice-service.ts` als „ändern" aufführen.**
+Der User möchte nicht den Windows-Master-Lautstärkeregler ändern, sondern gezielt die **Spotify-App-Lautstärke im Windows Volume Mixer** (per-app volume). Der Systemlautstärke-Regler wird vom User nie manuell angefasst.
 
----
+#### Aktueller Stand
 
-### R4-M3 — `llm-provider.interface.ts` und `ollama-provider.ts` fehlen in §4
+`IAudioEndpointVolume::SetMasterVolumeLevelScalar` → ändert den **Master-Endpunkt-Volume** (entspricht dem Lautstärkeregler im System-Tray). Das ist die globale Systemlautstärke für alle Apps.
 
-F8 schreibt vor: „niedrige Temperatur, `num_predict`-Cap ~256 — Achtung: per-Call-Temperatur braucht eine kleine `ChatOptions`-Erweiterung im Provider-Interface."
+#### Ansatz für App-spezifische Lautstärke
 
-Aktuelles Interface: `ChatOptions` hat `num_predict`, `keep_alive`, `signal` — kein `temperature`. Ohne diese Erweiterung kann `summarize-results.ts` keine Temperatur steuern.
+Windows Core Audio bietet `IAudioSessionManager2` → `ISimpleAudioVolume`, mit dem man pro Audio-Session (= pro laufende App) die Lautstärke steuern kann:
 
-Betroffene Dateien (beide fehlen in §4):
+1. Default-Playback-Endpoint holen (wie bisher)
+2. `IAudioSessionManager2` aktivieren
+3. Alle Sessions enumerieren (`GetSessionEnumerator`)
+4. Session filtern: `IAudioSessionControl2::GetProcessId()` → PID gegen `tasklist` matchen für „Spotify"
+5. `ISimpleAudioVolume::SetMasterVolume(scalar, &guid)` aufrufen
 
-- `src/services/llm/llm-provider.interface.ts` — `ChatOptions` um optionales `temperature?: number` erweitern
-- `src/services/llm/providers/ollama-provider.ts` — das Feld in den Ollama-Request-Body übernehmen
+Das PowerShell-Inline-C#-Script wäre deutlich umfangreicher, aber machbar. Alternativ: ein Node.js-Addon via `ffi-napi` oder ein kleines C#-CLI-Helfer-Binary.
 
----
+#### Schema-Erweiterung (Vorschlag)
 
-## Minor — 4 neue Punkte
+Neue Action `set_app_volume` mit Param-Format `"spotify:50"` (appName:percent) ODER `set_volume` um ein optionales App-Targeting erweitern. Einfachste V2-Lösung wäre eine eigene Action:
 
-### R4-Mi1 — `pendingActions` Map: Value-Typ und Entry-Lifecycle undefiniert
+```
+set_app_volume:<appname>:<0-100> — set volume of a specific running app in the Volume Mixer
+```
 
-Die Spec schreibt: `pendingActions: Map<requestId, …>` — die Ellipse ist kein Typ. Es fehlt:
+Routing-Prompt-Ergänzung:
 
-1. **Was hält der Value?** Für fire-and-forget-Aktionen (open_program, lock_screen) braucht die Map keinen Rückgabewert. Für web_search muss das Result über die Queue ankommen — der Value könnte z. B. ein Resolver-Callback für die Queue sein, oder einfach `true` als "wir warten noch".
-2. **Wann wird ein Entry entfernt?** Nach `action:result` eingetroffen? Nach `emitAssistantResponse` abgeschlossen? Gar nicht (Leak bei nie-kommendem Result)?
-3. **`destroy()`**: Offene Entries (laufende Suche) → hängende Promises, die nach Shutdown noch `action:result` emittieren wollen. Der Shutdown-Guard in `emitAssistantResponse` fängt das, aber die Map selbst sollte in `destroy()` geleert werden.
-
-Der Plan muss den Value-Typ und den vollständigen Lifecycle festlegen.
-
----
-
-### R4-Mi2 — Timer-Monotonizität: konkreter Mechanismus immer noch offen
-
-Aus Mi5 des Rev.-3-Reviews unverändert übernommen: „monotone Zeitbasis (`process.hrtime`/Date-Differenz statt blindem Vertrauen in `setTimeout`)" — keine Entscheidung, welcher konkrete Mechanismus gebaut wird.
-
-Empfehlung für den Plan: `Date.now()`-Startzeit merken, im Callback prüfen ob `Date.now() - startMs >= durationMs`, sonst `setTimeout(remaining)` neu ansetzen. Testbar mit `vi.useFakeTimers`. Kein `process.hrtime` nötig — Wall-Clock reicht für Timer-Korrektheit nach Standby.
-
----
-
-### R4-Mi3 — `lock_screen` ohne Zod-Schema in §5
-
-Die §5-Tabelle zeigt für lock_screen die Spalte „Param-Schema" leer. Das Bus-Payload `action:request` hat immer `{ param: string }`. Wenn der Parser für `[ACTION:lock_screen]` (kein zweiter Doppelpunkt) einen leeren String liefert, muss ActionService entscheiden, wie er validiert.
-
-Empfehlung: explizit `z.literal('').optional()` oder `z.undefined()` als Schema — damit ein fehlerhafter LLM-Output wie `[ACTION:lock_screen:jetzt_sofort]` als Zod-Fehler landet (unbekannter Param → `speak: 'Das kann ich noch nicht.'`), statt lautlos zu starten.
+```
+set_app_volume:<appname>:<0-100> — per-app volume ("Mach Spotify leiser", "Spotify auf 50%")
+set_volume:<0-100> — system master volume only if user explicitly says "Systemlautstärke"
+```
 
 ---
 
-### R4-Mi4 — Allowlist-Import-Richtung undokumentiert
+## Offene Punkte / Nächste Schritte
 
-RouterService muss beim Empfang von `parsed.kind === 'action'` prüfen, ob `parsed.action` in der Allowlist steht — bevor `action:request` emittiert wird. Die Allowlist soll in `action-schemas.ts` liegen (`services/actions/`). RouterService liegt in `services/llm/`.
+| #   | Thema                                                                                           | Priorität |
+| --- | ----------------------------------------------------------------------------------------------- | --------- |
+| 1   | Bug: `launchAppx` — Verzögerung + Prozess-Verifikation via `tasklist` einbauen                  | Hoch      |
+| 2   | Debug: `[Actions]`-Log im Prod-Run prüfen — was schickt das LLM als Param für set_volume?       | Hoch      |
+| 3   | Debug: PowerShell-Stderr für `setVolume` auslesen — schlägt es fehl?                            | Hoch      |
+| 4   | Routing-Prompt: Klarstellen dass `set_volume` ABSOLUTEN Zielwert (0-100) erwartet, nicht Deltas | Mittel    |
+| 5   | Feature: `set_app_volume` Action für per-App-Lautstärke (Spotify, Chrome, etc.)                 | Mittel    |
 
-Der cross-service Import `llm → actions` ist kein circular dep (action-schemas importiert nichts aus llm). Aber er fehlt komplett in der Spec-Beschreibung: weder §3 noch §4 erwähnen, dass RouterService aus action-schemas importiert. Der Plan muss diesen Import explizit notieren — sonst entsteht im Router eine zweite, divergierende Allowlist-Kopie.
+1. öffne Spotify: Ja! aber mit meldung: Ist gestartet. Startet irgendwie nicht scheint nicht installiert zu sein. (Start + vordergrund = erfolgreich)
+2. Musik Lautzstärke auf 50%: geht nicht!!!!
 
----
+Weiterer Hinweis:
+PUT https://api.spotify.com/v1/me/player/volume?volume_percent=5
 
-## Zusammenfassung Rev. 4
+Spotify auf x Prozent
+Spotify etwas leiser (-5%)
+Spotify leiser (-25%)
+Spotify etwas lauter (+5%)
+Spotify lauter (+25%)
+Spotify x Prozent leiser
+Musik auf x Prozent
 
-| #      | Typ       | Titel                                                                              |
-| ------ | --------- | ---------------------------------------------------------------------------------- |
-| R4-M1  | **Major** | Heuristik-Gate: `activeModel = '2b'` vor `routeAndRespond` setzen                  |
-| R4-M2  | **Major** | `voice-service.ts` in §4 eintragen (F9 TTS-Deferral)                               |
-| R4-M3  | **Major** | `llm-provider.interface.ts` + `ollama-provider.ts` in §4 eintragen (F8 Temperatur) |
-| R4-Mi1 | Minor     | `pendingActions` Value-Typ + Entry-Lifecycle festlegen                             |
-| R4-Mi2 | Minor     | Timer-Monotonizität: konkreten Mechanismus im Plan entscheiden                     |
-| R4-Mi3 | Minor     | `lock_screen` Zod-Schema in §5 explizit machen                                     |
-| R4-Mi4 | Minor     | Allowlist-Import `llm → actions` in §3/§4 dokumentieren                            |
-
----
-
-## Antworten Rev.-4-Review (Claude, 17.07.2026 — in Spec Rev. 5 eingearbeitet)
-
-Alle 7 Punkte angenommen, keiner kollidiert mit getroffenen Entscheidungen:
-
-- R4-M1: **verifiziert am Code** (`activeModel='9b'` nur in der 9B-Route,
-  router-service.ts:147; Self-Route lässt State stehen). Fix wie vorgeschlagen
-  als Bullet in der Heuristik-Gate-Sektion (§3): `activeModel='2b'` vor
-  `routeAndRespond`.
-- R4-M2: `voice-service.ts` in §4 aufgenommen (TTS-Deferral bei `listening`,
-  Chat-Bubble sofort).
-- R4-M3: `llm-provider.interface.ts` + `ollama-provider.ts` in §4 aufgenommen
-  (`ChatOptions.temperature?`).
-- R4-Mi1: in der Spec festgelegt statt an den Plan delegiert:
-  `Map<string, { action: string }>`; ActionService emittiert **genau ein**
-  `action:result` pro Request (auch stille Erfolge) → räumt den Entry;
-  `destroy()` leert die Map.
-- R4-Mi2: entschieden (§5): Date.now()-Differenz + Restzeit-Nachschlag,
-  kein hrtime.
-- R4-Mi3: `lock_screen`-Schema `z.literal('')` (§5) — Nicht-Leer-Param ist
-  Zod-Fehler, nie stiller Start.
-- R4-Mi4: Allowlist-Import `llm → actions` in §3 dokumentiert (eine Quelle,
-  keine Kopie im Router).
-
-Spec Rev. 5 ist damit aus unserer Sicht plan-ready.
+Systemsound (die selben befehle)
+Gezielte dinge wie Games, Browser und andere apps vllt auch??

@@ -51,6 +51,35 @@ export function matchProgram(query: string, programs: ProgramEntry[]): MatchResu
 
 type SpawnFn = typeof nodeSpawn;
 type ExecFileFn = (cmd: string, args: string[], cb: (err: Error | null) => void) => void;
+/** Verifies a process is running by image name (e.g. "Spotify.exe"). */
+type ProcessCheckFn = (imageName: string) => Promise<boolean>;
+
+/**
+ * Fallback map for well-known Store apps whose process name can't be derived
+ * from the AUMID at scan time. Matched case-insensitively against the AUMID.
+ * A `processName` on the ProgramEntry always wins over this.
+ * TODO(scanner): populate ProgramEntry.processName during the program scan.
+ */
+const KNOWN_APPX_PROCESS: readonly { pattern: RegExp; processName: string }[] = [
+  { pattern: /SpotifyMusic/i, processName: 'Spotify.exe' },
+];
+
+function knownAppxProcess(aumid: string): string | undefined {
+  return KNOWN_APPX_PROCESS.find((e) => e.pattern.test(aumid))?.processName;
+}
+
+/** Default process check: tasklist filtered by image name (Windows). */
+function defaultProcessCheck(imageName: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    nodeExecFile('tasklist', ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
+      if (err) {
+        resolve(false);
+        return;
+      }
+      resolve(String(stdout).toLowerCase().includes(imageName.toLowerCase()));
+    });
+  });
+}
 
 export class ProgramLauncher {
   constructor(
@@ -58,6 +87,8 @@ export class ProgramLauncher {
     private execFileFn: ExecFileFn = (cmd, args, cb) => {
       nodeExecFile(cmd, args, (err) => cb(err));
     },
+    private verifyProcess: ProcessCheckFn = defaultProcessCheck,
+    private appxVerifyDelayMs = 2500,
   ) {}
 
   async launch(query: string, programs: ProgramEntry[]): Promise<LaunchResult> {
@@ -84,21 +115,42 @@ export class ProgramLauncher {
     return this.launchExe(program);
   }
 
-  /** Store apps: verified spike (17.07.) — explorer.exe shell:AppsFolder\<AUMID>. */
+  /**
+   * Store apps: explorer.exe shell:AppsFolder\<AUMID>. explorer's exit code is
+   * unreliable in BOTH directions (exit 0 for a stale AUMID = false positive;
+   * non-zero while the shell service still launches the app = false negative,
+   * which is the "Spotify läuft, meldet aber nicht installiert"-Bug). So we
+   * ignore the exit code and verify via a process check when we know the image
+   * name — otherwise stay optimistic instead of emitting a false failure.
+   */
   private launchAppx(program: ProgramEntry): Promise<LaunchResult> {
     const aumid = program.path.replace(/^appx:/, '');
-    console.log(`[ProgramLauncher] launchAppx explorer.exe shell:AppsFolder\\${aumid}`);
+    const processName = program.processName ?? knownAppxProcess(aumid);
+    console.log(
+      `[ProgramLauncher] launchAppx explorer.exe shell:AppsFolder\\${aumid}` +
+        ` (verify=${processName ?? 'none'})`,
+    );
     return new Promise((resolve) => {
       this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
-        // NOTE: explorer.exe returns exit 0 even for a stale/missing AUMID, so
-        // this "ok" only means "explorer accepted the request", not "app is up".
-        if (err) {
-          console.warn('[ProgramLauncher] launchAppx failed:', aumid, err.message);
-          resolve({ ok: false, speak: `${program.name} ließ sich nicht starten — vielleicht ist die App nicht mehr installiert.` });
-        } else {
-          console.log('[ProgramLauncher] launchAppx explorer accepted (exit 0 — no proof the app is up)');
+        if (err) console.warn('[ProgramLauncher] launchAppx explorer exit non-zero (ignored):', aumid, err.message);
+
+        if (!processName) {
+          // Can't verify — never emit a false "not installed" for a delegated launch.
+          console.log('[ProgramLauncher] launchAppx no processName → optimistic ok');
           resolve({ ok: true });
+          return;
         }
+
+        setTimeout(() => {
+          void this.verifyProcess(processName).then((running) => {
+            console.log(`[ProgramLauncher] launchAppx verify ${processName} → running=${running}`);
+            resolve(
+              running
+                ? { ok: true }
+                : { ok: false, speak: `${program.name} ließ sich nicht starten — vielleicht ist die App nicht mehr installiert.` },
+            );
+          });
+        }, this.appxVerifyDelayMs);
       });
     });
   }

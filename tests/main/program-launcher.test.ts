@@ -82,15 +82,17 @@ describe('ProgramLauncher.launch', () => {
     expect(result.speak).toBe('Der Eintrag für Discord zeigt auf einen Updater — ich starte den nicht.');
   });
 
-  it('launches appx via explorer.exe shell:AppsFolder (verified spike) and announces launchers neutrally', async () => {
+  it('launches appx via explorer.exe shell:AppsFolder and announces launchers neutrally', async () => {
     const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null));
-    const launcher = new ProgramLauncher(vi.fn(), execFileFn);
+    const verify = vi.fn().mockResolvedValue(true);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 0);
     const result = await launcher.launch('spotify', PROGRAMS);
     expect(execFileFn).toHaveBeenCalledWith(
       'explorer.exe',
       ['shell:AppsFolder\\SpotifyAB.SpotifyMusic_zpdnekdrzrea0!Spotify'],
       expect.any(Function),
     );
+    expect(verify).toHaveBeenCalledWith('Spotify.exe');
     expect(result).toEqual({ ok: true });
 
     const child = fakeChild();
@@ -98,6 +100,38 @@ describe('ProgramLauncher.launch', () => {
     const resultP = launcher2.launch('epic', PROGRAMS);
     setTimeout(() => child.emit('spawn'), 5);
     expect((await resultP).speak).toBe('Ich starte den Launcher von Epic Games Launcher.');
+  });
+
+  it('appx: ignores a non-zero explorer exit when the process is actually running (the false-negative bug)', async () => {
+    const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
+      cb(new Error('explorer exit 1')),
+    );
+    const verify = vi.fn().mockResolvedValue(true);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 0);
+    const result = await launcher.launch('spotify', PROGRAMS);
+    expect(verify).toHaveBeenCalledWith('Spotify.exe');
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('appx: reports honest failure only when the process is verifiably not running', async () => {
+    const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null));
+    const verify = vi.fn().mockResolvedValue(false);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 0);
+    const result = await launcher.launch('spotify', PROGRAMS);
+    expect(result.ok).toBe(false);
+    expect(result.speak).toContain('Spotify');
+  });
+
+  it('appx without a known process name stays optimistic instead of a false failure', async () => {
+    const programs = [prog({ name: 'LinkedIn', path: 'appx:7EE7776C.LinkedInforWindows_w1wdnht996qgy!App', type: 'appx' })];
+    const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
+      cb(new Error('explorer exit 1')),
+    );
+    const verify = vi.fn().mockResolvedValue(false);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 0);
+    const result = await launcher.launch('linkedin', programs);
+    expect(verify).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
   });
 
   it('ambiguous → question, miss → suggestion speak', async () => {
