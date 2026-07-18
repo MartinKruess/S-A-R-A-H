@@ -115,9 +115,13 @@ def main():
     parser.add_argument("--port", type=int, default=8786)
     parser.add_argument("--model", default="small")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--compute-type", default=None)
     args = parser.parse_args()
 
-    compute_type = "float16" if args.device != "cpu" else "int8"
+    # Explicit --compute-type wins; else float16 on GPU, int8 on CPU. Large
+    # models (e.g. large-v3-turbo) are launched with int8 to fit alongside the
+    # LLM on an 8 GB GPU.
+    compute_type = args.compute_type or ("float16" if args.device != "cpu" else "int8")
     print(f"[faster-whisper] Loading model '{args.model}' on {args.device} ({compute_type})...", flush=True)
     model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
     print(f"[faster-whisper] Model loaded. Server starting on port {args.port}...", flush=True)

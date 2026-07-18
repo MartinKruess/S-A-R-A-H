@@ -55,8 +55,11 @@ export class FasterWhisperProvider implements SttProvider {
     this.serverProcess = spawn('python', [
       this.scriptPath,
       '--port', String(SERVER_PORT),
-      '--model', 'small',
+      // large-v3-turbo: big German accuracy jump over 'small'. int8 keeps VRAM
+      // ~2 GB so it coexists with the LLM on an 8 GB GPU (RTX 3050).
+      '--model', 'large-v3-turbo',
       '--device', 'auto',
+      '--compute-type', 'int8',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
     this.serverProcess.stdout?.on('data', (data: Buffer) => {
