@@ -11,6 +11,9 @@ export type BusEvents = {
   'llm:error':           { message: string };
   'llm:routing':         { from: '2b' | '9b'; to: 'self' | '9b' | 'backend' | 'extern'; feedback: string };
   'llm:model-swap':      { loading: string; unloading: string };
+  // Main-process-only bridging phrase spoken over a model-swap pause (voice mode).
+  // Deliberately NOT forwarded to the renderer — it must never render a chat bubble.
+  'llm:filler':          { text: string };
   'voice:state':         { state: VoiceState };
   'voice:listening':     Record<string, never>;
   'voice:transcript':    { text: string };
