@@ -20,8 +20,13 @@ Sarah soll gezielt die **Spotify-Lautstärke** steuern („Musik auf 50 %", „S
 - Per-App-Mixer für Browser/Games (Windows `ISimpleAudioVolume`) — eigene spätere Runde.
 - Master-Volume-Bug (`set_volume`) — separat/geparkt.
 
-## Neue Abhängigkeit
-`npm i openid-client` (v6, funktionale API): PKCE (`randomPKCECodeVerifier`/`calculatePKCECodeChallenge`), `buildAuthorizationUrl`, `authorizationCodeGrant`, `refreshTokenGrant`, `None()` für Public-Client ohne Secret.
+## Keine neue Abhängigkeit (Entscheidung 19.07.)
+Der Main-Prozess ist **CommonJS** (`tsc module:commonjs`), `openid-client` v6 ist **ESM-only** → passt nicht sauber. Der OAuth-Flow (Authorization Code **+ PKCE**, Public-Client ohne Secret) wird daher **mit Bordmitteln selbst gebaut** — für *einen* Provider mit Standard-Flow ist das schlank (~70 Zeilen) und vermeidet Dependency-/ESM-Ballast. Baustein: Helfer-Modul `src/services/integrations/oauth-pkce.ts` (`crypto` für PKCE, `http` für den Loopback, `fetch` für Token-/Refresh-Tausch; `fetch` injizierbar für Tests).
+
+**PKCE:** `verifier = base64url(randomBytes(32))`, `challenge = base64url(sha256(verifier))`, `method=S256`.
+**Authorize-URL:** `GET <authEndpoint>?response_type=code&client_id&redirect_uri&scope&state&code_challenge&code_challenge_method=S256`.
+**Token-Tausch (POST `<tokenEndpoint>`, `application/x-www-form-urlencoded`):** `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`.
+**Refresh (POST):** `grant_type=refresh_token&refresh_token&client_id`. Response-Felder: `access_token`, `expires_in`, `scope`, optional `refresh_token`.
 
 ---
 
@@ -43,21 +48,14 @@ interface OAuthProvider {
 ```
 (Struktur bewusst so, dass ein späterer `type: 'oauth' | 'apiKey'` + Key-Provider ergänzt werden kann, ohne Umbau.)
 
-Methoden:
-- `connect(providerId): Promise<void>` — PKCE erzeugen, **Loopback-Server** auf `http://127.0.0.1:8888/callback` starten, `shell.openExternal(buildAuthorizationUrl(...))`, Code+State abfangen, `authorizationCodeGrant(config, callbackUrl, { pkceCodeVerifier, expectedState })`, Tokens speichern, Server schließen. Timeout (5 min) + Fehler → Server schließen, Reject.
-- `getAccessToken(providerId): Promise<string | null>` — Token-Blob laden; gültig (`expiresAt - now > 60s`) → zurückgeben; sonst `refreshTokenGrant` → neuen Access-Token. **Refresh-Token nur persistieren, wenn der Response einen neuen liefert (`refresh_token` ist im Refresh-Response OPTIONAL — Spotify rotiert nicht garantiert), sonst den bestehenden behalten** (Review-P3). Refresh-Fehler (widerrufen) → Verbindung als getrennt markieren, `null`.
+Methoden (nutzen `oauth-pkce.ts`):
+- `connect(providerId): Promise<void>` — PKCE + `state` erzeugen, **Loopback-Server** auf `http://127.0.0.1:<port>/callback` starten, `shell.openExternal(<authorize-URL>)`, `?code&state` abfangen (State prüfen), Code gegen Tokens tauschen, Tokens speichern, Server schließen + Erfolgs-HTML anzeigen. Timeout (5 min) + Fehler → Server schließen, Reject.
+- `getAccessToken(providerId): Promise<string | null>` — Token-Blob laden; gültig (`expiresAt - now > 60s`) → zurückgeben; sonst Refresh (POST `grant_type=refresh_token`) → neuen Access-Token + `expiresAt = now + expires_in`. **Refresh-Token nur persistieren, wenn der Response einen neuen liefert (`refresh_token` OPTIONAL — Spotify rotiert nicht garantiert), sonst den bestehenden behalten** (Review-P3). Refresh-Fehler (widerrufen) → Verbindung als getrennt markieren, `null`.
 - `disconnect(providerId): Promise<void>` — Token-Eintrag löschen.
 - `getStatus(providerId): { connected: boolean; expiresAt?: number }`.
 - `listConnections(): ConnectionInfo[]` — alle registrierten Provider + Status.
 
-**openid-client-Config (Spotify hat kein OIDC-Discovery):**
-```ts
-const config = new client.Configuration(
-  { issuer, authorization_endpoint, token_endpoint },  // ServerMetadata manuell
-  clientId, undefined, client.None(),                  // Public-Client, kein Secret
-);
-```
-Redirect-URI `http://127.0.0.1:8888/callback` (Loopback-IP `127.0.0.1`, nicht `localhost`). **Fester Port ist erforderlich** (Review-P1): Spotify verlangt eine **exakt vorregistrierte** Redirect-URI und unterstützt KEINE variablen Loopback-Ports (ein `:0`-Zufallsport nach RFC 8252 würde `INVALID_CLIENT: Invalid redirect URI` liefern). Port per env `SPOTIFY_REDIRECT_PORT` (Default `8888`) konfigurierbar, damit ein Konflikt durch env + Dashboard-Eintrag lösbar ist. Scopes: `user-modify-playback-state user-read-playback-state`.
+**Spotify-Endpunkte** (kein OIDC-Discovery nötig, fest in der Provider-Config): `authorizationEndpoint = https://accounts.spotify.com/authorize`, `tokenEndpoint = https://accounts.spotify.com/api/token`. Redirect-URI `http://127.0.0.1:8888/callback` (Loopback-IP `127.0.0.1`, nicht `localhost`). **Fester Port ist erforderlich** (Review-P1): Spotify verlangt eine **exakt vorregistrierte** Redirect-URI und unterstützt KEINE variablen Loopback-Ports (ein `:0`-Zufallsport nach RFC 8252 würde `INVALID_CLIENT: Invalid redirect URI` liefern). Port per env `SPOTIFY_REDIRECT_PORT` (Default `8888`) konfigurierbar, damit ein Konflikt durch env + Dashboard-Eintrag lösbar ist. Scopes: `user-modify-playback-state user-read-playback-state`.
 
 ### 2. Token-Store (`src/services/integrations/token-store.ts`)
 Verschlüsselte Datei `connections.enc` in `userData`, Verschlüsselung über den bestehenden **`KeyManager`** (`src/core/crypto/key-manager.ts`, safeStorage + Maschinen-Fallback) — kein Klartext-Token auf Platte, keine DB-Kopplung (Secrets bleiben aus `config`/`messages` raus). Format:
@@ -120,7 +118,8 @@ Analog `SystemActions`; bekommt `OAuthConnectionService` injiziert. Nutzt `fetch
 - Kein aktives Spotify-Gerät → ehrliche Meldung (kein stiller Fehlschlag).
 
 ## Tests
-- `OAuthConnectionService`: Token-Roundtrip (gestubbter KeyManager), `getAccessToken` gültig vs. Refresh bei Ablauf (openid-client-Aufrufe injiziert/gemockt), `disconnect` leert; Refresh-Fehler → getrennt.
+- `oauth-pkce`: PKCE-Verifier/Challenge (S256, base64url), Authorize-URL-Aufbau, Token-Tausch + Refresh via gemocktem `fetch`, Refresh-Response ohne `refresh_token` → alten behalten.
+- `OAuthConnectionService`: Token-Roundtrip (gestubbter KeyManager), `getAccessToken` gültig vs. Refresh bei Ablauf (gemocktes `fetch`), `disconnect` leert; Refresh-Fehler → getrennt.
 - `SpotifyActions`: gemockter `fetch` → `setVolume` 204 ok; `adjustVolume` liest Ist-Wert + clampt; Fehlerpfade 401/403/404/nicht-verbunden → korrekte `speak`.
 - `action-schemas`: Bounds/Signed für die zwei neuen Schemas; Gate erkennt „Spotify/Musik leiser".
 - `connections-section` (Renderer): rendert Provider, Buttons rufen die API, Status-Update nach connect/disconnect.
@@ -132,7 +131,7 @@ Analog `SystemActions`; bekommt `OAuthConnectionService` injiziert. Nutzt `fetch
 4. **Client-ID** kopieren → `SPOTIFY_CLIENT_ID` als env setzen (Dev). Für die spätere Distribution: eine Projekt-App, öffentliche Client-ID mitgeliefert (PKCE, kein Secret).
 
 ## Umsetzungsreihenfolge (für die Plan-Phase)
-1. `npm i openid-client` + Provider-Config/Registry + Token-Store (KeyManager) + Tests.
+1. `oauth-pkce.ts` (PKCE/Authorize-URL/Token-Tausch/Refresh, fetch injizierbar) + Provider-Config/Registry + Token-Store (KeyManager) + Tests.
 2. `OAuthConnectionService` (connect/loopback/refresh/getAccessToken) + Tests.
 3. IPC (`ipc-connections.ts` + Contract + preload + sarah-api).
 4. Settings-Tab „Integrationen" + `connections-section`.
