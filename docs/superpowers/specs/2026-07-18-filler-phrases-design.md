@@ -30,13 +30,23 @@ Vorlage: `problems/talkabouts.md`, Abschnitte 11–14 (Pools pro Zustand, `getFe
 ## Architektur
 
 ### Modul `src/services/llm/filler-phrases.ts`
-- `feedbackTexts: Record<FillerCategory, string[]>` — die Pools (Vorlage Abschnitt 12).
-- `getFeedback(category, historySize = 4): string` — wählt zufällig, meidet die letzten `historySize` Ausgaben pro Kategorie (Vorlage Abschnitt 13); Fallback `'Einen Moment bitte.'` bei leerem Pool. Reine Funktion + modulinterner History-State → gut unit-testbar.
+- `feedbackTexts: Record<FillerCategory, string[]>` — die Pools (Vorlage `features.md`, ehem. talkabouts Abschnitt 12). **`switchingBack` ist dort nicht definiert und wird hier ergänzt** (Review-Befund 1):
+  ```ts
+  switchingBack: ['Einen Moment.', 'Sofort.', 'Mach ich gleich.'],
+  ```
+  Die 2B→9B-Verkabelung nutzt `frontendThinking`, die 9B→2B-Verkabelung `switchingBack`.
+- `getFeedback(category, historySize = 4): string` — wählt zufällig, meidet die letzten `historySize` Ausgaben pro Kategorie (Vorlage Abschnitt 13); Fallback `'Einen Moment bitte.'` bei leerem Pool. **Modulinterne Funktion mit History-State (nicht pure)** → isoliert unit-testbar via gestubbtem RNG (Review-Befund 3).
 
 ### Verkabelung in `router-service.ts`
-An den zwei `vramManager.swapModels(...)`-Stellen wird — **nur wenn `mode === 'voice'`** — direkt beim Swap-Start ein Füllsatz als eigene gesprochene Äußerung ausgegeben (`frontendThinking` bzw. `switchingBack`), **bevor** der Swap awaited wird, damit die TTS-Synthese die Ladezeit füllt. Die echte Antwort/Ansage folgt danach über den bestehenden Pfad.
+An den zwei `vramManager.swapModels(...)`-Stellen wird — **nur wenn `mode === 'voice'`** — direkt beim Swap-Start ein Füllsatz gesprochen (`frontendThinking` bzw. `switchingBack`), **bevor** der Swap awaited wird, damit die TTS-Synthese die Ladezeit füllt. Die echte Antwort/Ansage folgt danach über den bestehenden Pfad.
 
-- Genauer Sprech-Mechanismus (bestehenden `emitAssistantResponse`/TTS-Pfad wiederverwenden vs. dedizierter Filler-Emit ohne Persistenz/History-Eintrag) wird in der **Plan-Phase** festgelegt — der Füllsatz darf **nicht** als echte Assistenten-Antwort in die Chat-Historie/DB wandern (er ist Überbrückung, kein Turn-Inhalt).
+### Emit-Mechanismus (entschieden: Option B, Review-Befund 2)
+`emitAssistantResponse` scheidet aus — es macht immer `history.push` + `persistMessage` (verifiziert Zeile 253-261). Stattdessen ein **dediziertes Bus-Event `llm:filler` `{ text }`**:
+- **`router-service`** emittiert es per `bus.emit` beim Swap-Start (nur `mode === 'voice'`). Kein `history.push`, kein `persistMessage`, **kein `llm:done`** (der Füller beendet den Turn nicht — das macht weiter `runWorker`s eigenes `llm:done`, Zeile 237).
+- **`voice-service`** abonniert `llm:filler` und hängt den Text direkt in die `ttsQueue` (nur Sprache).
+- **Dashboard ignoriert `llm:filler`** → **keine Chat-Bubble** (der Füller ist Überbrückung, kein Turn-Inhalt; eine nicht-persistierte Bubble wäre beim Reload inkonsistent).
+
+**Ordering (Review-Befund 4):** Turns sind serialisiert (`turnInFlight` in `dispatch`), es läuft also **nie** ein Worker-Stream parallel, wenn ein Füller emittiert wird. Der Füller wird vor `await swapModels(...)` emittiert, die Worker-Chunks erst nach dem Swap → der Füller landet garantiert **vor** der Antwort in der `ttsQueue`. Kein Rückgriff auf die `outputQueue` nötig.
 
 ### Gate / Timing
 - Füller feuert **nur bei echtem Swap** — nicht wenn 9B schon warm ist und weiter im Worker geantwortet wird (kein Swap = keine Pause). Das erfüllt automatisch die „unter 2 s keine Meldung"-Regel (ein Swap dauert immer länger).
