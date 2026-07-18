@@ -26,17 +26,26 @@ export function isActionName(name: string): name is ActionName {
 /**
  * Heuristic gate vocabulary (Spec §3): decides ONLY whether a 9B-window
  * message is worth the swap back to the router. Never executes anything.
+ *
+ * These are word-START STEMS, prefix-matched, so every conjugation of a command
+ * verb is caught — imperative AND infinitive/polite forms: 'start' covers
+ * starte/starten/startest ("kannst du Spotify starten"), 'öffn' covers
+ * öffne/öffnen/öffnest, 'such' covers such/suche/suchen. The stems are anchored
+ * to a word boundary, so mid-word hits like "Eröffnung" (≠ 'öffn' at word start)
+ * do NOT match. Over-matching only costs one extra routing swap (never a wrong
+ * action), so we bias toward catching commands — but we avoid very common verbs
+ * like "mach(en)"/"stell(en)" whose actions are already anchored by a noun
+ * ('lautstärke'/'timer').
  */
-export const ACTION_HINT_WORDS: readonly string[] = [
-  'öffne', 'öffnen', 'starte', 'start',
-  'such', 'suche', 'zeig', 'zeige',
+export const ACTION_HINT_STEMS: readonly string[] = [
+  'öffn', 'start', 'such', 'google', 'zeig',
   'timer', 'wecker',
   'lautstärke', 'lauter', 'leiser',
-  'sperr', 'sperre', 'bildschirm',
+  'sperr', 'bildschirm',
 ];
 
 const HINT_PATTERN = new RegExp(
-  `(?:^|[\\s,.!?])(${ACTION_HINT_WORDS.join('|')})(?=$|[\\s,.!?])`,
+  `(?:^|[\\s,.!?])(${ACTION_HINT_STEMS.join('|')})`,
   'i',
 );
 
