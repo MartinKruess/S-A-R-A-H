@@ -2,6 +2,9 @@ import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js'
 import type { BusEvents } from './bus-events.js';
 import type { SystemIpcInfo, SystemMetrics, VoiceLevel } from './ipc-contract.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
+import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
+
+export type { ConnectionInfo };
 
 /** Boot sequence status sent from main to splash renderer */
 export type BootStatus = {
@@ -23,6 +26,13 @@ export interface SarahVoiceApi {
   setInteractionMode(mode: 'chat' | 'voice'): Promise<void>;
   sendAudioChunk(chunk: number[]): Promise<void>;
   configChanged(): Promise<void>;
+}
+
+/** Connections ("Integrationen") sub-API exposed to renderers */
+export interface SarahConnectionsApi {
+  list(): Promise<ConnectionInfo[]>;
+  connect(id: string): Promise<{ ok: boolean; error?: string }>;
+  disconnect(id: string): Promise<void>;
 }
 
 /** Full API exposed to renderers via contextBridge as `sarah` global */
@@ -54,4 +64,5 @@ export interface SarahApi {
   onChatError(cb: (data: BusEvents['llm:error']) => void): () => void;
   onStorageDegraded(cb: (data: BusEvents['storage:degraded']) => void): () => void;
   voice: SarahVoiceApi;
+  connections: SarahConnectionsApi;
 }

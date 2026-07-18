@@ -15,6 +15,11 @@ import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browse
 import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summarize-results.js';
 import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
+import { registerConnectionHandlers } from './main/ipc-connections.js';
+import { KeyManager } from './core/crypto/key-manager.js';
+import { TokenStore } from './services/integrations/token-store.js';
+import { OAuthConnectionService } from './services/integrations/oauth-connection-service.js';
+import { getOAuthProviders, redirectPort } from './services/integrations/providers.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
@@ -27,6 +32,8 @@ let stopSystemMetrics: (() => void) | null = null;
 let stopVoiceLevel: (() => void) | null = null;
 let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
+// Kept reachable so the next task can pass it to SpotifyActions(oauth).
+let oauth: OAuthConnectionService | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -113,6 +120,19 @@ app.whenReady().then(async () => {
   appContext.registry.register(searchService);
   appContext.registry.register(actionService);
 
+  // --- Integrations / OAuth connection layer (Spec Integrationen V1) ---
+  // AppContext does not expose its KeyManager, so construct a fresh one over the
+  // same userData dir (KeyManager is idempotent — reuses the existing sarah.key).
+  // `oauth` is kept in module scope so the next task can wire SpotifyActions(oauth)
+  // into the ActionService deps above.
+  const keyManager = new KeyManager(app.getPath('userData'));
+  const tokenStore = new TokenStore(app.getPath('userData'), keyManager);
+  oauth = new OAuthConnectionService({
+    providers: getOAuthProviders(),
+    tokenStore,
+    redirectPort: redirectPort(),
+  });
+
   appContext.registry.register(routerService);
 
   // Plain class, deliberately not a SarahService/registry entry (YAGNI —
@@ -160,6 +180,8 @@ app.whenReady().then(async () => {
     getMainWindow,
     dialogWindows,
   });
+
+  registerConnectionHandlers(ipcMain, { getOAuth: () => oauth! });
 
   const voiceLevel = registerVoiceLevelForwarder({
     getMainWindow,

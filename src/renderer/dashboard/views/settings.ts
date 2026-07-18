@@ -7,16 +7,18 @@ import { createTrustSection } from './sections/trust-section.js';
 import { createPersonalizationSection } from './sections/personalization-section.js';
 import { createControlsSection } from './sections/controls-section.js';
 import { createAudioSection } from './sections/audio-section.js';
+import { createConnectionsSection } from './sections/connections-section.js';
 import type { SarahConfig } from '../../../core/config-schema.js';
 
-type TabId = 'profile' | 'personal' | 'management' | 'control' | 'security';
+type TabId = 'profile' | 'personal' | 'management' | 'integrations' | 'control' | 'security';
 
 const TABS: TabItem[] = [
-  { id: 'profile',    label: 'Profil' },
-  { id: 'personal',   label: 'Persönliche Einstellungen' },
-  { id: 'management', label: 'Verwaltung' },
-  { id: 'control',    label: 'Bedienung' },
-  { id: 'security',   label: 'Sicherheit' },
+  { id: 'profile',      label: 'Profil' },
+  { id: 'personal',     label: 'Persönliche Einstellungen' },
+  { id: 'management',   label: 'Verwaltung' },
+  { id: 'integrations', label: 'Integrationen' },
+  { id: 'control',      label: 'Bedienung' },
+  { id: 'security',     label: 'Sicherheit' },
 ];
 
 const VALID_IDS = TABS.map(t => t.id);
@@ -25,9 +27,10 @@ function buildPanelContent(id: TabId, config: SarahConfig): HTMLElement[] {
   switch (id) {
     case 'profile':    return [createProfileSection(config)];
     case 'personal':   return [createPersonalizationSection(config), createAudioSection(config)];
-    case 'management': return [createFilesSection(config)];
-    case 'control':    return [createControlsSection(config)];
-    case 'security':   return [createTrustSection(config)];
+    case 'management':   return [createFilesSection(config)];
+    case 'integrations': return [createConnectionsSection(config)];
+    case 'control':      return [createControlsSection(config)];
+    case 'security':     return [createTrustSection(config)];
   }
 }
 

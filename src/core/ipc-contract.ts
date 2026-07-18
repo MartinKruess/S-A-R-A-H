@@ -1,6 +1,7 @@
 import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { BusEvents } from './bus-events.js';
+import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
 
 /** IPC channels using ipcMain.handle / ipcRenderer.invoke (request-response) */
 export interface IpcCommands {
@@ -19,6 +20,9 @@ export interface IpcCommands {
   'voice-set-interaction-mode': { input: 'chat' | 'voice'; output: void };
   'voice-config-changed':       { input: void; output: void };
   'splash-tts':                 { input: { text: string }; output: void };
+  'connections-list':           { input: void;   output: ConnectionInfo[] };
+  'connection-connect':         { input: string; output: { ok: boolean; error?: string } };
+  'connection-disconnect':      { input: string; output: void };
 }
 
 /** IPC events sent from main to renderer (one-way, forwarded bus events) */

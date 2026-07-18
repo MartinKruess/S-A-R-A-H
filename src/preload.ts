@@ -103,6 +103,13 @@ const api: SarahApi = {
     sendAudioChunk: (chunk) => ipcRenderer.invoke('voice-audio-chunk', chunk),
     configChanged: () => ipcRenderer.invoke('voice-config-changed'),
   },
+
+  // Connections ("Integrationen") API
+  connections: {
+    list: () => ipcRenderer.invoke('connections-list'),
+    connect: (id) => ipcRenderer.invoke('connection-connect', id),
+    disconnect: (id) => ipcRenderer.invoke('connection-disconnect', id),
+  },
 };
 
 contextBridge.exposeInMainWorld('sarah', api);
