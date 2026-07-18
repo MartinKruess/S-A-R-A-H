@@ -4,6 +4,7 @@ import { RouterService } from '../../../src/services/llm/router-service';
 import type { LlmProvider, ChatMessage, ChatOptions } from '../../../src/services/llm/llm-provider.interface';
 import type { AppContext } from '../../../src/core/bootstrap';
 import { MessageBus } from '../../../src/core/message-bus';
+import { feedbackTexts } from '../../../src/services/llm/filler-phrases';
 
 function createMockProvider(id: string, chatResponse: string): LlmProvider {
   return {
@@ -286,6 +287,95 @@ describe('RouterService', () => {
       // Advance 1 more minute (5 from last message)
       await vi.advanceTimersByTimeAsync(1 * 60 * 1000);
       expect(service.activeModel).toBe('2b');
+    });
+  });
+
+  describe('filler phrases (voice bridging)', () => {
+    function route9b(): void {
+      (routerProvider.chat as any).mockImplementation(
+        async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
+          const response = '[ROUTE:9b] Moment, ich schaue genauer...';
+          onChunk(response);
+          return response;
+        },
+      );
+    }
+
+    it('emits a frontendThinking filler on the 2B→9B route in voice mode', async () => {
+      route9b();
+      await service.init();
+
+      const fillers: string[] = [];
+      bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+
+      await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
+
+      expect(fillers).toHaveLength(1);
+      expect(feedbackTexts.frontendThinking).toContain(fillers[0]);
+      expect(service.activeModel).toBe('9b');
+    });
+
+    it('emits a switchingBack filler on the 9B→2B gate in voice mode', async () => {
+      await service.init(); // default router response is [ROUTE:self]
+      service.activeModel = '9b';
+
+      const fillers: string[] = [];
+      bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+
+      // A device-command-looking message while 9B is active triggers the gate swap.
+      await service.handleChatMessage('Öffne Spotify', 'voice');
+
+      expect(fillers).toHaveLength(1);
+      expect(feedbackTexts.switchingBack).toContain(fillers[0]);
+    });
+
+    it('emits NO filler for the same 2B→9B route in chat mode', async () => {
+      route9b();
+      await service.init();
+
+      const fillers: string[] = [];
+      bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+
+      await service.handleChatMessage('Erkläre mir Quantenphysik', 'chat');
+
+      expect(fillers).toHaveLength(0);
+      expect(service.activeModel).toBe('9b');
+    });
+
+    it('emits NO filler when 9B stays warm without a device command (no swap)', async () => {
+      await service.init();
+      service.activeModel = '9b';
+
+      const fillers: string[] = [];
+      bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+
+      // Plain follow-up, not a device command → goes straight to the worker, no swap.
+      await service.handleChatMessage('Und was war nochmal Chlorophyll?', 'voice');
+
+      expect(fillers).toHaveLength(0);
+      expect(workerProvider.chat).toHaveBeenCalled();
+    });
+
+    it('never persists the filler and never puts it in the worker history', async () => {
+      route9b();
+      await service.init();
+
+      const fillers: string[] = [];
+      bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+
+      await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
+
+      const fillerText = fillers[0];
+      // Exactly two messages persisted (user + worker answer) — the filler adds none.
+      const insertCalls = (context.db.insert as any).mock.calls.filter(
+        (call: [string, Record<string, unknown>]) => call[0] === 'messages',
+      );
+      expect(insertCalls).toHaveLength(2);
+      expect(insertCalls.map((c: [string, { content: string }]) => c[1].content)).not.toContain(fillerText);
+
+      // The filler was not pushed to history: it never reaches the worker context.
+      const workerMessages = (workerProvider.chat as any).mock.calls[0][0] as ChatMessage[];
+      expect(workerMessages.some((m) => m.content === fillerText)).toBe(false);
     });
   });
 

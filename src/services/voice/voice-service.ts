@@ -27,7 +27,7 @@ const SAMPLE_RATE = 16_000;
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
-  readonly subscriptions = ['llm:chunk', 'llm:done', 'llm:error'] as const;
+  readonly subscriptions = ['llm:chunk', 'llm:done', 'llm:error', 'llm:filler'] as const;
   status: ServiceStatus = 'pending';
 
   private voiceMode: VoiceMode = 'off';
@@ -195,6 +195,14 @@ export class VoiceService implements SarahService {
   }
 
   onMessage(msg: TypedBusMessage): void {
+    if (msg.topic === 'llm:filler') {
+      // A bridging phrase spoken over a model-swap pause. It is not turn content,
+      // so it bypasses the sentence buffer and the turn-state machine entirely and
+      // never touches _voiceState. No-op when TTS is unavailable.
+      this.ttsQueue?.enqueue(msg.data.text);
+      return;
+    }
+
     const shouldSpeak = this.voiceMode !== 'off' && this.interactionMode !== 'chat';
 
     if (msg.topic === 'llm:chunk') {

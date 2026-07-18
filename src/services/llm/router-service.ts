@@ -11,6 +11,7 @@ import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/
 import { buildContextWindow } from './context-window.js';
 import { NUM_PREDICT_MAP } from './llm-types.js';
 import { isActionName, looksLikeActionCommand } from '../actions/action-schemas.js';
+import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -152,6 +153,12 @@ export class RouterService implements SarahService {
         if (looksLikeActionCommand(text)) {
           // Gate (Spec §3): swap the worker out, let the router really decide.
           const llmConfig = this.context.parsedConfig.llm;
+          // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
+          // routing target isn't known yet at swap start, so use a short/neutral
+          // phrase; the real action announcement follows over the normal path.
+          if (mode === 'voice') {
+            this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('switchingBack') });
+          }
           await this.vramManager.swapModels(llmConfig.workerModel).catch((err) => {
             console.warn('[Router] Gate swap failed (non-fatal, routing anyway):', err);
           });
@@ -207,6 +214,12 @@ export class RouterService implements SarahService {
     });
 
     const llmConfig = this.context.parsedConfig.llm;
+    // Bridge the 2B→9B swap pause with a spoken filler (voice only), emitted
+    // before awaiting the swap so TTS synthesis fills the load time. The real
+    // worker answer follows over the normal path.
+    if (mode === 'voice') {
+      this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('frontendThinking') });
+    }
     await this.vramManager.swapModels(llmConfig.routerModel).catch((err) => {
       console.warn('[Router] Swap failed (non-fatal, worker call proceeds):', err);
     });

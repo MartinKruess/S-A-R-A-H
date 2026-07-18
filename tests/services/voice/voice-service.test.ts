@@ -149,7 +149,7 @@ describe('VoiceService', () => {
   it('has correct id, initial status, and subscriptions', () => {
     expect(service.id).toBe('voice');
     expect(service.status).toBe('pending');
-    expect(service.subscriptions).toEqual(['llm:chunk', 'llm:done', 'llm:error']);
+    expect(service.subscriptions).toEqual(['llm:chunk', 'llm:done', 'llm:error', 'llm:filler']);
     expect(service.voiceState).toBe('idle');
   });
 
@@ -379,6 +379,42 @@ describe('VoiceService', () => {
 
     await flush();
 
+    expect(tts.speak).not.toHaveBeenCalled();
+  });
+
+  // --- 9b. Filler bridging phrase (llm:filler) ---
+
+  it('subscribes to llm:filler', () => {
+    expect(service.subscriptions).toContain('llm:filler');
+  });
+
+  it('speaks an llm:filler straight to the TTS queue without changing voice state', async () => {
+    await service.init();
+
+    // Auto-drain the queue so synthesis proceeds.
+    bus.on('voice:play-audio', () => {
+      setTimeout(() => bus.emit('renderer', 'voice:playback-done', {}), 0);
+    });
+
+    const stateBefore = service.voiceState;
+    const stateListener = vi.fn();
+    bus.on('voice:state', stateListener);
+
+    service.onMessage(makeMsg('llm:filler', { text: 'Einen Moment.' }));
+    await flush();
+
+    expect(tts.speak).toHaveBeenCalledWith('Einen Moment.');
+    // The filler is a spoken bridge, not turn content: no state transition.
+    expect(service.voiceState).toBe(stateBefore);
+    expect(stateListener).not.toHaveBeenCalled();
+  });
+
+  it('no-ops an llm:filler when TTS is unavailable', async () => {
+    (tts.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('piper broken'));
+    await service.init();
+
+    // No ttsQueue exists → must not throw.
+    expect(() => service.onMessage(makeMsg('llm:filler', { text: 'Sofort.' }))).not.toThrow();
     expect(tts.speak).not.toHaveBeenCalled();
   });
 
