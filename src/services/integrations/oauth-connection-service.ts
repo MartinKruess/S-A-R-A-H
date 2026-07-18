@@ -51,6 +51,8 @@ export class OAuthConnectionService {
   private openExternal: (url: string) => void | Promise<void>;
   private now: () => number;
   private redirectPort: number;
+  /** Provider ids with a connect flow in progress — prevents a second loopback bind. */
+  private readonly connecting = new Set<string>();
 
   constructor(deps: OAuthConnectionServiceDeps) {
     this.providers = deps.providers;
@@ -139,6 +141,10 @@ export class OAuthConnectionService {
     if (!p.clientId) {
       throw new Error('SPOTIFY_CLIENT_ID fehlt — App im Spotify-Dashboard anlegen und Client-ID setzen.');
     }
+    if (this.connecting.has(id)) {
+      throw new Error('Die Verbindung läuft bereits — bitte schließe zuerst den Browser-Login ab.');
+    }
+    this.connecting.add(id);
 
     const { verifier, challenge } = generatePkce();
     const state = randomState();
@@ -153,6 +159,7 @@ export class OAuthConnectionService {
         settled = true;
         clearTimeout(timer);
         server.close();
+        this.connecting.delete(id);
         if (err) reject(err);
         else resolve();
       };
@@ -163,11 +170,12 @@ export class OAuthConnectionService {
 
       server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          finish(
-            new Error(
-              `Port ${this.redirectPort} ist belegt — in SPOTIFY_REDIRECT_PORT einen freien Port setzen und im Spotify-Dashboard eintragen.`,
-            ),
+          // Dev-only detail (the shipped app ships a fixed port) — log for the
+          // developer, but show the user a plain, non-technical message.
+          console.warn(
+            `[OAuth] loopback port ${this.redirectPort} busy — set SPOTIFY_REDIRECT_PORT to a free port and register it in the provider dashboard.`,
           );
+          finish(new Error('Die Verbindung ließ sich gerade nicht starten. Bitte versuche es erneut.'));
         } else {
           finish(err);
         }
