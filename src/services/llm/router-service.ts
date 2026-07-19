@@ -13,6 +13,8 @@ import { NUM_PREDICT_MAP } from './llm-types.js';
 import { isActionName, looksLikeActionCommand } from '../actions/action-schemas.js';
 import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
+import { MediaContext } from './media-context.js';
+import type { MediaAction } from '../actions/media-controller.js';
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -44,6 +46,7 @@ export class RouterService implements SarahService {
     private context: AppContext,
     private routerProvider: LlmProvider,
     workerProvider: LlmProvider,
+    private mediaContext: MediaContext = new MediaContext(),
   ) {
     this.vramManager = new VramManager(context.parsedConfig.llm.baseUrl);
     this.routing = new RoutingService(routerProvider);
@@ -148,6 +151,18 @@ export class RouterService implements SarahService {
   private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
     await this.persistMessage('user', text);
 
+    // MediaContext (Layer-1 terse follow-ups) — before any routing so it also
+    // fires in the warm-9B window, where terse words bypass the gate.
+    const hit = this.mediaContext.resolve(text, Date.now());
+    if (hit) {
+      const requestId = randomUUID();
+      this.pendingActions.set(requestId, { action: hit.action });
+      this.context.bus.emit(this.id, 'action:request', { requestId, action: hit.action, param: '' });
+      this.mediaContext.record(hit.action, Date.now());
+      await this.emitAssistantResponse(hit.speak);
+      return;
+    }
+
     try {
       if (this.activeModel === '9b') {
         if (looksLikeActionCommand(text)) {
@@ -196,6 +211,7 @@ export class RouterService implements SarahService {
       const requestId = randomUUID();
       this.pendingActions.set(requestId, { action });
       this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
+      if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
       await this.emitAssistantResponse(feedback);
       return;
     }
