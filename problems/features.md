@@ -46,6 +46,15 @@ Weitere Spotify-Fähigkeiten (alle via Web-API; **Premium + aktives Gerät** nö
 - **V3 — Nach Namen spielen (Gruppe B):** Lied suchen+spielen (`GET /search` → play `uris`), Playlist abspielen (`GET /me/playlists` → play `context_uri`). Braucht Fuzzy-Namensauflösung + `playlist-read-private`.
 - **V4 — Playlist bearbeiten (Gruppe C):** Lied add/remove (`POST`/`DELETE /playlists/{id}/tracks`). Braucht `playlist-modify-public/-private` → Nutzer muss **neu verbinden** (Scope-Consent).
 
+Ehrlicher Haken: Die API ist der leichte Teil — der Aufwand steckt ab V3 im **Voice-Routing** (gesprochene Namen auf Playlist-/Song-IDs auflösen).
+
+**Offene Follow-ups (aus V1):** Callback-Pfad pro Provider `/callback/<id>`? · „etwas lauter/leiser" landet bei ±25 statt ±5 (Routing-Prompt schärfen).
+
+### Später, separat: Browser / Games gezielt
+
+Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimpleAudioVolume` via `IAudioSessionManager2`: Sessions enumerieren → per `GetProcessId()` gegen `tasklist` die App matchen → 
+`SetMasterVolume(scalar)`. Aufwändiger (umfangreiches Inline-C# oder C#-Helfer-Binary) → eigene spätere Runde.
+
 ---
 
 ## ✅ Medien-Konversationskontext
