@@ -94,10 +94,8 @@ Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimple
 - **STT schreibt Temp-WAV auf Disk** (`faster-whisper-provider.ts`) statt In-Memory (multipart) — unnötiges I/O, SSD-Verschleiß bei häufigen Kurznachrichten.
 - **STT-Startup-Timeout** bleibt hoch (Modell-Download); der Spawn-Abort bei fehlendem Python ist erledigt.
 - **Silence-VAD fixer Schwellwert** `SILENCE_RMS_THRESHOLD = 0.01` (`voice-service.ts`) — unkalibriert; in lauten Umgebungen löst der Silence-Timer nie aus. Betrifft nur den Keyword-Modus → adaptive VAD nötig.
-- **Kein LLM-Retry bei Timeout** (`chat-with-timeout.ts`, 120 s) — nach Timeout nur Fehler, kein zweiter Versuch.
-- **`require('electron')` in Callbacks** (`boot-sequence.ts`, `main.ts`) — sollte Top-Level-Import sein (Stil).
-- **VramManager toter `_load`-Param** (`vram-manager.ts`) — ungenutzt; Signatur auf `unload` reduzieren.
-- **Keine IPC-Input-Validation** (`ipc-voice.ts`) — `mode` wird direkt gecastet; Runtime-Check robuster (durch contextIsolation/sandbox aktuell unkritisch).
+
+> ✅ Verifiziert erledigt (19.07., waren in der alten Fabel-Analyse noch offen): LLM-Retry-once-on-timeout (`chat-with-timeout.ts`), `require('electron')`-Callbacks entfernt, toter VRAM-`_load`-Param entfernt (`swapModels(unload)`), IPC-Input-Validation (`ipc-validation.ts`).
 
 ---
 
