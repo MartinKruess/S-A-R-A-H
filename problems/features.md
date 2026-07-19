@@ -56,12 +56,6 @@ Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimple
 
 ---
 
-## ✅ Medien-Konversationskontext
-
-Deterministische Auflösung knapper Folgebefehle im 12-s-Fenster über `MediaContext` (`src/services/llm/media-context.ts`) — vor jeglichem Routing gelöst. Detail-Design: `docs/superpowers/specs/2026-07-19-media-context-design.md`.
-
----
-
 ## Kleinere offene Punkte
 
 - **Routing-Prompt:** klarstellen, dass `set_volume` einen **absoluten** Zielwert (0–100) erwartet, keine Deltas.
