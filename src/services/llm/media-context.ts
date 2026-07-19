@@ -38,7 +38,7 @@ export class MediaContext {
    * or the text isn't a known terse follow-up (caller then routes normally).
    */
   resolve(text: string, nowMs: number): ResolvedMedia | null {
-    const norm = text.normalize('NFC').trim().toLowerCase();
+    const norm = text.normalize('NFC').trim().toLowerCase().replace(/[.,!?;:…]+$/, '').trim();
     if (!norm || norm.split(/\s+/).length > MAX_TERSE_TOKENS) return null;
     if (!this.state || nowMs - this.state.atMs > MEDIA_CONTEXT_WINDOW_MS) return null;
 

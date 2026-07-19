@@ -65,4 +65,22 @@ describe('MediaContext.resolve', () => {
     c.record('media_pause', 1000);
     expect(c.resolve('  WEITER  ', 2000)?.action).toBe('media_play');
   });
+
+  it('tolerates trailing punctuation from Whisper transcripts ("Weiter.")', () => {
+    const c = new MediaContext();
+    c.record('media_next', 1000);
+    expect(c.resolve('Weiter.', 2000)?.action).toBe('media_next');
+  });
+
+  it('tolerates trailing punctuation from Whisper transcripts ("Stopp!")', () => {
+    const c = new MediaContext();
+    c.record('media_next', 1000);
+    expect(c.resolve('Stopp!', 2000)?.action).toBe('media_pause');
+  });
+
+  it('tolerates trailing punctuation from Whisper transcripts ("Nächstes.")', () => {
+    const c = new MediaContext();
+    c.record('media_pause', 1000);
+    expect(c.resolve('Nächstes.', 2000)?.action).toBe('media_next');
+  });
 });
