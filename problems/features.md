@@ -73,18 +73,16 @@ Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimple
 
 ---
 
-## Offene Bugs — Programm-Scan
+## ✅ Programm-Scan — gelöst (generelle Mechanik)
 
 > Konsolidiert aus `anmerkungen.md` (gelöscht 19.07.). Siehe Memory `project_program_scan_bugs`.
 
-> ✅ **Updater/Launcher-Auflösung gebaut** (`resolveRealExe`, `program-utils.ts`; verdrahtet in `mapProgramResult`): der Scan löst jetzt Squirrel-Updater (`…\Discord\Update.exe` → `…\Discord\app-<höchste Version>\Discord.exe`) und Launcher (Best-Effort: Geschwister-Exe = Ordnername) automatisch auf. **Discord damit gefixt**; nur unauflösbare Fälle behalten die ⚠️-Warnung. 16 Tests.
+Statt jeder App einzeln hinterherzujagen, gibt es eine generelle Lösung für nicht zuordenbare Programme:
 
-Rest offen (Edge, „beobachten"):
-- **PDFgear** — `PDFLauncher.exe`: die Best-Effort-Launcher-Auflösung greift nur, wenn eine Geschwister-Exe zum Ordnernamen passt — real prüfen, ob PDFgears Haupt-Exe so heißt.
-- **OneDrive** — läuft oft als Hintergrunddienst → Start bringt nicht immer ein sichtbares Ergebnis.
-- **Epic Games Launcher** — Pfad `…Win32\EpicGamesLauncher.exe` wirkt ungewöhnlich (Win32 statt Win64) → prüfen.
-- **RocketLeague** — `…Win64\RocketLeague.exe`; Launcher-/Anti-Cheat-abhängig, Direktstart evtl. instabil.
-- **OpenOffice** — Aliase `soffice.exe` (Haupt) ✅, `scalc/swriter/sbase.exe` überschneiden sich. Matcher fragt bei Mehrdeutigkeit nach; die Überschneidung bleibt. Nur „soffice = Default" wäre ein Mini-Plus.
+- **Auflösbar** → `resolveRealExe` (`program-utils.ts`, verdrahtet in `mapProgramResult`): Squirrel-Updater (`…\Discord\Update.exe` → `…\app-<höchste Version>\Discord.exe`) und Launcher (Best-Effort: Geschwister-Exe = Ordnername) werden automatisch auf die echte Exe aufgelöst. Discord gefixt. 16 Tests.
+- **Nicht auflösbar** → ehrliche ⚠️-Warnung; Alias-Überschneidungen (OpenOffice `scalc/swriter/…`) sind per `markDuplicateGroups` erkannt, der Matcher fragt bei Mehrdeutigkeit nach.
+
+Kein weiterer Fix geplant. Rein optionale Nettigkeiten (keine Bugs): „soffice = Default" bei OpenOffice; PDFgear/OneDrive/Epic/RocketLeague sind Einzel-Edge-Fälle, die die generelle Mechanik abdeckt (auflösen oder warnen).
 
 ---
 
