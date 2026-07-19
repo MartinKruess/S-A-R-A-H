@@ -5,6 +5,7 @@ import type { MessageBus } from '../../core/message-bus.js';
 import type { ProgramLauncher, ProgramEntry, LaunchResult } from '../../main/program-launcher.js';
 import type { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
+import type { MediaController } from './media-controller.js';
 import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
 
 /** Structural view of SearchService (Task 9) — keeps this task testable standalone. */
@@ -19,6 +20,7 @@ export interface ActionDeps {
   search: SearchLike;
   system: SystemActions;
   spotify: SpotifyActions;
+  media: MediaController;
 }
 
 /**
@@ -95,6 +97,16 @@ export class ActionService implements SarahService {
         return this.deps.spotify.setVolume(parsed.data as number);
       case 'spotify_volume_adjust':
         return this.deps.spotify.adjustVolume(parsed.data as number);
+      case 'media_play':
+        return this.deps.media.play(parsed.data as string);
+      case 'media_pause':
+        return this.deps.media.pause(parsed.data as string);
+      case 'media_toggle':
+        return this.deps.media.toggle(parsed.data as string);
+      case 'media_next':
+        return this.deps.media.next(parsed.data as string);
+      case 'media_previous':
+        return this.deps.media.previous(parsed.data as string);
       case 'set_timer':
         return this.deps.system.setTimer(parsed.data as number);
       case 'lock_screen':

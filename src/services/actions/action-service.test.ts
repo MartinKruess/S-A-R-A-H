@@ -3,6 +3,7 @@ import { ActionService } from './action-service.js';
 import type { SearchLike } from './action-service.js';
 import { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
+import type { MediaController } from './media-controller.js';
 import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
@@ -24,11 +25,22 @@ function makeSpotify(): SpotifyActions {
   } as unknown as SpotifyActions;
 }
 
+function makeMedia(): MediaController {
+  return {
+    play: vi.fn().mockResolvedValue({ ok: true }),
+    pause: vi.fn().mockResolvedValue({ ok: true }),
+    toggle: vi.fn().mockResolvedValue({ ok: true }),
+    next: vi.fn().mockResolvedValue({ ok: true }),
+    previous: vi.fn().mockResolvedValue({ ok: true }),
+  };
+}
+
 function makeService(over: {
   launcher?: Partial<ProgramLauncher>;
   search?: Parameters<typeof makeSearch>[0];
   spotify?: SpotifyActions;
-} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions } {
+  media?: MediaController;
+} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
   bus.on('action:result', (msg) => { results.push(msg.data); });
@@ -36,12 +48,13 @@ function makeService(over: {
   const search = makeSearch(over.search);
   const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
   const spotify = over.spotify ?? makeSpotify();
-  const service = new ActionService(bus, { launcher, getPrograms: () => [], search, system, spotify });
+  const media = over.media ?? makeMedia();
+  const service = new ActionService(bus, { launcher, getPrograms: () => [], search, system, spotify, media });
   // Production wiring happens in ServiceRegistry.initAll() (bus.on per subscription,
   // before init()) — ActionService itself deliberately never self-subscribes, so tests
   // replicate that wiring here, same as router-service.test.ts does for its subscriptions.
   bus.on('action:request', (msg) => service.onMessage(msg));
-  return { bus, results, service, spotify };
+  return { bus, results, service, spotify, media };
 }
 
 async function request(bus: MessageBus, action: string, param: string): Promise<void> {
@@ -105,7 +118,7 @@ describe('ActionService', () => {
     const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
-      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(),
+      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(),
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();
@@ -113,5 +126,22 @@ describe('ActionService', () => {
     await vi.advanceTimersByTimeAsync(60_000 + 50);
     expect(notifies).toEqual([{ speak: 'Dein 1-Minuten-Timer ist abgelaufen.' }]);
     vi.useRealTimers();
+  });
+
+  it('media_next dispatches to MediaController.next with the target param', async () => {
+    const media = makeMedia();
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    await request(bus, 'media_next', '');
+    expect(media.next).toHaveBeenCalledWith('');
+    expect(results[0]).toEqual({ requestId: 'rid-1', action: 'media_next', ok: true });
+  });
+
+  it('media_pause passes a named target through to the controller', async () => {
+    const media = makeMedia();
+    const { bus, service } = makeService({ media });
+    await service.init();
+    await request(bus, 'media_pause', 'spotify');
+    expect(media.pause).toHaveBeenCalledWith('spotify');
   });
 });
