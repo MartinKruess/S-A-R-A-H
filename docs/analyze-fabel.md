@@ -1,6 +1,8 @@
 # S.A.R.A.H. — Projektanalyse
 _Erstellt 2026-07-15 mit Claude Fabel 5_
 
+> **Update 2026-07-19 — vieles davon ist inzwischen umgesetzt.** Seit dieser Analyse gebaut & auf `dev`: **Action-Execution-Layer** (Programme öffnen, Lautstärke, Timer, Websuche, Bildschirm sperren — behebt §5.1, „die wichtigste Lücke"), **History/Sessions** (Persistenz + Start-Kontext — §3.3/§3.4/§5.2), **appx-Start** für Store-Apps (§6), **STT-Qualität** (Pegel/VAD/`large-v3-turbo`/Warm-Mic), **Füllsätze** und **Integrationen/OAuth** (Spotify-Lautstärke). ✅-Marker unten ergänzt. **Aktuelle Plan-/Bug-Liste: [`features.md`](../problems/features.md)**, nicht mehr dieses Dokument.
+
 ---
 
 ## 1. Projektüberblick
@@ -53,12 +55,12 @@ Der Code ruft `spawn('python', [...])` auf und geht davon aus, dass `python` im 
 
 **Fix:** `STARTUP_TIMEOUT_MS` auf 30s reduzieren; Spawn-Error sollte sofort das Init abbrechen.
 
-### 3.3 Gesprächshistorie geht bei jedem Neustart verloren
+### ✅ ERLEDIGT (History/Sessions, PR #22) — 3.3 Gesprächshistorie geht bei jedem Neustart verloren
 **Datei:** `src/services/llm/router-service.ts:29`
 
 `this.history: ChatMessage[]` lebt nur im Speicher. Nachrichten werden zwar in SQLite gespeichert (`conversation_id: 1` — immer dieselbe Konversation), aber beim Start werden sie nie zurückgelesen. S.A.R.A.H. hat nach jedem Neustart Amnesie — kein Kontext aus früheren Sessions.
 
-### 3.4 `conversation_id: 1` hartcodiert
+### ✅ ERLEDIGT (History/Sessions, PR #22) — 3.4 `conversation_id: 1` hartcodiert
 **Datei:** `src/services/llm/router-service.ts:79,107,141`
 
 Alle Nachrichten gehen in dieselbe Konversation. Kein Multi-Session-Support möglich. Muss gelöst werden, bevor History-Recovery implementiert wird.
@@ -113,8 +115,8 @@ Für jede Transkription wird eine WAV-Datei auf Disk geschrieben (`%TEMP%/sarah-
 
 ## 5. Architekturelle Lücken — hohe strategische Priorität
 
-### 5.1 Router-Routing ist unvollständig — kein Action-Execution-Layer
-**Das ist die wichtigste Lücke.**
+### ✅ ERLEDIGT (Action-Layer V1, PR #23) — 5.1 Router-Routing ist unvollständig — kein Action-Execution-Layer
+**War die wichtigste Lücke — jetzt gebaut:** `[ACTION:name:param]`-Tags; der `ActionService` führt open_program / web_search / show_browser / set_volume / set_timer / lock_screen (+ Spotify) real aus. Statt reinem Feedback-Text emittiert der Router jetzt echte Aktionen.
 
 Der Router sagt `[ROUTE:self]` für "Öffne Chrome" — der RouterService emittiert dann den Feedback-Text als LLM-Antwort. S.A.R.A.H. sagt also "Natürlich, ich öffne Chrome!" aber Chrome öffnet sich nicht. Die `ipc-programs.ts` und der Programm-Scan existieren, sind aber nicht mit der Voice/Chat-Pipeline verbunden.
 
@@ -125,7 +127,7 @@ Es fehlt eine **Intent-Execution-Schicht**: Wenn der Router `[ROUTE:self]` + ein
 { "route": "self", "intent": "open_program", "target": "Chrome", "feedback": "Natürlich!" }
 ```
 
-### 5.2 History-Recovery fehlt komplett
+### ✅ ERLEDIGT (History/Sessions, PR #22) — 5.2 History-Recovery fehlt komplett
 SQLite-DB speichert alle Nachrichten, aber nach Neustart wird nie geladen. Das macht S.A.R.A.H. als "persönlichen Assistenten" eingeschränkt — sie erinnert sich nicht an Dinge von gestern.
 
 ### 5.3 Keyword/Wake-Word-Modus ist nicht funktionsfähig
@@ -149,8 +151,8 @@ Das LLM antwortet nur in Freitext. Für Aktionen wie "E-Mail verfassen", "Kalend
 
 - **Discord**: Pfad zeigt auf `Update.exe` statt die eigentliche App
 - **PDF-Launcher**: `PDFLauncher.exe` ist ein Launcher, nicht das Hauptprogramm
-- **Windows Store Apps** (LinkedIn, Outlook, Spotify): `appx:`-Pfade können nicht mit `exec` gestartet werden — brauchen eigene Launch-Logik
-- **OpenOffice**: Mehrere Aliase (`soffice.exe`, `scalc.exe`, `swriter.exe`) überschneiden sich
+- ✅ **Windows Store Apps** (appx): eigene Launch-Logik gebaut — `explorer.exe shell:AppsFolder\<AUMID>` + `tasklist`-Verifikation (PR #23).
+- **OpenOffice**: Mehrere Aliase (`soffice.exe`, `scalc.exe`, `swriter.exe`) überschneiden sich (Matcher fragt bei Mehrdeutigkeit nach; Überschneidung selbst bleibt)
 - **RocketLeague**: Direktstart möglicherweise instabil (Anti-Cheat)
 
 ---
@@ -162,19 +164,19 @@ Das Ziel: S.A.R.A.H. soll alles können was man möchte — Programme steuern, E
 ### Kurzfristig erreichbar (nächste 2–4 Wochen)
 | Feature | Aufwand | Risiko |
 |---------|---------|--------|
-| History-Recovery beim Start | S | Niedrig |
-| Action-Execution für Programm-Start | M | Mittel |
+| ✅ History-Recovery beim Start | — | erledigt (PR #22) |
+| ✅ Action-Execution für Programm-Start | — | erledigt (PR #23) |
 | Piper als persistenter Server | M | Niedrig |
 | Mic-Auswahl in Settings | S | Niedrig |
-| Boot-done Doppel-Handler fixen | XS | Keine |
-| Python-Startup-Timeout reduzieren | XS | Keine |
+| ✅ Boot-done Doppel-Handler fixen | — | erledigt |
+| ✅ Python-Startup-Timeout (Spawn-Abort) | — | Spawn-Abort erledigt; Timeout bleibt (Modell-Download) |
 
 ### Mittelfristig (1–3 Monate)
 | Feature | Aufwand | Abhängigkeit |
 |---------|---------|-------------|
-| Intent-Extraktion (strukturierter Router-Output) | L | Routing-Refactor |
-| Windows AppX Launch-Logik | M | Intent-Layer |
-| E-Mail-Integration (IMAP/OAuth) | L | Permissions, Auth |
+| ✅ Intent-Extraktion (Action-Layer, `[ACTION:]`-Tags) | — | erledigt (PR #23) |
+| ✅ Windows AppX Launch-Logik | — | erledigt (PR #23) |
+| E-Mail-Integration (IMAP/OAuth) | L | OAuth-Layer existiert jetzt (Integrationen) |
 | TTS-Upgrade (Coqui → ElevenLabs) | M | Budget |
 | Keyword/Wake-Word (Porcupine oder Open-Source-Alternative) | M | API-Key oder lokales Modell |
 | Claude Code API Anbindung | M | API-Key, Routing-Erweiterung |
@@ -199,11 +201,11 @@ Das Ziel: S.A.R.A.H. soll alles können was man möchte — Programme steuern, E
 - Dual-LLM Routing funktioniert und ist durchdacht
 - Code-Qualität im Kern (bus-events, message-bus, service-registry) ist gut
 
-**Schwächen:**
-- Kein Action-Execution-Layer → S.A.R.A.H. spricht über Aktionen aber führt sie nicht aus
-- Session-Persistenz fehlt → Amnesie nach Neustart
-- Python-Dependency unkontrolliert → Startup kann stundenlang hängen
-- TTS (Piper) ist Platzhalter-Qualität, Prozess-Overhead akkumuliert
-- Keyword-Modus komplett nicht funktionsfähig (deaktiviert)
+**Schwächen (Stand 2026-07-19):**
+- ✅ ~~Kein Action-Execution-Layer~~ → gebaut (Action-Layer V1)
+- ✅ ~~Session-Persistenz fehlt~~ → History/Sessions gebaut
+- Python-Dependency: Spawn bricht bei fehlendem Python jetzt sofort ab; STT-Startup-Timeout bleibt hoch (Modell-Download) — teilweise
+- TTS (Piper) ist Platzhalter-Qualität, Prozess-Overhead akkumuliert — offen
+- Keyword-Modus komplett nicht funktionsfähig (deaktiviert) — offen
 
-**Fazit:** Das Fundament ist solide. Die Voice-Pipeline funktioniert. Aber S.A.R.A.H. ist aktuell ein _sprechender_ Assistent, noch kein _handelnder_. Der nächste große Schritt ist der Action-Execution-Layer — ohne den bleibt alles Konversation ohne Effekt in der Welt.
+**Fazit (Stand 2026-07-19):** Das Fundament ist solide, die Voice-Pipeline funktioniert — und der damals fehlende **Action-Execution-Layer ist gebaut**: S.A.R.A.H. _handelt_ jetzt (öffnet Programme, steuert Lautstärke/Spotify, sucht, stellt Timer, sperrt den Bildschirm) und _erinnert sich_ über Neustarts (History/Sessions). Aus „sprechend, nicht handelnd" ist „sprechend **und** handelnd" geworden. Nächste Schritte laufen über [`features.md`](../problems/features.md): Spotify-Transport (V2), weitere Integrationen, TTS-Upgrade, Wake-Word.
