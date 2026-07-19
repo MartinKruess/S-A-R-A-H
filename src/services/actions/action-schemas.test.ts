@@ -48,10 +48,23 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.lock_screen.safeParse('jetzt').success).toBe(false);
   });
 
+  it('media_* accept empty target and short program names, reject overlong', () => {
+    for (const name of ['media_play', 'media_pause', 'media_toggle', 'media_next', 'media_previous'] as const) {
+      expect(ACTION_SCHEMAS[name].safeParse('').success).toBe(true);
+      expect(ACTION_SCHEMAS[name].safeParse('spotify').success).toBe(true);
+      expect(ACTION_SCHEMAS[name].safeParse('x'.repeat(41)).success).toBe(false);
+    }
+  });
+
   it('isActionName is a strict allowlist', () => {
     expect(isActionName('open_program')).toBe(true);
     expect(isActionName('send_all_data')).toBe(false);
     expect(isActionName('')).toBe(false);
+  });
+
+  it('isActionName knows the five media_* names', () => {
+    expect(isActionName('media_play')).toBe(true);
+    expect(isActionName('media_previous')).toBe(true);
   });
 });
 
@@ -82,5 +95,10 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Die Eröffnung war 80 n. Chr.')).toBe(false); // 'öffnung' mid-word ≠ Stamm 'öffn' am Wortanfang
     expect(looksLikeActionCommand('Ich möchte das nicht versuchen')).toBe(false); // 'such' in "versuchen" nicht am Wortanfang
     expect(looksLikeActionCommand('Erzähl mir mehr davon')).toBe(false);
+  });
+
+  it('matches media transport hint words', () => {
+    expect(looksLikeActionCommand('Pausiere die Musik')).toBe(true);
+    expect(looksLikeActionCommand('Skip mal')).toBe(true);
   });
 });
