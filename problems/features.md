@@ -52,8 +52,7 @@ Ehrlicher Haken: Die API ist der leichte Teil — der Aufwand steckt ab V3 im **
 
 ### Später, separat: Browser / Games gezielt
 
-Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimpleAudioVolume` via `IAudioSessionManager2`: Sessions enumerieren → per `GetProcessId()` gegen `tasklist` die App matchen → 
-`SetMasterVolume(scalar)`. Aufwändiger (umfangreiches Inline-C# oder C#-Helfer-Binary) → eigene spätere Runde.
+Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimpleAudioVolume` via `IAudioSessionManager2`: Sessions enumerieren → per `GetProcessId()` gegen `tasklist` die App matchen → `SetMasterVolume(scalar)`. Aufwändiger (umfangreiches Inline-C# oder C#-Helfer-Binary) → eigene spätere Runde.
 
 ---
 
