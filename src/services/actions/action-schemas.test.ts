@@ -101,6 +101,9 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Pausiere die Musik')).toBe(true);
     expect(looksLikeActionCommand('Pause')).toBe(true);
     expect(looksLikeActionCommand('Nächstes Lied')).toBe(true);
+    expect(looksLikeActionCommand('Ein Lied vor')).toBe(true);
+    expect(looksLikeActionCommand('1 Lied zurück')).toBe(true);
+    expect(looksLikeActionCommand('Musik starten')).toBe(true);
     expect(looksLikeActionCommand('Skip mal')).toBe(true);
   });
 });
