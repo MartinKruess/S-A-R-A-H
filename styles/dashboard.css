@@ -213,6 +213,49 @@
   margin-bottom: calc(var(--sarah-font-size-sm) * 1.2 + var(--sarah-space-xs));
 }
 
+/* ── Integrationen (connections section) ── */
+.conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-sm);
+}
+
+.conn-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sarah-space-md);
+  padding: var(--sarah-space-sm) var(--sarah-space-md);
+  background: var(--sarah-bg-surface);
+  border: 1px solid var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+}
+
+.conn-name {
+  color: var(--sarah-text-primary);
+  font-size: var(--sarah-font-size-md);
+  min-width: 120px;
+}
+
+.conn-status {
+  flex: 1;
+  font-size: var(--sarah-font-size-sm);
+}
+
+.conn-status--connected {
+  color: #44ff88;
+}
+
+.conn-status--disconnected {
+  color: var(--sarah-text-muted);
+}
+
+.conn-error {
+  color: #ff5555;
+  font-size: var(--sarah-font-size-sm);
+  line-height: 1.4;
+  padding: var(--sarah-space-xs) 0;
+}
+
 /* ── Save feedback ── */
 .save-feedback {
   color: var(--sarah-accent);

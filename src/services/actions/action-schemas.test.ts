@@ -11,6 +11,23 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.set_volume.safeParse('laut').success).toBe(false);
   });
 
+  it('spotify_volume accepts 0..100, rejects outside', () => {
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('0').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('100').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('101').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('-1').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('50.5').success).toBe(false);
+  });
+
+  it('spotify_volume_adjust accepts signed -100..100', () => {
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('-25').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('-100').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('100').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('0').success).toBe(true);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('-101').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('101').success).toBe(false);
+  });
+
   it('set_timer accepts 1..1440 minutes', () => {
     expect(ACTION_SCHEMAS.set_timer.safeParse('1').success).toBe(true);
     expect(ACTION_SCHEMAS.set_timer.safeParse('1440').success).toBe(true);
@@ -47,6 +64,8 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Mach die Lautstärke auf 50')).toBe(true);
     expect(looksLikeActionCommand('Sperr den Bildschirm')).toBe(true);
     expect(looksLikeActionCommand('Zeig mir das zweite')).toBe(true);
+    expect(looksLikeActionCommand('Mach die Musik leiser')).toBe(true);
+    expect(looksLikeActionCommand('Spotify leiser')).toBe(true);
   });
 
   it('matches infinitive and polite phrasings (the "kannst du … starten" bug)', () => {

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
@@ -9,12 +10,18 @@ import { VoiceService } from './services/voice/voice-service.js';
 import { SandboxBrowser } from './main/sandbox-browser.js';
 import { ProgramLauncher } from './main/program-launcher.js';
 import { SystemActions } from './services/actions/system-actions.js';
+import { SpotifyActions } from './services/actions/spotify-actions.js';
 import { ActionService } from './services/actions/action-service.js';
 import { SearchService } from './services/search/search-service.js';
 import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browser-search-provider.js';
 import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summarize-results.js';
 import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
+import { registerConnectionHandlers } from './main/ipc-connections.js';
+import { KeyManager } from './core/crypto/key-manager.js';
+import { TokenStore } from './services/integrations/token-store.js';
+import { OAuthConnectionService } from './services/integrations/oauth-connection-service.js';
+import { getOAuthProviders, redirectPort } from './services/integrations/providers.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
@@ -27,6 +34,35 @@ let stopSystemMetrics: (() => void) | null = null;
 let stopVoiceLevel: (() => void) | null = null;
 let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
+// Kept in module scope so the IPC connection handlers can read it at call time.
+let oauth: OAuthConnectionService | null = null;
+
+/**
+ * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
+ * credentials like SPOTIFY_CLIENT_ID don't have to be set in the shell each
+ * launch. Never runs in a packaged build; existing env vars win. No dependency.
+ */
+function loadDevEnv(): void {
+  if (app.isPackaged) return;
+  try {
+    const content = fs.readFileSync(path.join(app.getAppPath(), '.env'), 'utf-8');
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let val = trimmed.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) process.env[key] = val;
+    }
+  } catch {
+    // No .env in dev — fine, fall back to real env vars.
+  }
+}
+loadDevEnv();
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -104,11 +140,26 @@ app.whenReady().then(async () => {
     sandboxBrowser,
     summarize,
   );
+  // --- Integrations / OAuth connection layer (Spec Integrationen V1) ---
+  // Built BEFORE the ActionService so SpotifyActions can take the oauth instance.
+  // AppContext does not expose its KeyManager, so construct a fresh one over the
+  // same userData dir (KeyManager is idempotent — reuses the existing sarah.key).
+  // `oauth` is kept in module scope so the IPC connection handlers can read it.
+  const keyManager = new KeyManager(app.getPath('userData'));
+  const tokenStore = new TokenStore(app.getPath('userData'), keyManager);
+  oauth = new OAuthConnectionService({
+    providers: getOAuthProviders(),
+    tokenStore,
+    redirectPort: redirectPort(),
+  });
+  const spotifyActions = new SpotifyActions(oauth);
+
   const actionService = new ActionService(appContext.bus, {
     launcher: programLauncher,
     getPrograms: () => appContext!.parsedConfig.resources.programs,
     search: searchService,
     system: systemActions,
+    spotify: spotifyActions,
   });
   appContext.registry.register(searchService);
   appContext.registry.register(actionService);
@@ -160,6 +211,8 @@ app.whenReady().then(async () => {
     getMainWindow,
     dialogWindows,
   });
+
+  registerConnectionHandlers(ipcMain, { getOAuth: () => oauth! });
 
   const voiceLevel = registerVoiceLevelForwarder({
     getMainWindow,
