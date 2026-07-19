@@ -3,6 +3,7 @@ dist/
 out/
 resources/
 *.js.map
+.env
 
 # Runtime artifacts (superpowers plugin)
 .superpowers/
@@ -13,3 +14,7 @@ resources/
 # Claude Code local (per-machine) settings — shared settings go in settings.json
 .claude/settings.local.json
 sarah-live.log
+
+# Native helper build output (C# — source lives in native/<name>/, built exe ships to resources/)
+native/*/bin/
+native/*/obj/

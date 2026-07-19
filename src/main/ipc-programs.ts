@@ -7,6 +7,7 @@ import {
   verifyProgramPath,
   generateAliases,
   markDuplicateGroups,
+  resolveRealExe,
 } from './program-utils.js';
 
 interface ProgramScanResult {
@@ -24,15 +25,23 @@ interface ProgramOption {
   duplicateGroup: string | undefined;
 }
 
-const mapProgramResult = (result: ProgramScanResult): ProgramOption => ({
-  name: result.name,
-  path: result.path,
-  type: classifyProgramPath(result.path),
-  source: 'detected',
-  verified: result.path.startsWith('appx:') ? true : verifyProgramPath(result.path),
-  aliases: generateAliases(result.name),
-  duplicateGroup: undefined,
-});
+const mapProgramResult = (result: ProgramScanResult): ProgramOption => {
+  const initialType = classifyProgramPath(result.path);
+  const resolved =
+    initialType === 'updater' || initialType === 'launcher'
+      ? resolveRealExe(result.path, initialType)
+      : null;
+  const finalPath = resolved ?? result.path;
+  return {
+    name: result.name,
+    path: finalPath,
+    type: classifyProgramPath(finalPath),
+    source: 'detected',
+    verified: finalPath.startsWith('appx:') ? true : verifyProgramPath(finalPath),
+    aliases: generateAliases(result.name),
+    duplicateGroup: undefined,
+  };
+};
 
 export function registerProgramHandlers(ipcMain: IpcMain): void {
   ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {

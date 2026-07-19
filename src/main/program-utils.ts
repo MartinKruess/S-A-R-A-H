@@ -1,4 +1,15 @@
 import * as fs from 'fs';
+import * as path from 'path';
+
+export interface ResolveFs {
+  readdirSync(dir: string): string[];
+  existsSync(p: string): boolean;
+}
+
+const realFs: ResolveFs = {
+  readdirSync: (dir) => fs.readdirSync(dir),
+  existsSync: (p) => fs.existsSync(p),
+};
 
 export const KNOWN_ALIASES: Record<string, string[]> = {
   'visual studio code': ['VS Code', 'Code', 'VSCode'],
@@ -126,4 +137,115 @@ export function markDuplicateGroups(
       }
     }
   }
+}
+
+/**
+ * Parse version string like "1.0.10" into [1, 0, 10] for comparison.
+ */
+function parseVersion(version: string): number[] {
+  return version.split('.').map((v) => parseInt(v, 10));
+}
+
+/**
+ * Compare two versions [1, 0, 10] vs [1, 0, 9]; returns 1 if a > b, -1 if a < b, 0 if equal.
+ */
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const aPart = a[i] ?? 0;
+    const bPart = b[i] ?? 0;
+    if (aPart > bPart) return 1;
+    if (aPart < bPart) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Resolve an updater/launcher path to the real executable, or null if not
+ * confidently found (caller then keeps the original path + warning).
+ * - updater (Squirrel): <dir>/Update.exe -> <dir>/app-<highest version>/<FolderName>.exe
+ * - launcher (best effort): a sibling .exe in the same dir whose name matches the parent folder
+ */
+export function resolveRealExe(
+  programPath: string,
+  type: 'exe' | 'launcher' | 'appx' | 'updater',
+  fsImpl: ResolveFs = realFs,
+): string | null {
+  // Only attempt resolution for updater and launcher
+  if (type === 'exe' || type === 'appx') {
+    return null;
+  }
+
+  const dir = path.dirname(programPath);
+  const folder = path.basename(dir);
+
+  if (type === 'updater') {
+    // Squirrel pattern: find app-<version> dirs, pick highest version
+    let entries: string[];
+    try {
+      entries = fsImpl.readdirSync(dir);
+    } catch {
+      return null;
+    }
+
+    // Filter for app-<version> dirs
+    const appDirs = entries.filter((e) => /^app-\d/i.test(e));
+    if (appDirs.length === 0) {
+      return null;
+    }
+
+    // Sort by version descending
+    appDirs.sort((a, b) => {
+      const aVersion = a.replace(/^app-/i, '');
+      const bVersion = b.replace(/^app-/i, '');
+      return compareVersions(parseVersion(bVersion), parseVersion(aVersion));
+    });
+
+    // Try highest version first
+    for (const appDir of appDirs) {
+      const candidate = path.join(dir, appDir, folder + '.exe');
+      if (fsImpl.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  if (type === 'launcher') {
+    // Launcher: find a sibling .exe whose name matches the folder
+    let entries: string[];
+    try {
+      entries = fsImpl.readdirSync(dir);
+    } catch {
+      return null;
+    }
+
+    const normFolder = folder.toLowerCase().replace(/[\s\-.]/g, '');
+    const selfName = path.basename(programPath).toLowerCase();
+
+    for (const entry of entries) {
+      const entryLower = entry.toLowerCase();
+      if (!entryLower.endsWith('.exe')) {
+        continue;
+      }
+      if (entryLower === selfName) {
+        continue;
+      }
+
+      const entryBase = entryLower.replace(/\.exe$/, '');
+      const normEntry = entryBase.replace(/[\s\-.]/g, '');
+
+      // Match if names are equal or contain each other
+      if (normEntry === normFolder || normFolder.includes(normEntry) || normEntry.includes(normFolder)) {
+        const candidate = path.join(dir, entry);
+        if (fsImpl.existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  return null;
 }
