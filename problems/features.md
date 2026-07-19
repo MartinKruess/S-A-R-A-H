@@ -1,6 +1,6 @@
-# Talkabouts — offene Bugs & Feature-Ideen
+# S.A.R.A.H. — Bugs, Features & Plan (persistent)
 
-> Stand 19.07.2026.
+> Stand 19.07.2026. Einzige Quelle für offene Punkte — `anmerkungen.md`, `spotify.md`, `analyze-fabel.md` wurden hier konsolidiert und gelöscht; `talkabouts.md` ist nur noch flüchtiger Review-Scratch.
 
 ## ✅ Umgesetzt (auf `dev`)
 
@@ -61,26 +61,6 @@ Ehrlicher Haken: Die API ist der leichte Teil — der Aufwand steckt ab V3 im **
 
 **Offene Follow-ups (aus V1):** Callback-Pfad pro Provider `/callback/<id>`? · „etwas lauter/leiser" landet bei ±25 statt ±5 (Routing-Prompt schärfen).
 
-### Wunsch (V1, erledigt)
-
-Sarah soll gezielt **Spotify/Musik** regeln (nicht den Windows-Master), inkl. relativer Deltas.
-
-### Entscheidung (Brainstorming 18.07., Details im OAuth-Plan)
-
-- **Spotify via Web-API** `PUT https://api.spotify.com/v1/me/player/volume?volume_percent=<0-100>` — **nicht** Windows-Mixer. Premium bestätigt, generischer OAuth-Layer (openid-client, PKCE). Eigener Branch **nach** den Füllsätzen.
-- Neue Actions: `spotify_volume:<0-100>` (absolut) + `spotify_volume_adjust:<signed>` (Delta im Code aufgelöst: Ist-Wert lesen → clampen → PUT).
-
-### Command-Grammatik (Spec für die Umsetzung)
-
-```
-Spotify / Musik auf x Prozent        → absolut
-Spotify (etwas) leiser / lauter      → -25 / +25   (etwas = ±5)
-Spotify x Prozent leiser             → -x
-Systemsound (dieselben Befehle)      → Master (set_volume)
-```
-
-Auslöse-Schlagworte: `spotify`, `musik`, evtl. `hintergrundmusik`.
-
 ### Später, separat: Browser / Games gezielt
 
 Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimpleAudioVolume` via `IAudioSessionManager2`: Sessions enumerieren → per `GetProcessId()` gegen `tasklist` die App matchen → `SetMasterVolume(scalar)`. Aufwändiger (umfangreiches Inline-C# oder C#-Helfer-Binary) → eigene spätere Runde.
@@ -90,6 +70,49 @@ Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimple
 ## Kleinere offene Punkte
 
 - **Routing-Prompt:** klarstellen, dass `set_volume` einen **absoluten** Zielwert (0–100) erwartet, keine Deltas.
+
+---
+
+## Offene Bugs — Programm-Scan
+
+> Konsolidiert aus `anmerkungen.md` (gelöscht 19.07.). Erledigt war nur `type`-Feld + appx-Start (Action-Layer); der Rest ist offen. Siehe Memory `project_program_scan_bugs`.
+
+- **Discord** — Eintrag zeigt auf den Updater `…\Discord\Update.exe` statt die echte App `…\Discord\app-*\Discord.exe`. Der Launcher lehnt `type: updater` ehrlich ab, aber der Pfad sollte korrigiert werden.
+- **PDFgear** — Pfad ist `PDFLauncher.exe` (Launcher, nicht Hauptprogramm). Kann funktionieren → beobachten, ggf. ersetzen.
+- **OneDrive** — läuft oft als Hintergrunddienst → Start bringt nicht immer ein sichtbares Ergebnis.
+- **Epic Games Launcher** — Pfad `…Win32\EpicGamesLauncher.exe` wirkt ungewöhnlich (Win32 statt Win64) → prüfen.
+- **RocketLeague** — `…Win64\RocketLeague.exe`; Launcher-/Anti-Cheat-abhängig, Direktstart evtl. instabil.
+- **OpenOffice** — Aliase `soffice.exe` (Haupt) ✅, `scalc/swriter/sbase.exe` überschneiden sich (alle „OpenOffice"). Matcher fragt bei Mehrdeutigkeit nach; die Überschneidung selbst bleibt. Empfehlung: `soffice.exe` = Default.
+
+---
+
+## Offen: Voice/TTS & Code-Qualität
+
+> Konsolidiert aus `analyze-fabel.md` (gelöscht 19.07.). Die kritischen Bugs (§3), Action-Layer/History (§5.1/5.2) und appx sind erledigt; hier bleiben die offenen Reste.
+
+- **Piper spawnt pro Satz einen Prozess** (`piper-provider.ts`) — 50–150 ms Overhead/Satz. Ein persistenter Piper-HTTP-Server (wie faster-whisper) → <10 ms. Größter TTS-Latenz-Hebel.
+- **STT schreibt Temp-WAV auf Disk** (`faster-whisper-provider.ts`) statt In-Memory (multipart) — unnötiges I/O, SSD-Verschleiß bei häufigen Kurznachrichten.
+- **STT-Startup-Timeout** bleibt hoch (Modell-Download); der Spawn-Abort bei fehlendem Python ist erledigt.
+- **Silence-VAD fixer Schwellwert** `SILENCE_RMS_THRESHOLD = 0.01` (`voice-service.ts`) — unkalibriert; in lauten Umgebungen löst der Silence-Timer nie aus. Betrifft nur den Keyword-Modus → adaptive VAD nötig.
+- **Kein LLM-Retry bei Timeout** (`chat-with-timeout.ts`, 120 s) — nach Timeout nur Fehler, kein zweiter Versuch.
+- **`require('electron')` in Callbacks** (`boot-sequence.ts`, `main.ts`) — sollte Top-Level-Import sein (Stil).
+- **VramManager toter `_load`-Param** (`vram-manager.ts`) — ungenutzt; Signatur auf `unload` reduzieren.
+- **Keine IPC-Input-Validation** (`ipc-voice.ts`) — `mode` wird direkt gecastet; Runtime-Check robuster (durch contextIsolation/sandbox aktuell unkritisch).
+
+---
+
+## Offen: Architektur/Strategie
+
+> Aus `analyze-fabel.md` §5 + §7. Größere Brocken, teils abhängig vom Backend-/Task-System (Architektur-Doc unten, §1–21).
+
+- **Keyword/Wake-Word-Modus nicht funktionsfähig** (`voice-service.ts`) — beim Init auf `off` gezwungen; Porcupine braucht einen Picovoice-Key (kostenpflichtig), kein Wizard-Setup/UI-Hinweis. Wichtig für „always-on". (Verwandt: das 30-s-Konversationsfenster, auf das der Medien-Kontext aufbaut.)
+- **Kein Langzeit-Kontext** — `MAX_CONTEXT_TOKENS` trimmt hart; echte Ganztags-Sessions brauchen smarte Zusammenfassung statt Trim.
+- **Keine generischen Tool-Calls / Structured Output** — der Action-Layer deckt feste Actions ab, aber allgemeine strukturierte Aufgaben (E-Mail verfassen, Kalender, Datei umbenennen) fehlen.
+- **Roadmap (mittel/lang):** TTS-Upgrade (Coqui/ElevenLabs), E-Mail-Integration (IMAP/OAuth — OAuth-Layer existiert), Claude-Code-API-Anbindung, Backend-Route (Cloud), Browser-Steuerung (CDP), UI-Automation (WinAPI UIAutomation), Vision/Multimodal (RTX 3050 zu klein → Cloud).
+
+> **Perf-Baseline (Referenz, gemessen 2026-04-13):** Kaltstart ~14 s (Whisper ~978 ms · Router ~4.7 s · Worker ~6.8 s · TTS ~1.8 s); Warmstart ~5.4 s (Whisper ~485 ms · Worker ~2.9 s · TTS ~2.0 s). Bottlenecks: TTS-Prozessstart, Worker-VRAM-Swap. (Vgl. Memory `project_voice_perf_baseline`.)
+
+---
 
 ## # Sarah – Architektur für Router, Hintergrundaufgaben und dynamische Statusmeldungen
 
