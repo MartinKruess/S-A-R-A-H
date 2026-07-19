@@ -1,5 +1,5 @@
 // src/services/actions/media-controller.ts
-// Schicht 1 (generic media transport). Platform-neutral MediaController contract;
+// Layer 1 (generic media transport). Platform-neutral MediaController contract;
 // WindowsMediaController drives GSMTC via a small self-contained C# helper spoken to
 // over JSON stdin/stdout. `run` is injectable for tests.
 import { spawn } from 'child_process';
@@ -109,6 +109,11 @@ export class WindowsMediaController implements MediaController {
         clearTimeout(timer);
         resolve(out.trim());
       });
+
+      // A helper that dies on launch makes stdin.write emit 'error' (EPIPE);
+      // without a listener that becomes an uncaught exception. Swallow it —
+      // the close/timeout handlers already settle the promise.
+      child.stdin?.on('error', () => {});
 
       child.stdin?.write(`${requestJson}\n`);
       child.stdin?.end();
