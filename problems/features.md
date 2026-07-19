@@ -39,7 +39,8 @@ Niedrig — „Musik/Spotify auf x %" läuft künftig ohnehin über die **Spotif
 
 Weitere Spotify-Fähigkeiten (alle via Web-API; **Premium + aktives Gerät** nötig). Nach Aufwand:
 
-- **V2 — Transport (Gruppe A), läuft auf `feat/spotify-transport`:** play/pause, next/previous, shuffle („mixed"), repeat/loop. Scope `user-modify-playback-state` (schon da → kein Re-Auth). Kein Namen-Matching → einfach & robust.
+- **Mediensteuerung V2 (Schicht 1, generisch) ✅ auf `feat/media-control`:** play/pause/toggle/next/previous über Windows GSMTC (C#-Helper `media-helper.exe`), playerübergreifend (Spotify/Browser/VLC), ohne OAuth/Premium. Generische `media_*`-Actions + `MediaController`-Vertrag. Details: `docs/superpowers/specs/2026-07-19-media-control-design.md`.
+- **Schicht 2 (Spotify-spezifisch, künftig):** Shuffle/Repeat, nach Namen spielen, Playlists — via Spotify-Web-API (Premium + aktives Gerät). Bleiben `spotify_*`-Actions hinter dem OAuth-Adapter.
 - **V3 — Nach Namen spielen (Gruppe B):** Lied suchen+spielen (`GET /search` → play `uris`), Playlist abspielen (`GET /me/playlists` → play `context_uri`). Braucht Fuzzy-Namensauflösung + `playlist-read-private`.
 - **V4 — Playlist bearbeiten (Gruppe C):** Lied add/remove (`POST`/`DELETE /playlists/{id}/tracks`). Braucht `playlist-modify-public/-private` → Nutzer muss **neu verbinden** (Scope-Consent).
 
