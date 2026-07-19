@@ -109,14 +109,22 @@ Fehlercodes: `NO_MEDIA_SESSION`, `NO_MATCHING_SESSION`, `ACTION_NOT_SUPPORTED`, 
 
 Ablauf: `GlobalSystemMediaTransportControlsSessionManager.RequestAsync()` → Session per obiger
 Regel wählen → `TryPlayAsync`/`TryPauseAsync`/`TryTogglePlayPauseAsync`/`TrySkipNextAsync`/
-`TrySkipPreviousAsync`. Vor `next`/`previous`/`play`/`pause` die `GetPlaybackInfo().Controls`
-prüfen; nicht unterstützt → `ACTION_NOT_SUPPORTED`.
+`TrySkipPreviousAsync`. Vor **jedem** Command (`play`/`pause`/`toggle`/`next`/`previous`) die
+`GetPlaybackInfo().Controls` prüfen (z. B. `IsNextEnabled`, `IsPlayEnabled`); nicht unterstützt
+→ `ACTION_NOT_SUPPORTED`. (Manche Browser-Player, z. B. SoundCloud, melden Play/Pause als nicht
+unterstützt — deshalb der Check auch dort.)
+
+**Helper-internes Timeout:** Jeder GSMTC-Await läuft gegen ein Zeitlimit (z. B. 2,5 s, per
+`Task.WhenAny` + Delay). Läuft es ab → Exit mit `{ success: false, error: "ACTION_FAILED" }`,
+statt unbegrenzt zu hängen.
 
 **Media-Key-Fallback (Doc §19):** Findet Schritt 4 gar keine Session (`NO_MEDIA_SESSION`) für
 `toggle`/`next`/`previous`, sendet der Helper als letzte Instanz die entsprechende Medientaste
 (`VK_MEDIA_PLAY_PAUSE`/`NEXT_TRACK`/`PREV_TRACK` via `keybd_event`) und meldet
-`{ success: true, app: "media-key" }`. Für `play`/`pause` **kein** Key-Fallback (Taste ist nur
-Toggle → würde ggf. das Falsche tun).
+`{ success: true, app: "media-key" }`. Dabei einen **Log-Marker** auf stderr schreiben
+(`[media-helper] fallback: media-key <action>`), damit im Debug sichtbar ist, wann der Fallback
+greift statt GSMTC. Für `play`/`pause` **kein** Key-Fallback (Taste ist nur Toggle → würde ggf.
+das Falsche tun).
 
 **Bundling & Fund:** Exe liegt in `resources/media-helper/` und wird zur Laufzeit über dieselbe
 Resource-Auflösung wie Piper gefunden (dev vs. gepackt). Aufnahme in den electron-builder-
@@ -138,8 +146,10 @@ export interface MediaController {
 ```
 
 `WindowsMediaController implements MediaController`: startet den Helper per `execFile`
-(injizierbar wie `SystemActions.execFn`), schreibt den Request auf stdin, parst die JSON-Antwort,
-mappt Fehlercodes auf ehrliche deutsche `speak`-Texte:
+(injizierbar wie `SystemActions.execFn`) **mit `timeout` (~4 s)** als zweite Verteidigungslinie —
+antwortet der Helper nicht (hängender Player), killt Node den Prozess und liefert generisch
+„Das hat gerade nicht geklappt.", statt den Action-Call blockieren zu lassen. Schreibt den
+Request auf stdin, parst die JSON-Antwort, mappt Fehlercodes auf ehrliche deutsche `speak`-Texte:
 
 - `NO_MEDIA_SESSION` → „Ich sehe gerade keine laufende Wiedergabe."
 - `NO_MATCHING_SESSION` → „Ich finde gerade keine passende Wiedergabe."
@@ -152,7 +162,8 @@ Nicht-`win32` → `{ ok: false, speak: 'Das unterstützt dein System nicht.' }` 
 ### 3. `action-schemas.ts`
 
 Fünf `media_*`-Einträge (siehe Tabelle). Gate-Stämme (`ACTION_HINT_STEMS`) konservativ um
-`'pausier'` ergänzen; `'musik'`/`'spotify'` decken den Rest. Kein `'weiter'`/`'zurück'`
+`'pausier'` und `'skip'` ergänzen (`'skip'` = geläufiger Anglizismus fürs Weiterspringen, kein
+häufiges Alltagswort); `'musik'`/`'spotify'` decken den Rest. Kein `'weiter'`/`'zurück'`
 (Über-Match im 9B-Gespräch).
 
 ### 4. `action-service.ts`
