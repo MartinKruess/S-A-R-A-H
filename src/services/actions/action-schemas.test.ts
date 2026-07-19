@@ -97,8 +97,10 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Erzähl mir mehr davon')).toBe(false);
   });
 
-  it('matches media transport hint words', () => {
+  it('matches media transport hint words, including the bare commands', () => {
     expect(looksLikeActionCommand('Pausiere die Musik')).toBe(true);
+    expect(looksLikeActionCommand('Pause')).toBe(true);
+    expect(looksLikeActionCommand('Nächstes Lied')).toBe(true);
     expect(looksLikeActionCommand('Skip mal')).toBe(true);
   });
 });

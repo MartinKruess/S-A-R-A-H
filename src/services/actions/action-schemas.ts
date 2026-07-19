@@ -51,9 +51,14 @@ export const ACTION_HINT_STEMS: readonly string[] = [
   'öffn', 'start', 'such', 'google', 'zeig',
   'timer', 'wecker',
   'lautstärke', 'lauter', 'leiser',
-  'spotify', 'musik', 'pausier', 'skip',
+  'spotify', 'musik', 'paus', 'nächst', 'skip',
   'sperr', 'bildschirm',
 ];
+// Transport stems ('paus' → Pause/pausier…, 'nächst' → nächstes (Lied)/nächste,
+// 'skip') deliberately catch the bare media commands so a warm 9B window always
+// swaps them back to the router — the router, not the 9B worker, owns command
+// dispatch. 'nächst' may also fire on chat like "nächste Woche"; per the note
+// above that only costs one extra routing swap, never a wrong action.
 
 const HINT_PATTERN = new RegExp(
   `(?:^|[\\s,.!?])(${ACTION_HINT_STEMS.join('|')})`,
