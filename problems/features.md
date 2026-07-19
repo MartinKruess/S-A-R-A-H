@@ -75,14 +75,16 @@ Geht **nur** über den Windows-Mixer (Web-API kann nur Spotify). Ansatz `ISimple
 
 ## Offene Bugs — Programm-Scan
 
-> Konsolidiert aus `anmerkungen.md` (gelöscht 19.07.). Erledigt war nur `type`-Feld + appx-Start (Action-Layer); der Rest ist offen. Siehe Memory `project_program_scan_bugs`.
+> Konsolidiert aus `anmerkungen.md` (gelöscht 19.07.). Siehe Memory `project_program_scan_bugs`.
 
-- **Discord** — Eintrag zeigt auf den Updater `…\Discord\Update.exe` statt die echte App `…\Discord\app-*\Discord.exe`. Der Launcher lehnt `type: updater` ehrlich ab, aber der Pfad sollte korrigiert werden.
-- **PDFgear** — Pfad ist `PDFLauncher.exe` (Launcher, nicht Hauptprogramm). Kann funktionieren → beobachten, ggf. ersetzen.
+> ✅ **Updater/Launcher-Auflösung gebaut** (`resolveRealExe`, `program-utils.ts`; verdrahtet in `mapProgramResult`): der Scan löst jetzt Squirrel-Updater (`…\Discord\Update.exe` → `…\Discord\app-<höchste Version>\Discord.exe`) und Launcher (Best-Effort: Geschwister-Exe = Ordnername) automatisch auf. **Discord damit gefixt**; nur unauflösbare Fälle behalten die ⚠️-Warnung. 16 Tests.
+
+Rest offen (Edge, „beobachten"):
+- **PDFgear** — `PDFLauncher.exe`: die Best-Effort-Launcher-Auflösung greift nur, wenn eine Geschwister-Exe zum Ordnernamen passt — real prüfen, ob PDFgears Haupt-Exe so heißt.
 - **OneDrive** — läuft oft als Hintergrunddienst → Start bringt nicht immer ein sichtbares Ergebnis.
 - **Epic Games Launcher** — Pfad `…Win32\EpicGamesLauncher.exe` wirkt ungewöhnlich (Win32 statt Win64) → prüfen.
 - **RocketLeague** — `…Win64\RocketLeague.exe`; Launcher-/Anti-Cheat-abhängig, Direktstart evtl. instabil.
-- **OpenOffice** — Aliase `soffice.exe` (Haupt) ✅, `scalc/swriter/sbase.exe` überschneiden sich (alle „OpenOffice"). Matcher fragt bei Mehrdeutigkeit nach; die Überschneidung selbst bleibt. Empfehlung: `soffice.exe` = Default.
+- **OpenOffice** — Aliase `soffice.exe` (Haupt) ✅, `scalc/swriter/sbase.exe` überschneiden sich. Matcher fragt bei Mehrdeutigkeit nach; die Überschneidung bleibt. Nur „soffice = Default" wäre ein Mini-Plus.
 
 ---
 
