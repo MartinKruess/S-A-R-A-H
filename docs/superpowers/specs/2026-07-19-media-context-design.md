@@ -32,12 +32,22 @@ MediaContext.resolve(text, now)  ──►  trifft zu? → direkt media_*-Action
 2B-Router (wie bisher)           ──►  bei media_*-Ausführung: MediaContext.record(action, now)
 ```
 
-### Zustand
+### Zustand & Typen
+
+`MediaContext` nutzt den **bereits vorhandenen** Typ aus `media-controller.ts` — nicht neu definieren:
 
 ```ts
+import type { MediaAction } from '../actions/media-controller.js';
+// MediaAction = 'media_play' | 'media_pause' | 'media_toggle' | 'media_next' | 'media_previous'
+
 interface MediaContextState {
-  lastAction: 'media_play' | 'media_pause' | 'media_toggle' | 'media_next' | 'media_previous';
+  lastAction: MediaAction;
   atMs: number; // Zeitpunkt der letzten Medien-Aktion
+}
+
+interface ResolvedMedia {
+  action: MediaAction; // getypt (NICHT string) → kein isActionName-Check im Shortcut, Compiler fängt Tippfehler
+  speak: string;
 }
 ```
 
@@ -95,7 +105,12 @@ private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
 ```
 
 - **Kein Modell-Swap** im Resolver-Pfad: die `media_*`-Action läuft über den Action-Layer/GSMTC-Helper, unabhängig vom geladenen LLM — im warmen 9B einfach dort bleiben (spart den Swap). (Idle-Timer im V1 nicht anfassen — mögliche spätere Verfeinerung: bei aktivem 9B `resetIdleTimer()`, da der Nutzer aktiv ist.)
-- **`record` auch im normalen Router-Pfad:** in `routeAndRespond()`, dort wo bereits ein `action:request` für ein `media_*`-Action emittiert wird (~Zeile 196–199), zusätzlich `this.mediaContext.record(action, Date.now())` aufrufen — nur für `media_*`-Actions. So frischt jeder Medienbefehl das Fenster auf, egal über welchen Pfad.
+- **`record` auch im normalen Router-Pfad — mit Guard!** `routeAndRespond()` emittiert `action:request` für **alle** Actions; `record` muss auf `media_*` beschränkt werden, sonst überschreibt z. B. `set_volume` die `lastAction`:
+  ```ts
+  this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
+  if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
+  await this.emitAssistantResponse(feedback);
+  ```
 - **Speak optimistisch:** `hit.speak` wird — wie die Router-Feedbacks — vor der Ausführung gesprochen. Bei stillem Erfolg (`{ok:true}`) bleibt's dabei; bei Fehler folgt die ehrliche Ansage über `action:result` → `speakAfterCurrentTurn` (konsistent mit dem bestehenden Action-UX).
 
 ### Constructor — Breaking Change vermeiden
@@ -112,6 +127,11 @@ constructor(
 ```
 
 `media-context.test.ts` testet `MediaContext` isoliert; `RouterService`-Tests, die das Zusammenspiel prüfen, injizieren eine Instanz mit vorbelegtem Zustand.
+
+## Bekannte Einschränkungen (V1, bewusst)
+
+- **Named-Target geht im Kontext verloren.** Nach „Pausiere Spotify" (param `'spotify'`) speichert `record` nur `lastAction: 'media_pause'`, kein Target. Ein folgendes „weiter" feuert `media_play` auf die **aktive** Session (param `''`). Führt Windows zwischenzeitlich eine andere Session als aktiv, wird nicht zwingend Spotify fortgesetzt. Named-Target-Kontext ist **V2**.
+- **`media_toggle`-Ausgang unbekannt.** Nach einem Toggle weiß der Kontext nicht, ob jetzt gespielt oder pausiert wird → „weiter" fällt auf den `media_next`-Else-Zweig. Hätte der Toggle pausiert, wäre `media_play` korrekt — aber nicht ermittelbar ohne GSMTC-Status-Abfrage. Akzeptiert für V1.
 
 ## Tests
 
