@@ -16,6 +16,13 @@ export const ACTION_SCHEMAS = {
   set_timer: z.coerce.number().int().min(1).max(1440),
   // Parser delivers '' for a param-less tag; any non-empty param is invalid (R4-Mi3).
   lock_screen: z.literal(''),
+  // Generic media transport (Schicht 1). Param = optional target: '' = active session,
+  // else a program name substring ("spotify", "chrome") to pick that session.
+  media_play: z.string().max(40),
+  media_pause: z.string().max(40),
+  media_toggle: z.string().max(40),
+  media_next: z.string().max(40),
+  media_previous: z.string().max(40),
 } as const;
 
 export type ActionName = keyof typeof ACTION_SCHEMAS;
@@ -44,9 +51,16 @@ export const ACTION_HINT_STEMS: readonly string[] = [
   'öffn', 'start', 'such', 'google', 'zeig',
   'timer', 'wecker',
   'lautstärke', 'lauter', 'leiser',
-  'spotify', 'musik',
+  'spotify', 'musik', 'lied', 'paus', 'nächst', 'skip',
   'sperr', 'bildschirm',
 ];
+// Transport stems catch the bare media commands so a warm 9B window always swaps
+// them back to the router — the router, not the 9B worker, owns command dispatch.
+// 'lied' anchors every track command ("ein Lied vor/zurück", "nächstes Lied"),
+// like 'lautstärke'/'timer' anchor their actions; 'paus' → Pause/pausier…,
+// 'nächst' → nächstes/nächste, 'skip'. 'lied'/'nächst' may also fire on chat
+// ("nächste Woche", "über dieses Lied"); per the note above that only costs one
+// extra routing swap, never a wrong action.
 
 const HINT_PATTERN = new RegExp(
   `(?:^|[\\s,.!?])(${ACTION_HINT_STEMS.join('|')})`,

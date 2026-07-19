@@ -8,6 +8,7 @@
 - **STT-Qualität** — Windows-Mic-Pegel (Nutzerseite) + Input-Normalisierung + `vad_filter` + Modell `small`→`large-v3-turbo` (int8) + Mic-Warm-Halten gegen abgeschnittene Satzanfänge → **PR #24**.
 - **Füllsätze V1** — gesprochene Brücke über die Modell-Swap-Pause: 2B→9B `frontendThinking`, 9B→2B `switchingBack`, via Main-only Event `llm:filler` (`src/services/llm/filler-phrases.ts`) → **PR #25**. Die übrigen §11-Kategorien (Hintergrund/Deep-Search/Programm-Ladestatus/Coding/Memory/Fehler) warten aufs Backend-/Task-System (Architektur §1–21).
 - **Gate-Fix** — Infinitive/höfliche Befehle („kannst du Spotify **starten**") werden erkannt: Wortanfang-Stämme `ACTION_HINT_STEMS` → **PR #26**.
+- **Integrationen V1 (Spotify-Lautstärke)** — generischer OAuth-Layer (selbstgebauter PKCE), Settings-Tab „Integrationen", `spotify_volume`/`spotify_volume_adjust` → **PR #27**. Live E2E bestätigt.
 
 ---
 
@@ -32,9 +33,22 @@ Niedrig — „Musik/Spotify auf x %" läuft künftig ohnehin über die **Spotif
 
 ---
 
-## Feature (offen, Entscheidung gefallen): per-App-Lautstärke
+## Feature: Spotify-Steuerung — Roadmap
 
-### Wunsch
+> **V1 (Lautstärke) ✅ gemergt (PR #27).** Absolut + relativ läuft live.
+
+Weitere Spotify-Fähigkeiten (alle via Web-API; **Premium + aktives Gerät** nötig). Nach Aufwand:
+
+- **Mediensteuerung V2 (Schicht 1, generisch) ✅ auf `feat/media-control`:** play/pause/toggle/next/previous über Windows GSMTC (C#-Helper `media-helper.exe`), playerübergreifend (Spotify/Browser/VLC), ohne OAuth/Premium. Generische `media_*`-Actions + `MediaController`-Vertrag. Details: `docs/superpowers/specs/2026-07-19-media-control-design.md`.
+- **Schicht 2 (Spotify-spezifisch, künftig):** Shuffle/Repeat, nach Namen spielen, Playlists — via Spotify-Web-API (Premium + aktives Gerät). Bleiben `spotify_*`-Actions hinter dem OAuth-Adapter.
+- **V3 — Nach Namen spielen (Gruppe B):** Lied suchen+spielen (`GET /search` → play `uris`), Playlist abspielen (`GET /me/playlists` → play `context_uri`). Braucht Fuzzy-Namensauflösung + `playlist-read-private`.
+- **V4 — Playlist bearbeiten (Gruppe C):** Lied add/remove (`POST`/`DELETE /playlists/{id}/tracks`). Braucht `playlist-modify-public/-private` → Nutzer muss **neu verbinden** (Scope-Consent).
+
+Ehrlicher Haken: Die API ist der leichte Teil — der Aufwand steckt ab V3 im **Voice-Routing** (gesprochene Namen auf Playlist-/Song-IDs auflösen).
+
+**Offene Follow-ups (aus V1):** Callback-Pfad pro Provider `/callback/<id>`? · „etwas lauter/leiser" landet bei ±25 statt ±5 (Routing-Prompt schärfen).
+
+### Wunsch (V1, erledigt)
 
 Sarah soll gezielt **Spotify/Musik** regeln (nicht den Windows-Master), inkl. relativer Deltas.
 

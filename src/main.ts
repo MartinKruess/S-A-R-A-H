@@ -12,6 +12,7 @@ import { ProgramLauncher } from './main/program-launcher.js';
 import { SystemActions } from './services/actions/system-actions.js';
 import { SpotifyActions } from './services/actions/spotify-actions.js';
 import { ActionService } from './services/actions/action-service.js';
+import { WindowsMediaController } from './services/actions/media-controller.js';
 import { SearchService } from './services/search/search-service.js';
 import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browser-search-provider.js';
 import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summarize-results.js';
@@ -124,6 +125,9 @@ app.whenReady().then(async () => {
   const routerService = new RouterService(appContext, routerProvider, workerProvider);
 
   // --- Action layer (Spec Action-Layer V1) ---
+  const resourcesPath = app.isPackaged
+    ? process.resourcesPath
+    : path.join(__dirname, '..', 'resources');
   sandboxBrowser = new SandboxBrowser();
   const programLauncher = new ProgramLauncher();
   systemActions = new SystemActions();
@@ -153,6 +157,9 @@ app.whenReady().then(async () => {
     redirectPort: redirectPort(),
   });
   const spotifyActions = new SpotifyActions(oauth);
+  const mediaController = new WindowsMediaController(
+    path.join(resourcesPath, 'media-helper', 'media-helper.exe'),
+  );
 
   const actionService = new ActionService(appContext.bus, {
     launcher: programLauncher,
@@ -160,6 +167,7 @@ app.whenReady().then(async () => {
     search: searchService,
     system: systemActions,
     spotify: spotifyActions,
+    media: mediaController,
   });
   appContext.registry.register(searchService);
   appContext.registry.register(actionService);
@@ -179,9 +187,6 @@ app.whenReady().then(async () => {
   const { PiperProvider } = await import('./services/voice/providers/piper-provider.js');
   const { PorcupineProvider } = await import('./services/voice/providers/porcupine-provider.js');
 
-  const resourcesPath = app.isPackaged
-    ? process.resourcesPath
-    : path.join(__dirname, '..', 'resources');
   const picovoiceKey = process.env.PICOVOICE_ACCESS_KEY ?? '';
   const whisperProvider = new FasterWhisperProvider(resourcesPath);
   const piperProvider = new PiperProvider(resourcesPath);
