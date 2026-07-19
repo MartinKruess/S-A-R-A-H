@@ -67,8 +67,9 @@ Normalisierung: lowercase, NFC, getrimmt; nur „knappe" Äußerungen (≤ ~3 W�
 
 | Terse-Äußerung (Beispiele) | Bedingung | Aufgelöste Action | Speak |
 |---|---|---|---|
-| „weiter", „und weiter", „noch eins", „nächstes" | `lastAction === media_pause` | `media_play` | „Läuft wieder." |
-| „weiter", „und weiter", „noch eins", „nächstes" | sonst (Skip/Playing) | `media_next` | „Nächstes Lied." |
+| „weiter", „und weiter", „noch eins" | `lastAction === media_pause` | `media_play` | „Läuft wieder." |
+| „weiter", „und weiter", „noch eins" | sonst (Skip/Playing) | `media_next` | „Nächstes Lied." |
+| „nächstes" | — (unzweideutig) | `media_next` | „Nächstes Lied." |
 | „zurück", „eins zurück", „das vorherige" | — | `media_previous` | „Zurück." |
 | „stop", „stopp", „halt", „pause" | — | `media_pause` | „Pausiert." |
 
