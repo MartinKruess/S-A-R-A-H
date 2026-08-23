@@ -9,6 +9,8 @@ import { START_CONTEXT_HEADER } from './context-window.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { MessageBus } from '../../core/message-bus.js';
+import { MediaContext } from './media-context.js';
 
 class FakeProvider implements LlmProvider {
   readonly id = 'fake';
@@ -399,5 +401,38 @@ describe('RouterService (action layer)', () => {
 
     expect(done).toHaveLength(0);
     expect(chunks).toHaveLength(0);
+  });
+});
+
+describe('RouterService (media context)', () => {
+  // Minimal fake AppContext: the media-context shortcut path only touches the bus.
+  // No init() → conversationId stays FALLBACK → persistMessage skips the DB.
+  function fakeCtx(bus: MessageBus): AppContext {
+    return {
+      bus,
+      db: { insert: async () => 0 },
+      parsedConfig: { llm: { baseUrl: 'http://localhost:11434' } },
+    } as unknown as AppContext;
+  }
+
+  it('warm 9B window: terse "weiter" resolves to media_next and never calls the worker', async () => {
+    const bus = new MessageBus();
+    const requests: BusEvents['action:request'][] = [];
+    bus.on('action:request', (m) => requests.push(m.data));
+
+    const worker = new FakeProvider();
+    const mediaContext = new MediaContext();
+    mediaContext.record('media_next', Date.now()); // warm: last action was a skip
+
+    const r = new RouterService(fakeCtx(bus), new FakeProvider(), worker, mediaContext);
+    r.status = 'running'; // bypass init()/DB (conversationId stays FALLBACK → no SQLite)
+    r.activeModel = '9b';
+
+    await r.handleChatMessage('weiter');
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].action).toBe('media_next'); // shortcut fired before the 9B worker
+    expect(worker.lastMessages).toBeNull();          // worker.stream never ran
+    await r.destroy();
   });
 });

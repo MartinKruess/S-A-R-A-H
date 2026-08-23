@@ -10,6 +10,7 @@
 - **Gate-Fix** — Infinitive/höfliche Befehle („kannst du Spotify **starten**") werden erkannt: Wortanfang-Stämme `ACTION_HINT_STEMS` → **PR #26**.
 - **Integrationen V1 (Spotify-Lautstärke)** — generischer OAuth-Layer (selbstgebauter PKCE), Settings-Tab „Integrationen", `spotify_volume`/`spotify_volume_adjust` → **PR #27**. Live E2E bestätigt.
 - **Mediensteuerung Schicht 1 (generisch)** — `media_*` play/pause/toggle/next/previous über Windows GSMTC (self-contained C#-Helper `native/media-helper/`, JSON-stdio), playerübergreifend (Spotify/Browser/VLC), ohne OAuth/Premium; plattformneutraler `MediaController`-Vertrag → **PR #28**. Live E2E bestätigt (Spotify + YouTube, inkl. 9B-warm → Router-Dispatch). Spec: `docs/superpowers/specs/2026-07-19-media-control-design.md`.
+- **Medien-Konversationskontext** — deterministischer `MediaContext` (`src/services/llm/media-context.ts`): knappe Folgebefehle im 12-s-Fenster („weiter" nach Pause → resume, nach Skip → next; „zurück"/„stopp"), aufgelöst vor jeglichem Routing (fängt auch das warme 9B-Fenster). Spec: `docs/superpowers/specs/2026-07-19-media-context-design.md`.
 
 ---
 
@@ -44,18 +45,6 @@ Weitere Spotify-Fähigkeiten (alle via Web-API; **Premium + aktives Gerät** nö
 - **Schicht 2 (Spotify-spezifisch, künftig):** Shuffle/Repeat, nach Namen spielen, Playlists — via Spotify-Web-API (Premium + aktives Gerät). Bleiben `spotify_*`-Actions hinter dem OAuth-Adapter.
 - **V3 — Nach Namen spielen (Gruppe B):** Lied suchen+spielen (`GET /search` → play `uris`), Playlist abspielen (`GET /me/playlists` → play `context_uri`). Braucht Fuzzy-Namensauflösung + `playlist-read-private`.
 - **V4 — Playlist bearbeiten (Gruppe C):** Lied add/remove (`POST`/`DELETE /playlists/{id}/tracks`). Braucht `playlist-modify-public/-private` → Nutzer muss **neu verbinden** (Scope-Consent).
-
----
-
-## Feature: Medien-Konversationskontext (geplant, nach Schicht 1)
-
-Damit knappe Folgebefehle natürlich funktionieren. „weiter" ist von Natur aus zweideutig — „mach weiter" = fortsetzen (`media_play`), „ein Lied weiter" = nächstes (`media_next`). Lösung: sich die **letzte Medien-Aktion/Richtung** merken.
-
-- **Kern:** deterministische Komponente `MediaContext` (`{letzte Aktion, Richtung, Ziel, Zeitstempel}`), die ein definiertes Set knapper Folgeworte auflöst — **nicht** dem 2B-Router überlassen. Nach „ein Lied weiter" → knappes „weiter" = `media_next` (nicht resume), „zurück" = `media_previous`.
-- **Lebensdauer:** kurzes, gleitendes **10–15-s-Zeitfenster** (bewusst simpel). Recency-gebunden — nach längerem Plaudern ist das Fenster abgelaufen, „weiter" fällt zurück (wie bei Menschen: nach 5 Min „weiter!" versteht auch niemand).
-- **Kein** neuer Mic-Timer nötig: das Zuhör-Fenster ist bereits gelöst (Keyword → 30 s, gleitend; PTT diskret). Dieses Feature ist rein der Intent-Kontext.
-- **Scope V1:** nur Schicht-1-Transport (weiter/zurück/stop). „Dauerschleife"/Repeat und Playlist-Folgesachen („mach mal ein zweiter") sind Schicht 2 → ziehen nach, sobald Schicht 2 existiert. Erst Brainstorm→Spec→Plan.
-- **Nebenbei:** mehr Synonyme/Begrifflichkeiten (inkrementell, Router-Beispiele + Gate-Stämme).
 
 Ehrlicher Haken: Die API ist der leichte Teil — der Aufwand steckt ab V3 im **Voice-Routing** (gesprochene Namen auf Playlist-/Song-IDs auflösen).
 
