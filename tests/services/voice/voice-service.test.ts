@@ -485,6 +485,41 @@ describe('VoiceService', () => {
     expect(service.voiceState).toBe('idle');
   });
 
+  it('rejects push-to-talk immediately when the router is unavailable', async () => {
+    context.lifecycle = {
+      acceptingWork: true,
+      setCapability: vi.fn(),
+      snapshot: {
+        state: 'degraded',
+        generation: 1,
+        updatedAt: 1,
+        capabilities: { router: { state: 'error', message: 'Docker offline' } },
+      },
+    } as AppContext['lifecycle'];
+    await service.init();
+
+    const llmError = vi.fn();
+    const transcript = vi.fn();
+    const chatMessage = vi.fn();
+    bus.on('llm:error', llmError);
+    bus.on('voice:transcript', transcript);
+    bus.on('chat:message', chatMessage);
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    onDown();
+    onUp();
+    await flush();
+
+    expect(audio.startRecording).not.toHaveBeenCalled();
+    expect(stt.transcribe).not.toHaveBeenCalled();
+    expect(transcript).not.toHaveBeenCalled();
+    expect(chatMessage).not.toHaveBeenCalled();
+    expect(llmError).toHaveBeenCalledOnce();
+    expect(service.voiceState).toBe('idle');
+  });
+
   it('continues provider cleanup when one provider destroy fails', async () => {
     (stt.destroy as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('stt cleanup failed'));
     await service.init();

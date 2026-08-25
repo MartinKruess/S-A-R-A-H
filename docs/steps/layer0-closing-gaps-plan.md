@@ -118,9 +118,9 @@ Die praktische Matrix bleibt unverändert im Hauptplan dokumentiert. Tests ohne 
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 71 Testdateien mit 716 Tests erfolgreich.
+- 72 Testdateien mit 734 Tests erfolgreich, einschließlich eines vollständigen Laufs ohne Docker.
 - `git diff --check` ohne Whitespace-Fehler; die ausgegebenen Hinweise betreffen nur die bestehende LF-/CRLF-Konfiguration.
 
 ### Verbleibende Grenze
 
-Die technische Implementierung von Layer 0 ist damit geschlossen. Die Gesamtbewertung bleibt bis zur praktischen Windows-Matrix aus dem Hauptplan gelb: insbesondere normales Fenster-Schließen beziehungsweise direkter Quit, echte Degraded-Starts sowie der reale Router-/Worker-/Search-Ablauf. Diese Tests verändern lokale Dienste, Modelle oder Voice-Ressourcen und werden deshalb gesondert kontrolliert abgenommen.
+Die technische Implementierung von Layer 0 ist damit geschlossen. Normaler Fensterschluss, Router-/Worker-/Search-Ablauf, Idle-Rückkehr, Neustartvertrag und der reale Docker-Ausfall sind praktisch bestanden. Die Gesamtbewertung bleibt bis zu den vier übrigen Kästen der Windows-Matrix aus dem Hauptplan gelb: direkter Quit, fehlendes Worker-Modell sowie STT- und TTS-Teilausfall. Diese Tests verändern lokale Dienste, Modelle oder Voice-Ressourcen und werden deshalb gesondert kontrolliert abgenommen.

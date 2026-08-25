@@ -421,7 +421,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 71 Testdateien mit 716 Tests erfolgreich.
+- 72 Testdateien mit 734 Tests erfolgreich, einschließlich eines vollständigen Laufs bei ausgeschaltetem Docker.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
 - Ein abschließender erneuter Codeaudit nach den Cleanup-Fristen, dem Late-Init-Cleanup und dem Action-Drain ergab keine weitere relevante Layer-0-Codelücke.
 
@@ -440,14 +440,15 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Dabei wurden drei praktische UX-/Robustheitsbefunde sichtbar: Der Router erzeugte bei einer Wissensfrage freien Text plus einen unpassenden Action-Tag, der sicher auf den Worker zurückfiel; die erste Worker-TTS-Ausgabe war teilweise holprig beziehungsweise unvollständig; Search sprach zwei zeitlich getrennte Füllmeldungen vor der einzigen Endantwort.
 - Das Schließen des Hauptfensters nach einer Search ließ zunächst zwei Electron-Prozesse, Whisper/Python und das Routermodell aktiv, weil das versteckte Sandbox-Browserfenster `window-all-closed` verhinderte. Die Testinstanz wurde kontrolliert beendet und das Sarah-Modell entladen. Der primäre Fensterschluss stößt deshalb nun den gemeinsamen Shutdown explizit an.
 - Die Korrektur bestand 71 Testdateien mit 716 Tests sowie den identischen realen Search-→Fensterschluss-Regressionslauf. Danach standen Sarah-Electron, Voice-Prozesse, Sarah-Ports und geladene Ollama-Modelle jeweils auf null.
+- Nach fünf Minuten Worker-Idle wurde `qwen3:8b` entladen und ausschließlich `phi4-mini:3.8b` wiederhergestellt.
+- Das GPU-Leistungsprofil zeigte nach dem Speichern korrekt einen Neustarthinweis. Vor dem Neustart blieb die bisherige Runtime aktiv; nach dem Neustart sank die Worker-VRAM-Belegung im Profil `sparsam` von rund 5,1 GB auf rund 3,0 GB. Anschließend wurde `normal` wieder gespeichert.
+- Der reale Start ohne Docker/Ollama zeigte einen ehrlichen Degraded-Zustand: keine Bereitschaftsansage, dauerhaft sichtbarer Docker-/Router-Hinweis und deaktivierte Texteingabe. F9 startete weder Aufnahme noch Transkription und erzeugte keine Nutzer-Nachricht. Nach Wiederstart von Docker startete Sarah den Container selbst, lud nur den Router und beantwortete `Wie heiße ich?` wieder korrekt.
+- Der Ausfalltest deckte außerdem eine versteckte Docker-Abhängigkeit im Test-/Legacy-Modelladapter auf. Der nicht ladende Adapter führt nun auch keine realen VRAM-Unloads aus; der produktive Modell-Lifecycle bleibt unverändert streng geprüft.
 
 ### Noch praktisch abzunehmen
 
 - direkte Quit-Aktion mit anschließender Prozess-/VRAM-Prüfung; normales Schließen des sichtbaren App-Fensters ist bestanden
-- realer Start ohne Docker/Ollama
 - realer Start mit fehlendem Worker-Modell
 - realer STT- und TTS-Teilausfall
-- praktischer Router-zu-Worker-Wechsel, Idle-Rückkehr und Search-Zusammenfassung
-- Modellsetting speichern, sichtbaren Neustarthinweis prüfen und nach Neustart die neue Runtime bestätigen
 
 Bis diese praktische Matrix abgeschlossen ist, bleibt Layer 0 als Ganzes **gelb** statt grün. Die implementierte technische Basis und ihre automatisierten Verträge sind abgeschlossen.

@@ -9,6 +9,7 @@ import { forwardToRenderers } from './forward-to-renderers.js';
 import { isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
+import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../core/chat-availability.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
@@ -231,9 +232,9 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       return;
     }
     const ctx = getAppContext();
-    if (!ctx.lifecycle.acceptingWork || ctx.lifecycle.snapshot.capabilities.router?.state !== 'ready') {
+    if (!isChatAvailable(ctx.lifecycle.snapshot)) {
       ctx.bus.emit('runtime', 'llm:error', {
-        message: 'Sarah ist noch nicht bereit oder der Router ist nicht verfügbar.',
+        message: CHAT_UNAVAILABLE_MESSAGE,
       });
       return;
     }

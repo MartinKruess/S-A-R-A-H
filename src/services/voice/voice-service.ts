@@ -7,6 +7,7 @@ import type { TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
 import type { AudioManager } from './audio-manager.js';
 import type { HotkeyManager } from './hotkey-manager.js';
+import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../../core/chat-availability.js';
 import { SentenceBuffer } from './sentence-buffer.js';
 import { TtsQueue } from './tts-queue.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
@@ -385,14 +386,23 @@ export class VoiceService implements SarahService {
     if (this._voiceState === 'speaking') {
       this.interrupt();
       this.transitioning = false;
+      if (!this.canAcceptConversation()) {
+        this.rejectUnavailableConversation();
+        return;
+      }
       this.startListening();
       return;
     }
     if (this.transitioning) return;
+    if (!this.canAcceptConversation()) {
+      this.rejectUnavailableConversation();
+      return;
+    }
     this.startListening();
   }
 
   onPttUp(): void {
+    if (this._voiceState !== 'listening') return;
     this.transition(() => this.stopListeningAndProcess()).catch(() => {
       this.context.bus.emit(this.id, 'voice:error', { message: 'Processing failed' });
     });
@@ -405,6 +415,11 @@ export class VoiceService implements SarahService {
 
     if (this._voiceState === 'speaking') {
       this.interrupt();
+    }
+
+    if (!this.canAcceptConversation()) {
+      this.rejectUnavailableConversation();
+      return;
     }
 
     this.wakeWord.stop();
@@ -456,6 +471,11 @@ export class VoiceService implements SarahService {
 
     this.context.bus.emit(this.id, 'voice:transcript', { text: transcript });
 
+    if (!this.canAcceptConversation()) {
+      this.context.bus.emit(this.id, 'llm:error', { message: CHAT_UNAVAILABLE_MESSAGE });
+      return;
+    }
+
     if (isAbortPhrase(transcript)) {
       this.endConversation();
       return;
@@ -468,6 +488,15 @@ export class VoiceService implements SarahService {
 
     // Emit chat message for LLM processing
     this.context.bus.emit(this.id, 'chat:message', { text: transcript, mode: 'voice' });
+  }
+
+  private canAcceptConversation(): boolean {
+    return this.context.lifecycle ? isChatAvailable(this.context.lifecycle.snapshot) : true;
+  }
+
+  private rejectUnavailableConversation(): void {
+    this.setState('idle');
+    this.context.bus.emit(this.id, 'llm:error', { message: CHAT_UNAVAILABLE_MESSAGE });
   }
 
   private interrupt(): void {

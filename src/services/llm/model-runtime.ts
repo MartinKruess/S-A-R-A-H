@@ -379,15 +379,17 @@ export class ModelRuntime implements ModelRuntimePort {
     const previousRole = this.current.activeRole;
     if (previousRole && previousRole !== role) {
       this.current.roles[previousRole].residency = 'unloading';
-      const unloaded = await this.vram.unloadModel(this.modelFor(previousRole), signal);
-      this.assertCurrent(generation);
-      if (!unloaded) {
-        const message = `Model could not be unloaded: ${this.modelFor(previousRole)}`;
-        this.current.roles[previousRole].residency = 'error';
-        this.current.roles[previousRole].message = message;
-        this.current.state = 'degraded';
-        this.onCapability?.(previousRole, 'error', message);
-        throw new Error(message);
+      if (this.eagerLoadTransitions) {
+        const unloaded = await this.vram.unloadModel(this.modelFor(previousRole), signal);
+        this.assertCurrent(generation);
+        if (!unloaded) {
+          const message = `Model could not be unloaded: ${this.modelFor(previousRole)}`;
+          this.current.roles[previousRole].residency = 'error';
+          this.current.roles[previousRole].message = message;
+          this.current.state = 'degraded';
+          this.onCapability?.(previousRole, 'error', message);
+          throw new Error(message);
+        }
       }
       this.current.roles[previousRole].residency = 'unloaded';
       this.current.activeRole = null;

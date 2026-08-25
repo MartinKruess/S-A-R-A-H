@@ -137,6 +137,7 @@ let isFirstStart = false;
 
 // Boot state flags
 let routerTerminal = false;
+let routerAvailable = false;
 let piperTerminal = false;
 let piperAvailable = false;
 let breakTriggered = false;
@@ -287,7 +288,7 @@ function tick(): void {
     }
 
     case 'boot-piper-wait': {
-      if (piperTerminal && piperAvailable && !ttsTriggered) {
+      if (routerAvailable && piperTerminal && piperAvailable && !ttsTriggered) {
         ttsTriggered = true;
         sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
         ttsAudioResolve = () => {
@@ -295,7 +296,7 @@ function tick(): void {
         };
       }
 
-      if (piperTerminal && !piperAvailable && elapsed() > 1000) {
+      if (piperTerminal && (!piperAvailable || !routerAvailable) && elapsed() > 1000) {
         startPhase('boot-done');
       }
 
@@ -361,10 +362,12 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
           break;
         case 'router-ready':
           routerTerminal = true;
+          routerAvailable = true;
           hideStatus();
           break;
         case 'router-terminal':
           routerTerminal = true;
+          routerAvailable = false;
           if (data.message) showStatus(data.message, false, data.severity ?? 'error');
           break;
         case 'whisper-ready':

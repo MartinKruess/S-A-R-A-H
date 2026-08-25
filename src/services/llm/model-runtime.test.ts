@@ -64,6 +64,24 @@ describe('ModelRuntime', () => {
     expect(snapshot.roles.local_worker.residency).toBe('unloaded');
   });
 
+  it('keeps the non-loading legacy adapter independent from a real VRAM runtime', async () => {
+    const memory = vram(false);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: memory,
+      eagerLoadTransitions: false,
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).resolves.toBe('worker');
+
+    expect(memory.waitForModel).not.toHaveBeenCalled();
+    expect(memory.unloadModel).not.toHaveBeenCalled();
+    expect(runtime.snapshot.activeRole).toBe('local_worker');
+  });
+
   it('keeps router operation available while reporting a missing worker as degraded', async () => {
     const capability = vi.fn();
     const runtime = new ModelRuntime({

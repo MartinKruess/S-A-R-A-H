@@ -6,6 +6,7 @@ import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
+import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../../core/chat-availability.js';
 
 declare const sarah: SarahApi;
 
@@ -36,13 +37,26 @@ const sarahArea = document.getElementById('sarah-area')!;
 const chatMessages = document.getElementById('chat-messages')!;
 const chatInput = document.getElementById('chat-input') as HTMLInputElement;
 const chatModeToggle = document.getElementById('chat-mode-toggle')!;
+let runtimeErrorBubble: HTMLElement | null = null;
 
 function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeStatus']>>): void {
-  const routerReady = snapshot.capabilities.router?.state === 'ready';
-  chatInput.disabled = !routerReady || !['ready', 'degraded'].includes(snapshot.state);
+  const available = isChatAvailable(snapshot);
+  chatInput.disabled = !available;
   chatInput.placeholder = chatInput.disabled
     ? 'Sarah ist derzeit nicht verfügbar'
     : 'Nachricht an Sarah...';
+
+  const router = snapshot.capabilities.router;
+  const routerFailed = router && ['degraded', 'unavailable', 'error'].includes(router.state);
+  if (!available && routerFailed) {
+    const detail = router.message ? ` ${router.message}` : '';
+    const message = `${CHAT_UNAVAILABLE_MESSAGE}${detail}`;
+    if (!runtimeErrorBubble) runtimeErrorBubble = addBubble('error', message);
+    else runtimeErrorBubble.textContent = message;
+  } else if (runtimeErrorBubble) {
+    runtimeErrorBubble.remove();
+    runtimeErrorBubble = null;
+  }
 }
 
 void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
