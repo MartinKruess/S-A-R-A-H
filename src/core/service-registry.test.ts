@@ -34,6 +34,26 @@ describe('ServiceRegistry', () => {
     expect(svc.init).toHaveBeenCalledOnce();
   });
 
+  it('shares concurrent and repeated initialization without duplicate subscriptions', async () => {
+    let releaseInit!: () => void;
+    const initGate = new Promise<void>((resolve) => { releaseInit = resolve; });
+    const svc = createMockService('single-flight', ['voice:transcript']);
+    svc.init = vi.fn(async () => { await initGate; });
+    registry.register(svc);
+
+    const first = registry.initAll();
+    const second = registry.initAll();
+    releaseInit();
+    const [firstReport, secondReport] = await Promise.all([first, second]);
+
+    await registry.initAll();
+    bus.emit('voice', 'voice:transcript', { text: 'hello' });
+
+    expect(svc.init).toHaveBeenCalledOnce();
+    expect(svc.onMessage).toHaveBeenCalledOnce();
+    expect(firstReport).toBe(secondReport);
+  });
+
   it('wires up subscriptions on init', async () => {
     const svc = createMockService('listener', ['voice:transcript']);
     registry.register(svc);
@@ -60,6 +80,64 @@ describe('ServiceRegistry', () => {
     await registry.destroyAll();
 
     expect(order).toEqual(['second', 'first']);
+  });
+
+  it('cleans a failed service and continues initializing independent services', async () => {
+    const failed = createMockService('failed', ['voice:transcript']);
+    failed.init = vi.fn(async () => { throw new Error('cannot start'); });
+    const healthy = createMockService('healthy');
+    registry.register(failed);
+    registry.register(healthy);
+
+    const report = await registry.initAll();
+    bus.emit('voice', 'voice:transcript', { text: 'ignored' });
+
+    expect(report.ok).toBe(false);
+    expect(report.services).toEqual([
+      expect.objectContaining({ id: 'failed', ok: false }),
+      { id: 'healthy', ok: true },
+    ]);
+    expect(failed.destroy).toHaveBeenCalledOnce();
+    expect(failed.onMessage).not.toHaveBeenCalled();
+    expect(healthy.init).toHaveBeenCalledOnce();
+  });
+
+  it('continues reverse cleanup after an individual destroy failure', async () => {
+    const order: string[] = [];
+    const first = createMockService('first');
+    first.destroy = vi.fn(async () => { order.push('first'); });
+    const broken = createMockService('broken');
+    broken.destroy = vi.fn(async () => {
+      order.push('broken');
+      throw new Error('cleanup failed');
+    });
+    const last = createMockService('last');
+    last.destroy = vi.fn(async () => { order.push('last'); });
+    registry.register(first);
+    registry.register(broken);
+    registry.register(last);
+    await registry.initAll();
+
+    const report = await registry.destroyAll();
+
+    expect(order).toEqual(['last', 'broken', 'first']);
+    expect(report.ok).toBe(false);
+    expect(report.services.find((result) => result.id === 'broken')).toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+  });
+
+  it('shares repeated shutdown and destroys every initialized service once', async () => {
+    const svc = createMockService('once');
+    registry.register(svc);
+    await registry.initAll();
+
+    const first = registry.destroyAll();
+    const second = registry.destroyAll();
+    const [firstReport, secondReport] = await Promise.all([first, second]);
+
+    expect(svc.destroy).toHaveBeenCalledOnce();
+    expect(firstReport).toBe(secondReport);
   });
 
   it('throws on duplicate service ID', () => {

@@ -3,9 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { bootstrap, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
-import { OllamaProvider } from './services/llm/providers/ollama-provider.js';
 import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
-import { PERFORMANCE_PROFILE_MAP } from './services/llm/llm-types.js';
+import { ModelRuntime } from './services/llm/model-runtime.js';
 import { VoiceService } from './services/voice/voice-service.js';
 import { SandboxBrowser } from './main/sandbox-browser.js';
 import { ProgramLauncher } from './main/program-launcher.js';
@@ -27,6 +26,7 @@ import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
+import { registerElectronShutdown } from './main/electron-shutdown.js';
 
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
@@ -37,6 +37,8 @@ let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
+
+registerElectronShutdown(app, () => appContext);
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -84,6 +86,13 @@ function createWindow(): void {
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
   });
+
+  // Windows does not guarantee Electron's before-quit/will-quit events during
+  // logout or system shutdown. Start the same idempotent cleanup best-effort
+  // when the OS ends the session; normal window/direct quit remains awaitable.
+  mainWindow.on('session-end', () => {
+    void appContext?.lifecycle.shutdown();
+  });
 }
 
 app.whenReady().then(async () => {
@@ -110,31 +119,38 @@ app.whenReady().then(async () => {
 
   // --- Preload: create providers (fast, no activation) ---
   const { llm: llmConfig } = appContext.parsedConfig;
-  const numGpu = PERFORMANCE_PROFILE_MAP[llmConfig.performanceProfile] ?? PERFORMANCE_PROFILE_MAP.normal;
-  const routerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.routerModel, {
-    ...llmConfig.options,
-    num_ctx: 2048,
-    num_gpu: -1,
+  const containerManager = new OllamaContainerManager(
+    llmConfig.baseUrl,
+    path.join(app.getAppPath(), 'docker-compose.yml'),
+  );
+  const modelRuntime = new ModelRuntime({
+    config: llmConfig,
+    containerManager,
+    onCapability: (name, state, message) => {
+      appContext?.lifecycle.setCapability(name, state, message);
+    },
   });
-  const workerOptions = {
-    ...llmConfig.options,
-    num_ctx: llmConfig.workerOptions.num_ctx,
-    num_gpu: numGpu,
-  };
-  const workerProvider = new OllamaProvider(llmConfig.baseUrl, llmConfig.workerModel, workerOptions);
-  const routerService = new RouterService(appContext, routerProvider, workerProvider);
+  const routerService = new RouterService(appContext, modelRuntime);
 
   // --- Action layer (Spec Action-Layer V1) ---
   const resourcesPath = app.isPackaged
     ? process.resourcesPath
     : path.join(__dirname, '..', 'resources');
   sandboxBrowser = new SandboxBrowser();
+  appContext.lifecycle.registerCleanup('sandbox-browser', () => {
+    sandboxBrowser?.close();
+    sandboxBrowser = null;
+  });
   const programLauncher = new ProgramLauncher();
   systemActions = new SystemActions();
-  // Summary runs on whichever model is warm right now — never triggers a load (Spec §3).
+  appContext.lifecycle.registerCleanup('system-action-timers', () => {
+    systemActions?.clearAllTimers();
+    systemActions = null;
+  });
+  // Free-form summaries are a worker capability. The tag-only router is not
+  // exposed to SearchService and therefore cannot accidentally generate text.
   const summarize = (prompt: string): Promise<string> => {
-    const provider = routerService.activeModel === '9b' ? workerProvider : routerProvider;
-    return provider.chat([{ role: 'user', content: prompt }], () => {}, {
+    return modelRuntime.generateWorkerText(prompt, {
       num_predict: SUMMARY_NUM_PREDICT,
       temperature: SUMMARY_TEMPERATURE,
     });
@@ -156,6 +172,10 @@ app.whenReady().then(async () => {
     tokenStore,
     redirectPort: redirectPort(),
   });
+  appContext.lifecycle.registerCleanup('oauth-loopback', async () => {
+    await oauth?.destroy();
+    oauth = null;
+  });
   const spotifyActions = new SpotifyActions(oauth);
   const mediaController = new WindowsMediaController(
     path.join(resourcesPath, 'media-helper', 'media-helper.exe'),
@@ -169,17 +189,12 @@ app.whenReady().then(async () => {
     spotify: spotifyActions,
     media: mediaController,
   });
+  // Registration order is dependency order; shutdown reverses it. Search uses
+  // the worker runtime and ActionService uses Search, so both must stop before
+  // RouterService releases Ollama models.
+  appContext.registry.register(routerService);
   appContext.registry.register(searchService);
   appContext.registry.register(actionService);
-
-  appContext.registry.register(routerService);
-
-  // Plain class, deliberately not a SarahService/registry entry (YAGNI —
-  // registry integration comes with the cockpit status display).
-  const containerManager = new OllamaContainerManager(
-    llmConfig.baseUrl,
-    path.join(app.getAppPath(), 'docker-compose.yml'),
-  );
 
   const { AudioManager } = await import('./services/voice/audio-manager.js');
   const { HotkeyManager } = await import('./services/voice/hotkey-manager.js');
@@ -224,50 +239,36 @@ app.whenReady().then(async () => {
     dialogWindows,
   });
   stopVoiceLevel = voiceLevel.stop;
+  appContext.lifecycle.registerCleanup('voice-level-forwarder', () => {
+    stopVoiceLevel?.();
+    stopVoiceLevel = null;
+  }, 'before_services');
 
   registerVoiceHandlers(ipcMain, {
     getAppContext,
     onChunk: voiceLevel.onChunk,
   });
 
-  registerBootHandlers({
+  const stopBootHandlers = registerBootHandlers({
     getMainWindow,
     getAppContext,
-    routerService,
-    whisperProvider,
     piperProvider,
     containerManager,
   });
+  appContext.lifecycle.registerCleanup('boot-handlers', stopBootHandlers, 'before_services');
 
   stopSystemMetrics = registerSystemMetricsHandlers(ipcMain, {
     getMainWindow,
     dialogWindows,
   });
+  appContext.lifecycle.registerCleanup('system-metrics', () => {
+    stopSystemMetrics?.();
+    stopSystemMetrics = null;
+  }, 'before_services');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
-});
-
-app.on('window-all-closed', async () => {
-  if (stopSystemMetrics) {
-    stopSystemMetrics();
-    stopSystemMetrics = null;
-  }
-  if (stopVoiceLevel) {
-    stopVoiceLevel();
-    stopVoiceLevel = null;
-  }
-  // Infrastructure cleanup (M3): SandboxBrowser and timers are not registry
-  // services — registry.destroyAll() does not reach them.
-  sandboxBrowser?.close();
-  systemActions?.clearAllTimers();
-  if (appContext) {
-    await appContext.shutdown();
-  }
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
 });

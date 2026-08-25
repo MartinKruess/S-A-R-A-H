@@ -11,14 +11,25 @@ export class OllamaProvider implements LlmProvider {
   ) {}
 
   async isAvailable(): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
-      const res = await fetch(`${this.baseUrl}/api/tags`);
+      const res = await fetch(`${this.baseUrl}/api/tags`, { signal: controller.signal });
       if (!res.ok) return false;
       const data = (await res.json()) as { models: { name: string }[] };
-      const base = this.model.split(':')[0];
-      return data.models.some((m) => m.name.split(':')[0] === base);
+      const requested = this.model.toLowerCase();
+      const hasExplicitTag = requested.includes(':');
+      const requestedBase = requested.split(':')[0];
+      return data.models.some((entry) => {
+        const available = entry.name.toLowerCase();
+        return hasExplicitTag
+          ? available === requested
+          : available.split(':')[0] === requestedBase;
+      });
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

@@ -145,4 +145,20 @@ describe('OAuthConnectionService', () => {
     const svc = makeService({ store: fakeStore(), provider: { ...spotify, clientId: '' } });
     await expect(svc.connect('spotify')).rejects.toThrow(/SPOTIFY_CLIENT_ID fehlt/);
   });
+
+  it('destroy aborts an active connect flow and rejects future connects', async () => {
+    const svc = new OAuthConnectionService({
+      providers: [spotify],
+      tokenStore: fakeStore(),
+      fetchFn: (async () => jsonResponse({})) as unknown as typeof fetch,
+      openExternal: () => {},
+      redirectPort: 0,
+    });
+    const connecting = svc.connect('spotify');
+
+    await svc.destroy();
+
+    await expect(connecting).rejects.toThrow(/Anwendung wird beendet/);
+    await expect(svc.connect('spotify')).rejects.toThrow(/Anwendung wird beendet/);
+  });
 });

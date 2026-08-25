@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DEFAULT_LLM_CONFIG } from './llm-defaults.js';
 
 const pre = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess((v) => v ?? {}, schema);
@@ -140,26 +141,26 @@ export function isAudioConfigEqual(a: AudioConfig, b: AudioConfig): boolean {
 }
 
 export const LlmSchema = z.object({
-  baseUrl: z.string().default('http://localhost:11434'),
-  routerModel: z.string().default('phi4-mini:3.8b'),
-  workerModel: z.string().default('qwen3:8b'),
+  baseUrl: z.string().default(DEFAULT_LLM_CONFIG.baseUrl),
+  routerModel: z.string().default(DEFAULT_LLM_CONFIG.routerModel),
+  workerModel: z.string().default(DEFAULT_LLM_CONFIG.workerModel),
   performanceProfile: z
     .enum(['leistung', 'schnell', 'normal', 'sparsam'])
-    .default('normal'),
+    .default(DEFAULT_LLM_CONFIG.performanceProfile),
   workerOptions: z
     .object({
       // Floor = largest response reserve (NUM_PREDICT_MAP.ausführlich 3000 +
       // RESPONSE_SAFETY_TOKENS 256) plus headroom for system prompt + history (H3).
-      num_ctx: z.number().int().min(4096).default(4096),
+      num_ctx: z.number().int().min(4096).default(DEFAULT_LLM_CONFIG.workerOptions.num_ctx),
     })
-    .default({ num_ctx: 4096 }),
+    .default({ ...DEFAULT_LLM_CONFIG.workerOptions }),
   options: z
     .object({
       temperature: z.number().optional(),
       num_predict: z.number().optional(),
       num_ctx: z.number().optional(),
     })
-    .default({}),
+    .default({ ...DEFAULT_LLM_CONFIG.options }),
 });
 
 export const SystemSchema = z.object({

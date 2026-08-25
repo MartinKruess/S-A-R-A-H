@@ -105,10 +105,10 @@ describe('RouterService', () => {
     expect(options).toMatchObject({ num_predict: 1, keep_alive: -1 });
   });
 
-  it('stays running when warmup fails (non-fatal)', async () => {
+  it('does not claim readiness when router warmup fails', async () => {
     (routerProvider.chat as any).mockRejectedValueOnce(new Error('ollama unreachable'));
     await service.init();
-    expect(service.status).toBe('running');
+    expect(service.status).toBe('error');
   });
 
   it('status is error after init when router provider not available', async () => {
@@ -156,8 +156,8 @@ describe('RouterService', () => {
       // Routing event emitted
       expect(routings.length).toBe(1);
       expect(routings[0]).toEqual({
-        from: '2b',
-        to: '9b',
+        from: 'router',
+        to: 'local_worker',
       });
 
       // Worker response emitted
@@ -355,8 +355,8 @@ describe('RouterService', () => {
 
   describe('error handling', () => {
     it('emits llm:error when provider throws', async () => {
-      (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));
       await service.init();
+      (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));
 
       const errors: string[] = [];
       bus.on('llm:error', (msg) => errors.push(msg.data.message));

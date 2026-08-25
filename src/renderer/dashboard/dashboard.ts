@@ -37,6 +37,20 @@ const chatMessages = document.getElementById('chat-messages')!;
 const chatInput = document.getElementById('chat-input') as HTMLInputElement;
 const chatModeToggle = document.getElementById('chat-mode-toggle')!;
 
+function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeStatus']>>): void {
+  const routerReady = snapshot.capabilities.router?.state === 'ready';
+  chatInput.disabled = !routerReady || !['ready', 'degraded'].includes(snapshot.state);
+  chatInput.placeholder = chatInput.disabled
+    ? 'Sarah ist derzeit nicht verfügbar'
+    : 'Nachricht an Sarah...';
+}
+
+void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
+  console.warn('[Dashboard] Runtime status unavailable:', error);
+  chatInput.disabled = true;
+});
+sarah.onRuntimeStatus(applyRuntimeStatus);
+
 let chatMode = false;
 let currentBubble: HTMLElement | null = null;
 

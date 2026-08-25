@@ -3,12 +3,23 @@ import type { BusEvents } from './bus-events.js';
 import type { SystemIpcInfo, SystemMetrics, VoiceLevel } from './ipc-contract.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
+import type { SaveConfigResult } from './config-apply.js';
+import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 
 export type { ConnectionInfo };
 
 /** Boot sequence status sent from main to splash renderer */
 export type BootStatus = {
-  step: 'whisper' | 'router' | 'router-ready' | 'piper' | 'piper-ready';
+  step:
+    | 'whisper'
+    | 'router'
+    | 'router-ready'
+    | 'router-terminal'
+    | 'whisper-ready'
+    | 'whisper-unavailable'
+    | 'piper'
+    | 'piper-ready'
+    | 'piper-unavailable';
   message?: string;
   /** Display class for the splash status line; defaults to 'info'. */
   severity?: 'info' | 'warning' | 'error';
@@ -52,7 +63,9 @@ export interface SarahApi {
   onVoiceLevel(cb: (data: VoiceLevel) => void): () => void;
   onAudioConfigChanged(cb: (audio: AudioConfig) => void): () => void;
   getConfig(): Promise<SarahConfig>;
-  saveConfig(config: Partial<SarahConfig>): Promise<SarahConfig>;
+  getRuntimeStatus(): Promise<RuntimeSnapshot>;
+  onRuntimeStatus(cb: (snapshot: RuntimeSnapshot) => void): () => void;
+  saveConfig(config: Partial<SarahConfig>): Promise<SaveConfigResult>;
   selectFolder(title?: string): Promise<string | null>;
   detectPrograms(): Promise<ProgramEntry[]>;
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;

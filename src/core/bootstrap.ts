@@ -8,10 +8,12 @@ import { KeyManager } from './crypto/key-manager.js';
 import type { StorageProvider } from './storage/storage.interface.js';
 import { SarahConfigSchema } from './config-schema.js';
 import type { SarahConfig } from './config-schema.js';
+import { AppLifecycleController } from './app-lifecycle-controller.js';
 
 export interface AppContext {
   bus: MessageBus;
   registry: ServiceRegistry;
+  lifecycle: AppLifecycleController;
   config: StorageProvider;
   db: StorageProvider;
   /** Validated and defaulted config snapshot. Re-read after save-config. */
@@ -34,6 +36,7 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
 
   const bus = new MessageBus();
   const registry = new ServiceRegistry(bus);
+  const lifecycle = new AppLifecycleController(registry);
 
   const rawConfig = new JsonStorage(path.join(userDataPath, 'config.json'));
   const rawDb = new SqliteStorage(path.join(userDataPath, 'sarah.db'));
@@ -56,17 +59,18 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
     parsedConfig = SarahConfigSchema.parse({});
   }
 
+  lifecycle.setCapability('storage', 'ready');
+  lifecycle.registerCleanup('database', () => db.close());
+  lifecycle.registerCleanup('config', () => config.close());
+
   return {
     bus,
     registry,
+    lifecycle,
     config,
     db,
     parsedConfig,
     configErrors,
-    shutdown: async () => {
-      await registry.destroyAll();
-      await config.close();
-      await db.close();
-    },
+    shutdown: async () => { await lifecycle.shutdown(); },
   };
 }

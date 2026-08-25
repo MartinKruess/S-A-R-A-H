@@ -1,11 +1,40 @@
 import type { SarahConfig } from '../../core/config-schema.js';
+import type { SaveConfigResult } from '../../core/config-apply.js';
 import { getSarah } from './window-global.js';
 
 export { getSarah };
 
+let latestSave: Promise<SaveConfigResult> | null = null;
+const feedbackTokens = new WeakMap<HTMLElement, symbol>();
+
 export function showSaved(feedback: HTMLElement): void {
+  const operation = latestSave;
+  const token = Symbol('save-feedback');
+  feedbackTokens.set(feedback, token);
+  feedback.textContent = operation ? 'Speichern ...' : 'Gespeichert!';
   feedback.classList.add('visible');
-  setTimeout(() => feedback.classList.remove('visible'), 2000);
+
+  if (!operation) {
+    setTimeout(() => feedback.classList.remove('visible'), 2000);
+    return;
+  }
+
+  void operation.then((result) => {
+    if (feedbackTokens.get(feedback) !== token) return;
+    feedback.textContent = result.restartRequired
+      ? `Gespeichert – Neustart nötig (${result.restartReasons.join(', ')})`
+      : 'Gespeichert!';
+    setTimeout(() => {
+      if (feedbackTokens.get(feedback) === token) feedback.classList.remove('visible');
+    }, result.restartRequired ? 5000 : 2000);
+  }).catch((error) => {
+    if (feedbackTokens.get(feedback) !== token) return;
+    feedback.textContent = 'Speichern fehlgeschlagen';
+    console.warn('[Settings] save failed:', error);
+    setTimeout(() => {
+      if (feedbackTokens.get(feedback) === token) feedback.classList.remove('visible');
+    }, 5000);
+  });
 }
 
 export function createSectionHeader(titleText: string): { header: HTMLElement; feedback: HTMLElement } {
@@ -22,8 +51,14 @@ export function createSectionHeader(titleText: string): { header: HTMLElement; f
   return { header, feedback };
 }
 
-export function save(key: string, value: Partial<SarahConfig>[keyof SarahConfig]): void {
-  getSarah().saveConfig({ [key]: value } as Partial<SarahConfig>);
+export function save(
+  key: string,
+  value: Partial<SarahConfig>[keyof SarahConfig],
+): Promise<SaveConfigResult> {
+  latestSave = getSarah().saveConfig({ [key]: value } as Partial<SarahConfig>);
+  // Attach an observer even where a section intentionally has no visual feedback.
+  void latestSave.catch((error) => console.warn('[Settings] save failed:', error));
+  return latestSave;
 }
 
 export function createSpacer(size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {

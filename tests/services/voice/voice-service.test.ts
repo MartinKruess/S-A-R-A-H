@@ -164,6 +164,15 @@ describe('VoiceService', () => {
     expect(service.status).toBe('running');
   });
 
+  it('shares concurrent and repeated initialization', async () => {
+    await Promise.all([service.init(), service.init()]);
+    await service.init();
+
+    expect(stt.init).toHaveBeenCalledOnce();
+    expect(tts.init).toHaveBeenCalledOnce();
+    expect(hotkey.register).toHaveBeenCalledOnce();
+  });
+
   it('stays running with degraded capability if only STT init fails', async () => {
     (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('init fail'));
 
@@ -472,6 +481,18 @@ describe('VoiceService', () => {
     expect(hotkey.unregister).toHaveBeenCalled();
     expect(service.status).toBe('stopped');
     expect(service.voiceState).toBe('idle');
+  });
+
+  it('continues provider cleanup when one provider destroy fails', async () => {
+    (stt.destroy as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('stt cleanup failed'));
+    await service.init();
+
+    await expect(service.destroy()).rejects.toThrow(/Voice provider cleanup failed/);
+
+    expect(tts.destroy).toHaveBeenCalledOnce();
+    expect(wakeWord.destroy).toHaveBeenCalledOnce();
+    expect(audio.destroy).toHaveBeenCalledOnce();
+    expect(service.status).toBe('stopped');
   });
 
   // --- Additional edge cases ---

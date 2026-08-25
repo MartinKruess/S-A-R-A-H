@@ -104,8 +104,18 @@ export class VoiceService implements SarahService {
   }
 
   private capabilities = { stt: false, tts: false };
+  private initPromise: Promise<void> | null = null;
 
-  async init(): Promise<void> {
+  get capabilitySnapshot(): Readonly<{ stt: boolean; tts: boolean }> {
+    return { ...this.capabilities };
+  }
+
+  init(): Promise<void> {
+    if (!this.initPromise) this.initPromise = this.doInit();
+    return this.initPromise;
+  }
+
+  private async doInit(): Promise<void> {
     const { controls } = this.context.parsedConfig;
     const rawMode = controls.voiceMode;
     // keyword mode is non-functional — treat as off
@@ -117,15 +127,27 @@ export class VoiceService implements SarahService {
     try {
       await this.stt.init();
       this.capabilities.stt = true;
+      this.context.lifecycle?.setCapability('stt', 'ready');
     } catch (err) {
       console.error('[VoiceService] STT init failed:', err);
+      this.context.lifecycle?.setCapability(
+        'stt',
+        'unavailable',
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     try {
       await this.tts.init();
       this.capabilities.tts = true;
+      this.context.lifecycle?.setCapability('tts', 'ready');
     } catch (err) {
       console.error('[VoiceService] TTS init failed:', err);
+      this.context.lifecycle?.setCapability(
+        'tts',
+        'unavailable',
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     this.setupMode();
@@ -161,9 +183,18 @@ export class VoiceService implements SarahService {
   }
 
   async destroy(): Promise<void> {
-    this.playbackUnsub?.();
+    const syncFailures: unknown[] = [];
+    const attempt = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (value) {
+        syncFailures.push(value);
+      }
+    };
+
+    attempt(() => this.playbackUnsub?.());
     this.playbackUnsub = null;
-    this.ttsQueue?.stop();
+    attempt(() => this.ttsQueue?.stop());
     this.ttsQueue = null;
     this.sentenceBuffer.reset();
     this.llmStreaming = false;
@@ -172,21 +203,32 @@ export class VoiceService implements SarahService {
     this.transitioning = false;
     this.clearConversationTimer();
     this.clearSilenceTimer();
-    this.hotkey.unregister();
-    this.wakeWord.stop();
+    attempt(() => this.hotkey.unregister());
+    attempt(() => this.wakeWord.stop());
 
     if (this.audio.isRecording) {
-      this.audio.stopRecording();
+      attempt(() => { this.audio.stopRecording(); });
     }
 
-    await this.stt.destroy();
-    await this.tts.destroy();
-    await this.wakeWord.destroy();
-    await this.audio.destroy();
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => this.stt.destroy()),
+      Promise.resolve().then(() => this.tts.destroy()),
+      Promise.resolve().then(() => this.wakeWord.destroy()),
+      Promise.resolve().then(() => this.audio.destroy()),
+    ]);
 
     this.setState('idle');
     this.conversationActive = false;
     this.status = 'stopped';
+    const failures = cleanupResults.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (syncFailures.length > 0 || failures.length > 0) {
+      throw new AggregateError(
+        [...syncFailures, ...failures.map((failure) => failure.reason)],
+        'Voice provider cleanup failed',
+      );
+    }
   }
 
   /** Feed an audio chunk from the renderer. Called by IPC handler. */

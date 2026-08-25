@@ -16,7 +16,16 @@ declare var sarah: {
 };
 
 interface BootStatus {
-  step: 'whisper' | 'router' | 'router-ready' | 'whisper-ready' | 'piper' | 'piper-ready';
+  step:
+    | 'whisper'
+    | 'router'
+    | 'router-ready'
+    | 'router-terminal'
+    | 'whisper-ready'
+    | 'whisper-unavailable'
+    | 'piper'
+    | 'piper-ready'
+    | 'piper-unavailable';
   message?: string;
   severity?: 'info' | 'warning' | 'error';
 }
@@ -127,8 +136,9 @@ let orb: SarahHexOrb;
 let isFirstStart = false;
 
 // Boot state flags
-let routerReady = false;
-let piperReady = false;
+let routerTerminal = false;
+let piperTerminal = false;
+let piperAvailable = false;
 let breakTriggered = false;
 let ttsTriggered = false;
 let ttsAudioReady = false;
@@ -152,7 +162,7 @@ function elapsed(): number {
 function tick(): void {
   switch (phase) {
     case 'boot-wait': {
-      if (routerReady) {
+      if (routerTerminal) {
         startPhase('boot-reveal');
       }
       break;
@@ -277,12 +287,16 @@ function tick(): void {
     }
 
     case 'boot-piper-wait': {
-      if (piperReady && !ttsTriggered) {
+      if (piperTerminal && piperAvailable && !ttsTriggered) {
         ttsTriggered = true;
         sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
         ttsAudioResolve = () => {
           setTimeout(() => startPhase('boot-done'), 1000);
         };
+      }
+
+      if (piperTerminal && !piperAvailable && elapsed() > 1000) {
+        startPhase('boot-done');
       }
 
       if (ttsAudioReady && !breakTriggered) {
@@ -346,15 +360,28 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
           if (data.message) showStatus(data.message, true, data.severity ?? 'info');
           break;
         case 'router-ready':
-          routerReady = true;
+          routerTerminal = true;
           hideStatus();
+          break;
+        case 'router-terminal':
+          routerTerminal = true;
+          if (data.message) showStatus(data.message, false, data.severity ?? 'error');
           break;
         case 'whisper-ready':
           hideStatus();
           break;
+        case 'whisper-unavailable':
+          if (data.message) showStatus(data.message, false, data.severity ?? 'warning');
+          break;
         case 'piper-ready':
-          piperReady = true;
+          piperTerminal = true;
+          piperAvailable = true;
           hideStatus();
+          break;
+        case 'piper-unavailable':
+          piperTerminal = true;
+          piperAvailable = false;
+          if (data.message) showStatus(data.message, false, data.severity ?? 'warning');
           break;
       }
     });

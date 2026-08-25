@@ -39,6 +39,17 @@ describe('OllamaProvider', () => {
     vi.restoreAllMocks();
   });
 
+  it('isAvailable does not accept a different tag of the same model family', async () => {
+    provider = new OllamaProvider('http://localhost:11434', 'mistral-nemo:12b');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ models: [{ name: 'mistral-nemo:7b' }] }),
+    } as Response);
+
+    await expect(provider.isAvailable()).resolves.toBe(false);
+    vi.restoreAllMocks();
+  });
+
   it('chat streams chunks and returns full response', async () => {
     const encoder = new TextEncoder();
     const chunks = [
