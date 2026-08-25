@@ -14,10 +14,11 @@ export class WorkerService {
     messages: ChatMessage[],
     responseStyle: string,
     onChunk: (text: string) => void,
+    signal?: AbortSignal,
   ): Promise<WorkerResult> {
     const numPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
     const start = performance.now();
-    const fullText = await chatWithTimeout(this.provider, messages, onChunk, { num_predict: numPredict });
+    const fullText = await chatWithTimeout(this.provider, messages, onChunk, { num_predict: numPredict, signal });
     const tookMs = Math.round(performance.now() - start);
     return { fullText, tookMs };
   }

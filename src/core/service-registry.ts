@@ -1,5 +1,6 @@
 import type { MessageBus } from './message-bus.js';
 import type { SarahService } from './service.interface.js';
+import { abortError, waitForSettlement } from './abort-utils.js';
 
 export interface ServiceInitResult {
   id: string;
@@ -24,6 +25,12 @@ export interface ServiceDestroyReport {
   ok: boolean;
 }
 
+export interface ServiceRegistryOptions {
+  initDrainTimeoutMs?: number;
+}
+
+const DEFAULT_INIT_DRAIN_TIMEOUT_MS = 2_000;
+
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
 }
@@ -36,9 +43,16 @@ export class ServiceRegistry {
   private initPromise: Promise<ServiceInitReport> | null = null;
   private initReport: ServiceInitReport | null = null;
   private destroyPromise: Promise<ServiceDestroyReport> | null = null;
+  private initAbort = new AbortController();
+  private initializing = new Set<string>();
+  private cleanupPromises = new Map<string, Promise<ServiceDestroyResult>>();
   private destroyed = false;
 
-  constructor(private bus: MessageBus) {}
+  private readonly initDrainTimeoutMs: number;
+
+  constructor(private bus: MessageBus, options: ServiceRegistryOptions = {}) {
+    this.initDrainTimeoutMs = options.initDrainTimeoutMs ?? DEFAULT_INIT_DRAIN_TIMEOUT_MS;
+  }
 
   /** Register a service. Must be called before initAll(). */
   register(service: SarahService): void {
@@ -83,13 +97,16 @@ export class ServiceRegistry {
     const results: ServiceInitResult[] = [];
 
     for (const service of this.services) {
+      if (this.initAbort.signal.aborted || this.destroyed) break;
       const serviceUnsubscribers = service.subscriptions.map((topic) =>
         this.bus.on(topic, (msg) => service.onMessage(msg)),
       );
       this.unsubscribers.set(service.id, serviceUnsubscribers);
+      this.initializing.add(service.id);
 
       try {
-        await service.init();
+        await service.init(this.initAbort.signal);
+        if (this.initAbort.signal.aborted || this.destroyed) throw abortError('Service initialization aborted');
         if (service.status === 'error') {
           throw new Error(`Service "${service.id}" entered error state during initialization`);
         }
@@ -106,13 +123,12 @@ export class ServiceRegistry {
           ok: false,
           error: toError(value),
         };
-        try {
-          await service.destroy();
-        } catch (cleanupValue) {
-          result.cleanupError = toError(cleanupValue);
-        }
+        const cleanup = await this.destroyServiceOnce(service);
+        if (!cleanup.ok) result.cleanupError = cleanup.error;
         results.push(result);
         onResult?.(result);
+      } finally {
+        this.initializing.delete(service.id);
       }
     }
 
@@ -142,8 +158,12 @@ export class ServiceRegistry {
   }
 
   private async runDestroy(): Promise<ServiceDestroyReport> {
-    if (this.initPromise) await this.initPromise;
     this.destroyed = true;
+    this.initAbort.abort();
+
+    if (this.initPromise) {
+      await waitForSettlement(this.initPromise, this.initDrainTimeoutMs);
+    }
 
     for (const serviceUnsubscribers of this.unsubscribers.values()) {
       for (const unsubscribe of serviceUnsubscribers) unsubscribe();
@@ -152,13 +172,8 @@ export class ServiceRegistry {
 
     const results: ServiceDestroyResult[] = [];
     for (const service of [...this.services].reverse()) {
-      if (!this.initialized.has(service.id)) continue;
-      try {
-        await service.destroy();
-        results.push({ id: service.id, ok: true });
-      } catch (value) {
-        results.push({ id: service.id, ok: false, error: toError(value) });
-      }
+      if (!this.initialized.has(service.id) && !this.initializing.has(service.id)) continue;
+      results.push(await this.destroyServiceOnce(service));
     }
     this.initialized.clear();
 
@@ -166,5 +181,18 @@ export class ServiceRegistry {
       services: results,
       ok: results.every((result) => result.ok),
     };
+  }
+
+  private destroyServiceOnce(service: SarahService): Promise<ServiceDestroyResult> {
+    const existing = this.cleanupPromises.get(service.id);
+    if (existing) return existing;
+    const cleanup = Promise.resolve()
+      .then(() => service.destroy())
+      .then(
+        () => ({ id: service.id, ok: true }) satisfies ServiceDestroyResult,
+        (value) => ({ id: service.id, ok: false, error: toError(value) }) satisfies ServiceDestroyResult,
+      );
+    this.cleanupPromises.set(service.id, cleanup);
+    return cleanup;
   }
 }

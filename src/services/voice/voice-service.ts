@@ -9,6 +9,7 @@ import type { AudioManager } from './audio-manager.js';
 import type { HotkeyManager } from './hotkey-manager.js';
 import { SentenceBuffer } from './sentence-buffer.js';
 import { TtsQueue } from './tts-queue.js';
+import { throwIfAborted } from '../../core/abort-utils.js';
 import {
   type VoiceState,
   type VoiceMode,
@@ -110,12 +111,13 @@ export class VoiceService implements SarahService {
     return { ...this.capabilities };
   }
 
-  init(): Promise<void> {
-    if (!this.initPromise) this.initPromise = this.doInit();
+  init(signal?: AbortSignal): Promise<void> {
+    if (!this.initPromise) this.initPromise = this.doInit(signal);
     return this.initPromise;
   }
 
-  private async doInit(): Promise<void> {
+  private async doInit(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const { controls } = this.context.parsedConfig;
     const rawMode = controls.voiceMode;
     // keyword mode is non-functional — treat as off
@@ -125,10 +127,12 @@ export class VoiceService implements SarahService {
     // STT and TTS are independent capabilities (A5): one failing must not
     // silently kill the other — degrade instead of dying.
     try {
-      await this.stt.init();
+      await this.stt.init(signal);
       this.capabilities.stt = true;
       this.context.lifecycle?.setCapability('stt', 'ready');
     } catch (err) {
+      await this.cleanupFailedProvider('STT', () => this.stt.destroy());
+      throwIfAborted(signal);
       console.error('[VoiceService] STT init failed:', err);
       this.context.lifecycle?.setCapability(
         'stt',
@@ -138,10 +142,12 @@ export class VoiceService implements SarahService {
     }
 
     try {
-      await this.tts.init();
+      await this.tts.init(signal);
       this.capabilities.tts = true;
       this.context.lifecycle?.setCapability('tts', 'ready');
     } catch (err) {
+      await this.cleanupFailedProvider('TTS', () => this.tts.destroy());
+      throwIfAborted(signal);
       console.error('[VoiceService] TTS init failed:', err);
       this.context.lifecycle?.setCapability(
         'tts',
@@ -150,6 +156,7 @@ export class VoiceService implements SarahService {
       );
     }
 
+    throwIfAborted(signal);
     this.setupMode();
 
     if (this.capabilities.tts) {
@@ -203,7 +210,7 @@ export class VoiceService implements SarahService {
     this.transitioning = false;
     this.clearConversationTimer();
     this.clearSilenceTimer();
-    attempt(() => this.hotkey.unregister());
+    attempt(() => this.hotkey.destroy());
     attempt(() => this.wakeWord.stop());
 
     if (this.audio.isRecording) {
@@ -228,6 +235,14 @@ export class VoiceService implements SarahService {
         [...syncFailures, ...failures.map((failure) => failure.reason)],
         'Voice provider cleanup failed',
       );
+    }
+  }
+
+  private async cleanupFailedProvider(label: string, cleanup: () => Promise<void>): Promise<void> {
+    try {
+      await cleanup();
+    } catch (error) {
+      console.warn(`[VoiceService] ${label} partial-init cleanup failed:`, error);
     }
   }
 

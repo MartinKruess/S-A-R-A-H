@@ -5,7 +5,7 @@ export interface TtsProvider {
   readonly id: string;
 
   /** Initialize the provider (verify binary exists, load voice model) */
-  init(): Promise<void>;
+  init(signal?: AbortSignal): Promise<void>;
 
   /** Convert text to PCM audio. Returns raw PCM Float32Array at 22050 Hz. */
   speak(text: string): Promise<Float32Array>;

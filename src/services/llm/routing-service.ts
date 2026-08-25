@@ -12,13 +12,13 @@ export interface RoutingResult {
 export class RoutingService {
   constructor(private provider: LlmProvider) {}
 
-  async route(text: string): Promise<RoutingResult> {
+  async route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
     const messages: ChatMessage[] = [
       { role: 'system', content: buildRoutingPrompt() },
       { role: 'user', content: text },
     ];
     const start = performance.now();
-    const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1 });
+    const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1, signal });
     const tookMs = Math.round(performance.now() - start);
     const parsed = parseRouteTag(response);
     const hadTag = /^\s*\[(?:ROUTE:\w+|ACTION:[a-z_]+(?::[^\]]*)?)]\s*$/.test(response);
@@ -31,11 +31,11 @@ export class RoutingService {
     return { parsed, tookMs, hadTag };
   }
 
-  async warmup(): Promise<void> {
+  async warmup(signal?: AbortSignal): Promise<void> {
     await this.provider.chat(
       [{ role: 'user', content: 'ok' }],
       () => {},
-      { num_predict: 1, keep_alive: -1 },
+      { num_predict: 1, keep_alive: -1, signal },
     );
   }
 }

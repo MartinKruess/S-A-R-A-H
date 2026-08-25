@@ -2,6 +2,7 @@
 import { execFile } from 'child_process';
 import * as fs from 'fs';
 import { promisify } from 'util';
+import { abortableDelay, throwIfAborted } from '../../core/abort-utils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,7 +21,7 @@ export interface ContainerStatus {
 }
 
 type ExecResult = { stdout: string; stderr: string };
-type ExecFn = (cmd: string, args: string[], timeoutMs?: number) => Promise<ExecResult>;
+type ExecFn = (cmd: string, args: string[], timeoutMs?: number, signal?: AbortSignal) => Promise<ExecResult>;
 
 export interface ContainerManagerOptions {
   execFn?: ExecFn;
@@ -38,10 +39,6 @@ const DOCKER_ERROR_MESSAGES: Record<Exclude<DockerState, 'ok'>, string> = {
   'not-running': 'Docker Desktop läuft nicht — bitte Docker Desktop starten.',
 };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class OllamaContainerManager {
   private execFn: ExecFn;
   private existsFn: (filePath: string) => boolean;
@@ -56,8 +53,11 @@ export class OllamaContainerManager {
   ) {
     this.execFn =
       options.execFn ??
-      (async (cmd, args, timeoutMs) => {
-        const { stdout, stderr } = await execFileAsync(cmd, args, { timeout: timeoutMs ?? 15_000 });
+      (async (cmd, args, timeoutMs, signal) => {
+        const { stdout, stderr } = await execFileAsync(cmd, args, {
+          timeout: timeoutMs ?? 15_000,
+          signal,
+        });
         return { stdout, stderr };
       });
     this.existsFn = options.existsFn ?? ((filePath) => fs.existsSync(filePath));
@@ -66,19 +66,22 @@ export class OllamaContainerManager {
     this.gpuRetryDelayMs = options.gpuRetryDelayMs ?? 500;
   }
 
-  async getStatus(): Promise<ContainerStatus> {
+  async getStatus(signal?: AbortSignal): Promise<ContainerStatus> {
+    throwIfAborted(signal);
     try {
       const { stdout } = await this.execFn('docker', [
         'inspect',
         '--format',
         '{{.State.Running}}',
         CONTAINER_NAME,
-      ]);
+      ], undefined, signal);
+      throwIfAborted(signal);
       return {
         docker: 'ok',
         container: stdout.trim() === 'true' ? 'running' : 'stopped',
       };
     } catch (err) {
+      throwIfAborted(signal);
       const e = err as NodeJS.ErrnoException & { stderr?: string };
       if (e.code === 'ENOENT') {
         return {
@@ -94,18 +97,18 @@ export class OllamaContainerManager {
     }
   }
 
-  async ensureRunning(): Promise<void> {
-    const status = await this.getStatus();
+  async ensureRunning(signal?: AbortSignal): Promise<void> {
+    const status = await this.getStatus(signal);
     if (status.docker !== 'ok') {
       throw new Error(DOCKER_ERROR_MESSAGES[status.docker]);
     }
     if (status.container === 'stopped') {
-      await this.runDockerOrThrow(['start', CONTAINER_NAME], 30_000);
+      await this.runDockerOrThrow(['start', CONTAINER_NAME], 30_000, signal);
     } else if (status.container === 'missing') {
       // Cold image pull can take minutes; still bounded so boot can never hang forever.
-      await this.runDockerOrThrow(['compose', '-f', this.composePath, 'up', '-d'], 120_000);
+      await this.runDockerOrThrow(['compose', '-f', this.composePath, 'up', '-d'], 120_000, signal);
     }
-    await this.waitForApi();
+    await this.waitForApi(signal);
   }
 
   async checkGpu(): Promise<GpuStatus> {
@@ -113,7 +116,7 @@ export class OllamaContainerManager {
     if (first !== 'cpu') return first;
     // A model can still be loading right after warmup — retry once before
     // raising a CPU-mode alarm.
-    await sleep(this.gpuRetryDelayMs);
+    await abortableDelay(this.gpuRetryDelayMs);
     return this.readVramStatus();
   }
 
@@ -129,10 +132,15 @@ export class OllamaContainerManager {
     }
   }
 
-  private async runDockerOrThrow(args: string[], timeoutMs: number): Promise<void> {
+  private async runDockerOrThrow(
+    args: string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     try {
-      await this.execFn('docker', args, timeoutMs);
+      await this.execFn('docker', args, timeoutMs, signal);
     } catch (err) {
+      throwIfAborted(signal);
       const e = err as Error & { stderr?: string };
       const detail = e.stderr?.trim() || e.message;
       throw new Error(
@@ -141,16 +149,18 @@ export class OllamaContainerManager {
     }
   }
 
-  private async waitForApi(): Promise<void> {
+  private async waitForApi(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const deadline = Date.now() + this.healthTimeoutMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`${this.baseUrl}/api/tags`);
+        const res = await fetch(`${this.baseUrl}/api/tags`, { signal });
         if (res.ok) return;
       } catch {
+        throwIfAborted(signal);
         // API not up yet — keep polling
       }
-      await sleep(this.healthPollMs);
+      await abortableDelay(this.healthPollMs, signal);
     }
     throw new Error(
       `Ollama-Container antwortet nicht (Timeout nach ${Math.max(1, Math.round(this.healthTimeoutMs / 1000))} Sekunden) — bitte Docker-Logs prüfen.`,

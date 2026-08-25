@@ -61,6 +61,7 @@ function createMockHotkey(): HotkeyManager {
   return {
     register: vi.fn(),
     unregister: vi.fn(),
+    destroy: vi.fn(),
   } as HotkeyManager;
 }
 
@@ -179,6 +180,7 @@ describe('VoiceService', () => {
     await service.init();
 
     expect(service.status).toBe('running');
+    expect(stt.destroy).toHaveBeenCalledOnce();
   });
 
   // --- 3. Registers hotkey in push-to-talk mode ---
@@ -478,7 +480,7 @@ describe('VoiceService', () => {
     expect(tts.destroy).toHaveBeenCalledOnce();
     expect(wakeWord.destroy).toHaveBeenCalledOnce();
     expect(audio.destroy).toHaveBeenCalledOnce();
-    expect(hotkey.unregister).toHaveBeenCalled();
+    expect(hotkey.destroy).toHaveBeenCalledOnce();
     expect(service.status).toBe('stopped');
     expect(service.voiceState).toBe('idle');
   });
@@ -760,6 +762,7 @@ describe('VoiceService partial failure (voice:capability)', () => {
     expect(service.status).toBe('running');
     expect(emitted).toHaveLength(1);
     expect(emitted[0].data).toEqual({ stt: true, tts: false });
+    expect(tts.destroy).toHaveBeenCalledOnce();
     await service.destroy();
   });
 

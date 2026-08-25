@@ -55,4 +55,14 @@ describe('bootstrap', () => {
     await expect(Promise.all([ctx.shutdown(), ctx.shutdown()])).resolves.not.toThrow();
     expect(ctx.lifecycle.snapshot.state).toBe('stopped');
   });
+
+  it('releases partial storage resources when database bootstrap fails', async () => {
+    const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-broken-'));
+    const dbPath = path.join(brokenDir, 'sarah.db');
+    fs.writeFileSync(dbPath, 'not a sqlite database');
+
+    await expect(bootstrap(brokenDir)).rejects.toThrow();
+
+    expect(() => fs.rmSync(brokenDir, { recursive: true, force: true })).not.toThrow();
+  });
 });

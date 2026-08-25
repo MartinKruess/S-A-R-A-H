@@ -1,6 +1,7 @@
 import type { SandboxBrowser } from '../../main/sandbox-browser.js';
 import type { SearchProvider, SearchResult } from './search-provider.interface.js';
 import { sanitizeResults } from './sanitize-web-text.js';
+import { abortError, throwIfAborted } from '../../core/abort-utils.js';
 
 export type SearchDiagnosis = 'consent' | 'captcha' | 'markup-changed' | 'load-failed';
 
@@ -92,10 +93,12 @@ export class EmbeddedBrowserSearchProvider implements SearchProvider {
 
     let lastDiagnosis: SearchDiagnosis = 'markup-changed';
     for (const engine of engines) {
+      throwIfAborted(signal);
       let html: string;
       try {
         html = await this.browser.fetchPageHtml(engine.url, signal);
       } catch (err) {
+        if (signal.aborted) throw abortError('Search aborted');
         console.warn(`[Search] ${engine.name} load failed:`, err);
         lastDiagnosis = 'load-failed';
         continue;

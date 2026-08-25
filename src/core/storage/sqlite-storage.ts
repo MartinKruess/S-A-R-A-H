@@ -59,9 +59,19 @@ export class SqliteStorage implements StorageProvider {
   private db: Database.Database;
 
   constructor(dbPath: string) {
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.exec(SCHEMA);
+    const db = new Database(dbPath);
+    try {
+      db.pragma('journal_mode = WAL');
+      db.exec(SCHEMA);
+      this.db = db;
+    } catch (error) {
+      try {
+        db.close();
+      } catch {
+        // Preserve the schema/pragma error that made construction fail.
+      }
+      throw error;
+    }
   }
 
   async get<T = unknown>(key: string): Promise<T | undefined> {

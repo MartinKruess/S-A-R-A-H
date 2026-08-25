@@ -76,14 +76,14 @@ export class RouterService implements SarahService {
 
   // init() is single-flight (A8): repeated calls return the same promise,
   // so the eager boot call and registry.initAll() cannot double-initialize.
-  init(): Promise<void> {
+  init(signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit();
+      this.initPromise = this.doInit(signal);
     }
     return this.initPromise;
   }
 
-  private async doInit(): Promise<void> {
+  private async doInit(signal?: AbortSignal): Promise<void> {
     const boot = await new ConversationStore(this.context.db).boot();
     this.conversationId = boot.conversationId;
     this.startContext = boot.startContext.map((row) => ({
@@ -92,7 +92,7 @@ export class RouterService implements SarahService {
     }));
 
     try {
-      await this.modelRuntime.init();
+      await this.modelRuntime.init(signal);
     } catch (err) {
       console.error('[Router] Model runtime init failed:', err);
       this.status = 'error';

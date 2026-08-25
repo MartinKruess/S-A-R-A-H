@@ -90,4 +90,13 @@ export class HotkeyManager {
       this.isDown = false;
     }
   }
+
+  /** Release listeners and stop the native global hook for final app shutdown. */
+  destroy(): void {
+    this.unregister();
+    if (this.started) {
+      uIOhook.stop();
+      this.started = false;
+    }
+  }
 }

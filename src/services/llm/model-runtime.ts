@@ -7,6 +7,8 @@ import { OllamaProvider } from './providers/ollama-provider.js';
 import { RoutingService, type RoutingResult } from './routing-service.js';
 import { VramManager } from './vram-manager.js';
 import { WorkerService, type WorkerResult } from './worker-service.js';
+import { linkAbortSignals, throwIfAborted } from '../../core/abort-utils.js';
+import { chatWithTimeout } from './chat-with-timeout.js';
 
 export type ModelRole = 'router' | 'local_worker';
 export type ModelAvailability = 'checking' | 'available' | 'unavailable' | 'error';
@@ -31,12 +33,13 @@ export interface WorkerTextGenerator {
 
 export interface ModelRuntimePort extends WorkerTextGenerator {
   readonly snapshot: ModelRuntimeSnapshot;
-  init(): Promise<ModelRuntimeSnapshot>;
-  route(text: string): Promise<RoutingResult>;
+  init(signal?: AbortSignal): Promise<ModelRuntimeSnapshot>;
+  route(text: string, signal?: AbortSignal): Promise<RoutingResult>;
   streamWorker(
     messages: ChatMessage[],
     responseStyle: string,
     onChunk: (text: string) => void,
+    signal?: AbortSignal,
   ): Promise<WorkerResult>;
   ensureRole(role: ModelRole): Promise<void>;
   scheduleRouterRestore(): void;
@@ -46,7 +49,7 @@ export interface ModelRuntimePort extends WorkerTextGenerator {
 }
 
 interface ContainerRuntime {
-  ensureRunning(): Promise<void>;
+  ensureRunning(signal?: AbortSignal): Promise<void>;
 }
 
 export interface ModelRuntimeDeps {
@@ -109,6 +112,8 @@ export class ModelRuntime implements ModelRuntimePort {
   private destroyed = false;
   private destroyPromise: Promise<void> | null = null;
   private generation = 0;
+  private readonly runtimeAbort = new AbortController();
+  private initSignalCleanup: (() => void) | null = null;
 
   constructor(deps: ModelRuntimeDeps) {
     this.config = structuredClone(deps.config);
@@ -158,18 +163,29 @@ export class ModelRuntime implements ModelRuntimePort {
     return cloneSnapshot(this.current);
   }
 
-  init(): Promise<ModelRuntimeSnapshot> {
+  init(signal?: AbortSignal): Promise<ModelRuntimeSnapshot> {
     if (this.destroyed || this.shuttingDown) {
       return Promise.reject(new Error('ModelRuntime is shutting down'));
     }
-    if (!this.initPromise) this.initPromise = this.runInit();
+    if (!this.initPromise) {
+      if (signal) {
+        const onAbort = (): void => this.runtimeAbort.abort(signal.reason);
+        if (signal.aborted) onAbort();
+        else {
+          signal.addEventListener('abort', onAbort, { once: true });
+          this.initSignalCleanup = () => signal.removeEventListener('abort', onAbort);
+        }
+      }
+      this.initPromise = this.runInit();
+    }
     return this.initPromise;
   }
 
   private async runInit(): Promise<ModelRuntimeSnapshot> {
     this.current.state = 'starting';
+    throwIfAborted(this.runtimeAbort.signal);
     try {
-      await this.containerManager?.ensureRunning();
+      await this.containerManager?.ensureRunning(this.runtimeAbort.signal);
     } catch (value) {
       const message = errorMessage(value);
       this.markUnavailable('router', message);
@@ -179,8 +195,8 @@ export class ModelRuntime implements ModelRuntimePort {
     }
 
     const [routerCheck, workerCheck] = await Promise.all([
-      this.checkAvailability(this.routerProvider),
-      this.checkAvailability(this.workerProvider),
+      this.checkAvailability(this.routerProvider, this.runtimeAbort.signal),
+      this.checkAvailability(this.workerProvider, this.runtimeAbort.signal),
     ]);
     if (routerCheck.error) this.markUnavailable('router', routerCheck.error);
     else this.setAvailability('router', routerCheck.available);
@@ -195,7 +211,7 @@ export class ModelRuntime implements ModelRuntimePort {
     try {
       await this.ensureRole('router');
       if (!this.eagerLoadTransitions) {
-        await this.routing.warmup();
+        await this.routing.warmup(this.runtimeAbort.signal);
       }
     } catch (value) {
       const message = errorMessage(value);
@@ -233,35 +249,44 @@ export class ModelRuntime implements ModelRuntimePort {
 
   private async checkAvailability(
     provider: LlmProvider,
+    signal?: AbortSignal,
   ): Promise<{ available: boolean; error?: string }> {
     try {
-      return { available: await provider.isAvailable() };
+      return { available: await provider.isAvailable(signal) };
     } catch (value) {
       return { available: false, error: errorMessage(value) };
     }
   }
 
-  route(text: string): Promise<RoutingResult> {
-    return this.runWithRole('router', () => this.routing.route(text));
+  route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
+    return this.runWithRole('router', (operationSignal) => this.routing.route(text, operationSignal), false, signal);
   }
 
   streamWorker(
     messages: ChatMessage[],
     responseStyle: string,
     onChunk: (text: string) => void,
+    signal?: AbortSignal,
   ): Promise<WorkerResult> {
     return this.runWithRole(
       'local_worker',
-      () => this.worker.stream(messages, responseStyle, onChunk),
+      (operationSignal) => this.worker.stream(messages, responseStyle, onChunk, operationSignal),
       true,
+      signal,
     );
   }
 
   generateWorkerText(prompt: string, options?: ChatOptions): Promise<string> {
     return this.runWithRole(
       'local_worker',
-      () => this.workerProvider.chat([{ role: 'user', content: prompt }], () => {}, options),
+      (operationSignal) => chatWithTimeout(
+        this.workerProvider,
+        [{ role: 'user', content: prompt }],
+        () => {},
+        { ...options, signal: operationSignal },
+      ),
       true,
+      options?.signal,
     );
   }
 
@@ -269,19 +294,65 @@ export class ModelRuntime implements ModelRuntimePort {
     return this.enqueue(async (generation) => this.transition(role, generation));
   }
 
-  private runWithRole<T>(role: ModelRole, operation: () => Promise<T>, restoreRouter = false): Promise<T> {
+  private runWithRole<T>(
+    role: ModelRole,
+    operation: (signal: AbortSignal) => Promise<T>,
+    restoreRouter = false,
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
     return this.enqueue(async (generation) => {
-      await this.transition(role, generation);
-      this.assertCurrent(generation);
-      const result = await operation();
-      this.assertCurrent(generation);
-      if (restoreRouter) this.scheduleRouterRestore();
-      return result;
+      const linked = linkAbortSignals(this.runtimeAbort.signal, callerSignal);
+      try {
+        throwIfAborted(linked.signal);
+        await this.transition(role, generation, linked.signal);
+        this.assertCurrent(generation);
+        const result = await operation(linked.signal);
+        this.assertCurrent(generation);
+        if (restoreRouter) this.scheduleRouterRestore();
+        return result;
+      } catch (operationError) {
+        if (
+          restoreRouter
+          && generation === this.generation
+          && !this.shuttingDown
+          && !this.destroyed
+          && !this.runtimeAbort.signal.aborted
+          && (
+            this.current.activeRole !== 'router'
+            || this.current.roles.router.residency !== 'loaded'
+          )
+        ) {
+          try {
+            await this.transition('router', generation, this.runtimeAbort.signal);
+          } catch (restoreError) {
+            if (
+              generation !== this.generation
+              || this.shuttingDown
+              || this.destroyed
+              || this.runtimeAbort.signal.aborted
+            ) {
+              throw operationError;
+            }
+            const message = `Router restore failed: ${errorMessage(restoreError)}`;
+            this.current.roles.router.residency = 'error';
+            this.current.roles.router.message = message;
+            this.current.state = 'degraded';
+            this.onCapability?.('router', 'error', message);
+            throw new AggregateError(
+              [operationError, restoreError],
+              'Worker operation and router restore failed',
+            );
+          }
+        }
+        throw operationError;
+      } finally {
+        linked.dispose();
+      }
     });
   }
 
   private enqueue<T>(operation: (generation: number) => Promise<T>): Promise<T> {
-    if (this.shuttingDown || this.destroyed) {
+    if (this.shuttingDown || this.destroyed || this.runtimeAbort.signal.aborted) {
       return Promise.reject(new Error('ModelRuntime is shutting down'));
     }
     const generation = this.generation;
@@ -291,8 +362,9 @@ export class ModelRuntime implements ModelRuntimePort {
     return run;
   }
 
-  private async transition(role: ModelRole, generation: number): Promise<void> {
+  private async transition(role: ModelRole, generation: number, signal = this.runtimeAbort.signal): Promise<void> {
     this.assertCurrent(generation);
+    throwIfAborted(signal);
     this.clearIdleTimer();
     const target = this.current.roles[role];
     if (target.availability !== 'available') {
@@ -303,9 +375,18 @@ export class ModelRuntime implements ModelRuntimePort {
     const previousRole = this.current.activeRole;
     if (previousRole && previousRole !== role) {
       this.current.roles[previousRole].residency = 'unloading';
-      const unloaded = await this.vram.unloadModel(this.modelFor(previousRole));
+      const unloaded = await this.vram.unloadModel(this.modelFor(previousRole), signal);
       this.assertCurrent(generation);
-      this.current.roles[previousRole].residency = unloaded ? 'unloaded' : 'error';
+      if (!unloaded) {
+        const message = `Model could not be unloaded: ${this.modelFor(previousRole)}`;
+        this.current.roles[previousRole].residency = 'error';
+        this.current.roles[previousRole].message = message;
+        this.current.state = 'degraded';
+        this.onCapability?.(previousRole, 'error', message);
+        throw new Error(message);
+      }
+      this.current.roles[previousRole].residency = 'unloaded';
+      this.current.activeRole = null;
     }
 
     target.residency = 'loading';
@@ -314,10 +395,10 @@ export class ModelRuntime implements ModelRuntimePort {
         await this.providerFor(role).chat(
           [{ role: 'user', content: 'ok' }],
           () => {},
-          { num_predict: 1, keep_alive: -1 },
+          { num_predict: 1, keep_alive: -1, signal },
         );
         this.assertCurrent(generation);
-        const loaded = await this.vram.waitForModel(this.modelFor(role));
+        const loaded = await this.vram.waitForModel(this.modelFor(role), 10, 100, signal);
         this.assertCurrent(generation);
         if (!loaded) throw new Error(`Model load could not be verified: ${this.modelFor(role)}`);
       }
@@ -329,12 +410,36 @@ export class ModelRuntime implements ModelRuntimePort {
         : 'degraded';
       this.onCapability?.(role, 'ready');
     } catch (value) {
-      if (generation === this.generation && !this.shuttingDown && !this.destroyed) {
-        target.residency = 'error';
-        target.message = errorMessage(value);
+      const mayCleanUp = (
+        generation === this.generation
+        && !this.shuttingDown
+        && !this.destroyed
+        && !this.runtimeAbort.signal.aborted
+      );
+      let targetUnloaded = false;
+      if (mayCleanUp) {
+        try {
+          targetUnloaded = await this.vram.unloadModel(
+            this.modelFor(role),
+            this.runtimeAbort.signal,
+          );
+        } catch {
+          // The original transition error remains the primary failure.
+        }
+      }
+      if (
+        mayCleanUp
+        && generation === this.generation
+        && !this.shuttingDown
+        && !this.destroyed
+        && !this.runtimeAbort.signal.aborted
+      ) {
+        const cancelledCleanly = signal.aborted && targetUnloaded;
+        target.residency = cancelledCleanly ? 'unloaded' : 'error';
+        target.message = cancelledCleanly ? undefined : errorMessage(value);
         this.current.activeRole = null;
         this.current.state = role === 'router' ? 'error' : 'degraded';
-        this.onCapability?.(role, 'error', target.message);
+        if (!cancelledCleanly) this.onCapability?.(role, 'error', target.message);
       }
       throw value;
     }
@@ -371,6 +476,9 @@ export class ModelRuntime implements ModelRuntimePort {
     this.shuttingDown = true;
     this.generation += 1;
     this.clearIdleTimer();
+    this.initSignalCleanup?.();
+    this.initSignalCleanup = null;
+    this.runtimeAbort.abort();
 
     await this.waitForOperationDrain();
     const [routerReleased, workerReleased] = await Promise.all([

@@ -166,6 +166,19 @@ describe('OllamaContainerManager.ensureRunning', () => {
       /Ollama-Container konnte nicht gestartet werden: .*port is already allocated/,
     );
   });
+
+  it('aborts health polling when application shutdown begins', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('fetch aborted')), { once: true });
+    }));
+    const { manager } = createManager({ execResults: [{ stdout: 'true\n' }] });
+    const controller = new AbortController();
+
+    const starting = manager.ensureRunning(controller.signal);
+    controller.abort();
+
+    await expect(starting).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 describe('OllamaContainerManager.checkGpu', () => {

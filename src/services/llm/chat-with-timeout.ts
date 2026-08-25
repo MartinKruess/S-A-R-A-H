@@ -1,4 +1,5 @@
 import type { LlmProvider, ChatMessage, ChatOptions } from './llm-provider.interface.js';
+import { abortError, throwIfAborted } from '../../core/abort-utils.js';
 
 export const STREAM_TIMEOUT_MS = 120_000;
 
@@ -9,6 +10,7 @@ async function attempt(
   options: ChatOptions | undefined,
   onFirstChunk: () => void,
 ): Promise<string> {
+  throwIfAborted(options?.signal);
   const controller = new AbortController();
   let timeoutId: ReturnType<typeof setTimeout>;
   let rejectTimeout: (err: Error) => void;
@@ -20,6 +22,16 @@ async function attempt(
       reject(new Error('timeout'));
     }, STREAM_TIMEOUT_MS);
   });
+
+  let rejectAbort!: (err: Error) => void;
+  const abortPromise = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = (): void => {
+    controller.abort(options?.signal?.reason);
+    rejectAbort(abortError());
+  };
+  options?.signal?.addEventListener('abort', onAbort, { once: true });
 
   const guardedChunk = (chunk: string) => {
     // Chunks from an attempt that already timed out must never reach the user.
@@ -37,9 +49,11 @@ async function attempt(
     return await Promise.race([
       provider.chat(messages, guardedChunk, { ...options, signal: controller.signal }),
       timeoutPromise,
+      abortPromise,
     ]);
   } finally {
     clearTimeout(timeoutId!);
+    options?.signal?.removeEventListener('abort', onAbort);
   }
 }
 

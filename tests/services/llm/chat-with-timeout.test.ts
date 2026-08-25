@@ -78,4 +78,20 @@ describe('chatWithTimeout abort + retry', () => {
     await expect(chatWithTimeout(provider, [], () => {})).rejects.toThrow('ECONNREFUSED');
     expect(provider.chat).toHaveBeenCalledTimes(1);
   });
+
+  it('propagates an external lifecycle abort and does not retry', async () => {
+    const controller = new AbortController();
+    let providerSignal: AbortSignal | undefined;
+    const provider = providerWith(async (_messages, _onChunk, options) => {
+      providerSignal = options?.signal;
+      return new Promise<string>(() => {});
+    });
+
+    const running = chatWithTimeout(provider, [], () => {}, { signal: controller.signal });
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    expect(providerSignal?.aborted).toBe(true);
+    expect(provider.chat).toHaveBeenCalledOnce();
+  });
 });

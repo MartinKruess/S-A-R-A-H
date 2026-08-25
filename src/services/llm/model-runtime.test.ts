@@ -52,7 +52,12 @@ describe('ModelRuntime', () => {
 
     expect(router.isAvailable).toHaveBeenCalledOnce();
     expect(worker.isAvailable).toHaveBeenCalledOnce();
-    expect(memory.waitForModel).toHaveBeenCalledWith('router:1b');
+    expect(memory.waitForModel).toHaveBeenCalledWith(
+      'router:1b',
+      10,
+      100,
+      expect.any(AbortSignal),
+    );
     expect(snapshot.state).toBe('ready');
     expect(snapshot.activeRole).toBe('router');
     expect(snapshot.roles.router.residency).toBe('loaded');
@@ -141,6 +146,160 @@ describe('ModelRuntime', () => {
 
     expect(order.indexOf('worker-end')).toBeLessThan(order.indexOf('route'));
     expect(runtime.snapshot.activeRole).toBe('router');
+  });
+
+  it('restores the router immediately when worker inference fails', async () => {
+    const worker = provider('worker');
+    (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
+      _messages: ChatMessage[],
+      _onChunk: (text: string) => void,
+      options?: ChatOptions,
+    ) => {
+      if (options?.num_predict === 1) return 'ok';
+      throw new Error('worker failed');
+    });
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).rejects.toThrow('worker failed');
+
+    expect(runtime.snapshot.activeRole).toBe('router');
+    expect(runtime.snapshot.roles.router.residency).toBe('loaded');
+    expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+  });
+
+  it('refuses to load the next role and restores the current role when it cannot be unloaded', async () => {
+    const worker = provider('worker');
+    const memory = vram();
+    (memory.unloadModel as ReturnType<typeof vi.fn>).mockImplementation(async (model: string) => (
+      model !== 'router:1b'
+    ));
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: memory,
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).rejects.toThrow(/could not be unloaded/);
+
+    expect(worker.chat).not.toHaveBeenCalled();
+    expect(runtime.snapshot.activeRole).toBe('router');
+    expect(runtime.snapshot.roles.router.residency).toBe('loaded');
+    expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+  });
+
+  it('reports the router honestly when rollback after a worker failure also fails', async () => {
+    const worker = provider('worker');
+    (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
+      _messages: ChatMessage[],
+      _onChunk: (text: string) => void,
+      options?: ChatOptions,
+    ) => {
+      if (options?.num_predict === 1) return 'ok';
+      throw new Error('worker failed');
+    });
+    const memory = vram();
+    (memory.unloadModel as ReturnType<typeof vi.fn>).mockImplementation(async (model: string) => (
+      model !== 'worker:9b'
+    ));
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: memory,
+      onCapability: capability,
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).rejects.toThrow(
+      /Worker operation and router restore failed/,
+    );
+
+    expect(runtime.snapshot.roles.router.residency).toBe('error');
+    expect(capability).toHaveBeenCalledWith(
+      'router',
+      'error',
+      expect.stringContaining('Router restore failed'),
+    );
+  });
+
+  it('aborts an active provider request before unloading models on shutdown', async () => {
+    let operationSignal: AbortSignal | undefined;
+    const worker = provider('worker');
+    (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
+      _messages: ChatMessage[],
+      _onChunk: (text: string) => void,
+      options?: ChatOptions,
+    ) => {
+      if (options?.num_predict === 1) return 'ok';
+      operationSignal = options?.signal;
+      return new Promise<string>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => reject(new Error('provider aborted')), { once: true });
+      });
+    });
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+    });
+    await runtime.init();
+
+    const running = runtime.generateWorkerText('long request');
+    await vi.waitFor(() => expect(operationSignal).toBeDefined());
+    await runtime.destroy();
+
+    expect(operationSignal?.aborted).toBe(true);
+    await expect(running).rejects.toThrow();
+    expect(runtime.snapshot.state).toBe('stopped');
+  });
+
+  it('cleans up a cancelled worker load and restores the router', async () => {
+    let workerLoadStarted = false;
+    const memory = vram();
+    (memory.waitForModel as ReturnType<typeof vi.fn>).mockImplementation(async (
+      _model: string,
+      _attempts?: number,
+      _intervalMs?: number,
+      signal?: AbortSignal,
+    ) => {
+      if (!workerLoadStarted) {
+        workerLoadStarted = true;
+        return true;
+      }
+      if ((memory.waitForModel as ReturnType<typeof vi.fn>).mock.calls.length === 2) {
+        return new Promise<boolean>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      }
+      return true;
+    });
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: memory,
+    });
+    await runtime.init();
+    const controller = new AbortController();
+
+    const running = runtime.generateWorkerText('question', { signal: controller.signal });
+    await vi.waitFor(() => expect(memory.waitForModel).toHaveBeenCalledTimes(2));
+    controller.abort();
+
+    await expect(running).rejects.toThrow();
+    expect(memory.unloadModel).toHaveBeenCalledWith('worker:9b', expect.any(AbortSignal));
+    expect(runtime.snapshot.activeRole).toBe('router');
+    expect(runtime.snapshot.roles.router.residency).toBe('loaded');
+    expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
   });
 
   it('unloads both Sarah models during idempotent shutdown', async () => {

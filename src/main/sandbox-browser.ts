@@ -1,6 +1,7 @@
 // src/main/sandbox-browser.ts
 // Container 1 (Spec §6): the web can render here, but nothing can escape.
 import type { WebContents } from 'electron';
+import { abortError, throwIfAborted } from '../core/abort-utils.js';
 
 const LOAD_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
@@ -125,6 +126,7 @@ export class SandboxBrowser {
    */
   async fetchPageHtml(url: string, signal: AbortSignal): Promise<string> {
     if (!isHttpUrl(url)) throw new Error(`Invalid URL: ${url}`);
+    throwIfAborted(signal);
     const win = await this.getWindow();
     const wc = win.webContents;
     await wc.session.clearStorageData();
@@ -173,7 +175,7 @@ export class SandboxBrowser {
       };
       const onAbort = (): void => {
         wc.stop();
-        fail(new Error('Search aborted'));
+        fail(abortError('Search aborted'));
       };
       const timeout = setTimeout(() => {
         wc.stop();

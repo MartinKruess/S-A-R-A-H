@@ -140,6 +140,43 @@ describe('ServiceRegistry', () => {
     expect(firstReport).toBe(secondReport);
   });
 
+  it('aborts a cooperative service start before cleanup', async () => {
+    const svc = createMockService('aborting');
+    let receivedSignal: AbortSignal | undefined;
+    svc.init = vi.fn((signal?: AbortSignal) => {
+      receivedSignal = signal;
+      return new Promise<void>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('start aborted')), { once: true });
+      });
+    });
+    registry.register(svc);
+
+    const starting = registry.initAll();
+    await Promise.resolve();
+    await registry.destroyAll();
+    await starting;
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(svc.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('does not block shutdown indefinitely on a non-cooperative service start', async () => {
+    registry = new ServiceRegistry(bus, { initDrainTimeoutMs: 5 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const svc = createMockService('blocked');
+    svc.init = vi.fn(async () => gate);
+    registry.register(svc);
+
+    const starting = registry.initAll();
+    await Promise.resolve();
+    await registry.destroyAll();
+
+    expect(svc.destroy).toHaveBeenCalledOnce();
+    release();
+    await starting;
+  });
+
   it('throws on duplicate service ID', () => {
     registry.register(createMockService('dup'));
     expect(() => registry.register(createMockService('dup'))).toThrow('already registered');

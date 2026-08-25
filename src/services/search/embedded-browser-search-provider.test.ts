@@ -107,4 +107,18 @@ describe('EmbeddedBrowserSearchProvider', () => {
       expect((err as SearchDiagnosisError).diagnosis).toBe('markup-changed');
     }
   });
+
+  it('does not start the fallback engine after shutdown aborts the active load', async () => {
+    const controller = new AbortController();
+    const fetchPageHtml = vi.fn().mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error('first engine aborted');
+    });
+    const provider = new EmbeddedBrowserSearchProvider({ fetchPageHtml } as unknown as SandboxBrowser);
+
+    await expect(provider.search('hotels', controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(fetchPageHtml).toHaveBeenCalledOnce();
+  });
 });

@@ -399,8 +399,11 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Electron `before-quit`, `window-all-closed` und Windows `session-end` benutzen denselben idempotenten Lifecycle.
 - OAuth-Loopback-Flows können beim Shutdown abgebrochen und ihre Ports geschlossen werden.
 - Voice-Initialisierung ist single-flight; STT und TTS werden getrennt als ready/unavailable gemeldet und unabhängig bereinigt.
+- Service-Starts sind über einen gemeinsamen Lifecycle-Abbruch kontrollierbar; der Shutdown wartet auf nicht kooperative Starts nur begrenzt.
+- Laufende Search-, Browser-, Container-, Modell- und Voice-Startoperationen reichen den Shutdown-Abbruch bis zu ihren blockierenden Adaptern weiter.
 - Die neue `ModelRuntime` besitzt Containerstart, Provider, Availability, Residency, serielle Transitionen, Idle-Restore und Shutdown-Unload.
 - Modelloperationen tragen eine Lifecycle-Generation; verspätete Transitionen können nach Shutdown keinen geladenen Zustand zurückschreiben.
+- Fehlgeschlagene oder abgebrochene Worker-Transitionen bereinigen einen möglichen Teil-Load und stellen den Router sofort wieder her oder melden dessen Fehler ehrlich.
 - Router und freier Worker werden über Rollen `router` und `local_worker` geführt.
 - Search-Zusammenfassungen erhalten ausschließlich den Worker-Textgenerator und keinen Router-Provider.
 - Modellverfügbarkeit prüft bei expliziten Tags das tatsächlich konfigurierte Modell statt nur die Modellfamilie.
@@ -408,13 +411,16 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Modellrelevante Settings werden serialisiert gespeichert und melden `restartRequired` mit konkreten Gründen.
 - Dashboard-Chat wird aus dem Runtime-Snapshot deaktiviert, solange der Router nicht technisch bereit ist.
 - Splash unterscheidet Ready und terminalen Degraded-/Unavailable-Zustand und kann auch ohne STT beziehungsweise TTS fortfahren.
+- Faster-Whisper-Teilstarts, ausgefallene Voice-Provider, der native Hotkey-Hook und teilweise erzeugte Bootstrap-Storage-Ressourcen besitzen explizite Cleanup-Pfade.
+- Fatale Fehler vor einer vollständig erzeugten AppContext-Instanz enden in einer sichtbaren Fehlermeldung und einem kontrollierten App-Quit.
 
 ### Automatisiert geprüft
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 70 Testdateien mit 688 Tests erfolgreich.
+- 70 Testdateien mit 703 Tests erfolgreich.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
+- Ein dritter Codeaudit nach dem Abschluss der Abbruch-, Rollback-, Voice- und Bootstrap-Lücken ergab keine weitere relevante Layer-0-Codelücke.
 
 ### Realer Windows-Smoke-Test
 

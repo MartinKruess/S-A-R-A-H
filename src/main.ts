@@ -149,10 +149,11 @@ app.whenReady().then(async () => {
   });
   // Free-form summaries are a worker capability. The tag-only router is not
   // exposed to SearchService and therefore cannot accidentally generate text.
-  const summarize = (prompt: string): Promise<string> => {
+  const summarize = (prompt: string, signal?: AbortSignal): Promise<string> => {
     return modelRuntime.generateWorkerText(prompt, {
       num_predict: SUMMARY_NUM_PREDICT,
       temperature: SUMMARY_TEMPERATURE,
+      signal,
     });
   };
   const searchService = new SearchService(
@@ -271,4 +272,18 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+}).catch(async (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[Main] Fatal bootstrap error:', error);
+  dialog.showErrorBox(
+    'Sarah konnte nicht gestartet werden',
+    `Die Grunddienste konnten nicht initialisiert werden.\n\n${message}`,
+  );
+  try {
+    await appContext?.lifecycle.shutdown();
+  } catch (cleanupError) {
+    console.error('[Main] Fatal bootstrap cleanup failed:', cleanupError);
+  } finally {
+    app.quit();
+  }
 });

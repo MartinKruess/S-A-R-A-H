@@ -4,6 +4,7 @@ import type { SandboxBrowser } from '../../main/sandbox-browser.js';
 import type { LaunchResult } from '../../main/program-launcher.js';
 import type { SearchProvider, SearchResult } from './search-provider.interface.js';
 import { buildSummaryPrompt, type SummarizeFn } from './summarize-results.js';
+import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 
 /** Single-slot result session (Mi4): show_browser never looks up by requestId. */
 interface ResultSession {
@@ -18,6 +19,7 @@ export class SearchService implements SarahService {
   private session: ResultSession | null = null;
   private searching = false;
   private abort: AbortController | null = null;
+  private activeSearch: Promise<string> | null = null;
 
   constructor(
     private provider: SearchProvider,
@@ -31,6 +33,7 @@ export class SearchService implements SarahService {
 
   async destroy(): Promise<void> {
     this.abort?.abort();
+    if (this.activeSearch) await waitForSettlement(this.activeSearch, 2_000);
     this.session = null;
     this.status = 'stopped';
   }
@@ -43,15 +46,27 @@ export class SearchService implements SarahService {
     if (this.searching) throw new Error('search already running');
     this.searching = true;
     this.abort = new AbortController();
+    const controller = this.abort;
+    const operation = this.doRunSearch(query, controller);
+    this.activeSearch = operation;
+    void operation.finally(() => {
+      if (this.activeSearch === operation) this.activeSearch = null;
+    }).catch(() => {});
+    return operation;
+  }
+
+  private async doRunSearch(query: string, controller: AbortController): Promise<string> {
     this.browser.hide(); // F6: a new search ends display mode
     this.session = null; // the new search replaces the old session completely
     try {
-      const results = await this.provider.search(query, this.abort.signal);
+      throwIfAborted(controller.signal);
+      const results = await this.provider.search(query, controller.signal);
+      throwIfAborted(controller.signal);
       this.session = { results };
-      return await this.summarize(buildSummaryPrompt(results));
+      return await this.summarize(buildSummaryPrompt(results), controller.signal);
     } finally {
       this.searching = false;
-      this.abort = null;
+      if (this.abort === controller) this.abort = null;
     }
   }
 

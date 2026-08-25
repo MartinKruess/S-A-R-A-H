@@ -39,6 +39,17 @@ describe('SandboxBrowser.fetchPageHtml', () => {
     expect(windows).toHaveLength(0);
   });
 
+  it('rejects an already-aborted search before creating a browser window', async () => {
+    const { browser, windows } = makeBrowser();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(browser.fetchPageHtml('https://example.com/', controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(windows).toHaveLength(0);
+  });
+
   it('clears storage, loads, and returns the page html on did-finish-load', async () => {
     const { browser, windows } = makeBrowser();
     const p = browser.fetchPageHtml('https://example.com/', new AbortController().signal);
