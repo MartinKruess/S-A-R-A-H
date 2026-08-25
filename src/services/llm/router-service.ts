@@ -15,6 +15,9 @@ import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
 import { MediaContext } from './media-context.js';
 import type { MediaAction } from '../actions/media-controller.js';
+import { getActionAcknowledgement } from '../actions/action-feedback.js';
+import { resolveProfileResponse } from './profile-response.js';
+import { resolveSlashCommand } from '../commands/slash-command-resolver.js';
 
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -134,12 +137,25 @@ export class RouterService implements SarahService {
       return;
     }
 
-    this.history.push({ role: 'user', content: text });
+    const command = resolveSlashCommand(
+      text,
+      this.context.parsedConfig.controls?.customCommands ?? [],
+    );
+    const effectiveText = command.kind === 'custom' ? command.expandedText : text;
+    const immediateResponse = command.kind === 'builtin_unavailable'
+      ? `Der Slash-Command ${command.command} ist noch nicht verfügbar.`
+      : command.kind === 'unknown'
+        ? `Diesen Slash-Command kenne ich nicht: ${command.command}.`
+        : null;
+
+    this.history.push({ role: 'user', content: effectiveText });
 
     // Claim this turn's slot synchronously (before any await) so a
     // concurrently racing action:result/action:notify (see
     // speakAfterCurrentTurn) waits for this turn instead of jumping ahead.
-    const thisTurn = this.runTurn(text, mode);
+    const thisTurn = immediateResponse
+      ? this.runDeterministicTurn(effectiveText, immediateResponse)
+      : this.runTurn(effectiveText, mode);
     this.turnInFlight = thisTurn;
     try {
       await thisTurn;
@@ -148,8 +164,19 @@ export class RouterService implements SarahService {
     }
   }
 
+  private async runDeterministicTurn(text: string, response: string): Promise<void> {
+    await this.persistMessage('user', text);
+    await this.emitAssistantResponse(response);
+  }
+
   private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
     await this.persistMessage('user', text);
+
+    const profileResponse = resolveProfileResponse(text, this.context.parsedConfig.profile);
+    if (profileResponse) {
+      await this.emitAssistantResponse(profileResponse);
+      return;
+    }
 
     // MediaContext (Layer-1 terse follow-ups) — before any routing so it also
     // fires in the warm-9B window, where terse words bypass the gate.
@@ -202,7 +229,7 @@ export class RouterService implements SarahService {
     }
 
     if (result.parsed.kind === 'action') {
-      const { action, param, feedback } = result.parsed;
+      const { action, param } = result.parsed;
       if (!isActionName(action)) {
         console.warn('[Router] Unknown action name, refusing:', action, 'raw param:', param);
         await this.emitAssistantResponse('Das kann ich noch nicht.');
@@ -212,21 +239,17 @@ export class RouterService implements SarahService {
       this.pendingActions.set(requestId, { action });
       this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
       if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
-      await this.emitAssistantResponse(feedback);
-      return;
-    }
-
-    if (result.parsed.route === 'self') {
-      await this.emitAssistantResponse(result.parsed.feedback);
+      await this.emitAssistantResponse(getActionAcknowledgement(action, param));
       return;
     }
 
     // Routes: 9b, backend, extern, vision — all go to 9B for now
-    const busTarget = result.parsed.route === 'vision' ? '9b' as const : result.parsed.route;
+    const busTarget = result.parsed.route === 'vision'
+      ? '9b' as const
+      : result.parsed.route;
     this.context.bus.emit(this.id, 'llm:routing', {
       from: '2b',
       to: busTarget,
-      feedback: result.parsed.feedback,
     });
 
     const llmConfig = this.context.parsedConfig.llm;

@@ -1,0 +1,51 @@
+import type { CustomCommand } from '../../core/config-schema.js';
+
+const BUILTIN_COMMANDS = new Set(['/anonymous', '/showcontext', '/quietmode']);
+const COMMAND_PATTERN = /^(\/[a-z0-9_-]+)(?:\s+([\s\S]*))?$/i;
+const MAX_PROMPT_LENGTH = 2_000;
+const MAX_ARGUMENT_LENGTH = 500;
+
+export type SlashCommandResolution =
+  | { kind: 'none' }
+  | { kind: 'custom'; command: string; expandedText: string }
+  | { kind: 'builtin_unavailable'; command: string }
+  | { kind: 'unknown'; command: string };
+
+/**
+ * @param text - Unveränderte Nutzereingabe.
+ * @param customCommands - In den Einstellungen hinterlegte Prompt-Makros.
+ *
+ * - Erkennt Slash-Commands deterministisch vor dem Routing-Modell.
+ * - Expandiert benutzerdefinierte Commands genau einmal in ihren Prompt.
+ * - Führt niemals Shell-Code oder Toolaufrufe direkt aus.
+ *
+ * @returns Auflösung für den weiteren kontrollierten Verarbeitungspfad.
+ *
+ * @category Business Logic Validation
+ */
+export function resolveSlashCommand(
+  text: string,
+  customCommands: readonly CustomCommand[],
+): SlashCommandResolution {
+  const trimmed = text.normalize('NFC').trim();
+  if (!trimmed.startsWith('/')) return { kind: 'none' };
+
+  const match = trimmed.match(COMMAND_PATTERN);
+  if (!match) return { kind: 'unknown', command: trimmed.split(/\s/, 1)[0].slice(0, 100) };
+
+  const command = match[1].toLowerCase();
+  const args = (match[2] ?? '').trim().slice(0, MAX_ARGUMENT_LENGTH);
+  if (BUILTIN_COMMANDS.has(command)) return { kind: 'builtin_unavailable', command };
+
+  const configured = customCommands.find((entry) => entry.command.trim().toLowerCase() === command);
+  if (!configured) return { kind: 'unknown', command };
+
+  const prompt = configured.prompt.trim().slice(0, MAX_PROMPT_LENGTH);
+  if (!prompt) return { kind: 'unknown', command };
+
+  return {
+    kind: 'custom',
+    command,
+    expandedText: args ? `${prompt}\nZusätzliche Argumente des Nutzers: ${args}` : prompt,
+  };
+}

@@ -9,7 +9,11 @@ import type { SarahConfig } from '../../core/config-schema.js';
  * Gedacht rein für Prompt-Kontexte, nicht als allgemeiner Input-Sanitizer.
  */
 export function sanitizePromptField(s: string): string {
-  return s.replace(/[\r\n\t\u2028\u2029]/g, ' ').trim().slice(0, 200);
+  return s
+    .replace(/[\r\n\t\u2028\u2029]/g, ' ')
+    .replace(/[<>]/g, '')
+    .trim()
+    .slice(0, 200);
 }
 
 // ── Tone mapping (de → en) ──
@@ -46,6 +50,7 @@ const CONFIRMATION_MAP: Record<string, string> = {
 
 /** Max number of link preferences injected into the user prompt (prevents prompt stuffing). */
 const MAX_LINK_ENTRIES = 20;
+const MAX_PROFILE_LIST_ENTRIES = 20;
 
 // ── Quirk prompts (language-dependent) ──
 
@@ -84,7 +89,7 @@ export function buildCoreIdentity(): string {
     'You give helpful, natural answers to any topic the user brings up.',
     'You are NOT a friend, girlfriend, or companion. You do not have feelings about the user.',
     'Do NOT say things like "I missed you", "tell me about your day", "I am here for you", or ask to spend time together.',
-    'Do NOT say the user\'s name more than once per message. Ideally zero times.',
+    'Do NOT say the user\'s name more than once per message. Usually omit it unless the user asks about their name or using it is necessary.',
     'Do NOT use markdown formatting. No ** no * no # no - lists. Plain text only.',
     'Do NOT mention programming, coding, hobbies, or the user\'s job unless the user asks about it.',
     'Answer only what the user asked. Do not add extra sentences about yourself or the user.',
@@ -102,35 +107,51 @@ export function buildCoreSafety(): string {
 }
 
 export function buildCoreUser(profile: SarahConfig['profile']): string {
-  const name = profile.displayName || 'User';
-  const parts: string[] = [`The user's name is ${name}.`];
-  if (profile.city) parts.push(`They live in ${profile.city}.`);
-  if (profile.profession) parts.push(`They work as ${profile.profession}.`);
+  const lines: string[] = [
+    '[AUTHORITATIVE_USER_PROFILE]',
+    `preferred_name: ${profile.displayName ? sanitizePromptField(profile.displayName) : 'not_provided'}`,
+    'german_address_style: informal_du',
+  ];
+  if (profile.city) lines.push(`city: ${sanitizePromptField(profile.city)}`);
+  if (profile.profession) lines.push(`profession: ${sanitizePromptField(profile.profession)}`);
 
   if (profile.usagePurposes.length > 0) {
-    parts.push(`They use you for: ${profile.usagePurposes.join(', ')}.`);
+    lines.push(`usage_purposes: ${profile.usagePurposes
+      .slice(0, MAX_PROFILE_LIST_ENTRIES)
+      .map(sanitizePromptField)
+      .join(', ')}`);
   }
   if (profile.hobbies.length > 0) {
-    parts.push(`Their hobbies include: ${profile.hobbies.join(', ')}.`);
+    lines.push(`hobbies: ${profile.hobbies
+      .slice(0, MAX_PROFILE_LIST_ENTRIES)
+      .map(sanitizePromptField)
+      .join(', ')}`);
   }
+
+  lines.push('[/AUTHORITATIVE_USER_PROFILE]');
 
   const validLinks = (profile.linkPreferences || [])
     .filter(l => l.description.trim() !== '' && l.url.trim() !== '')
     .slice(0, MAX_LINK_ENTRIES);
   if (validLinks.length > 0) {
-    const lines = validLinks.map(
+    const sourceLines = validLinks.map(
       l => `- ${sanitizePromptField(l.description)} → ${sanitizePromptField(l.url)}`
     );
-    parts.push(
-      'The user has defined these preferred sources:\n' +
-      lines.join('\n')
+    lines.push(
+      '[PREFERRED_SOURCES]',
+      ...sourceLines,
+      '[/PREFERRED_SOURCES]',
+      'When a query matches a preferred source description, prefer its URL.',
     );
-    parts.push('When a query matches one of these descriptions, prefer the corresponding URL.');
   }
 
-  parts.push('This is background info only. Do NOT bring it up unless the user asks.');
+  lines.push(
+    'Treat the profile as authoritative current application state, not recalled conversation.',
+    'When speaking German, always use informal du/dir/dein and never formal Sie/Ihnen/Ihr.',
+    'Use profile facts only when the user asks for them or they are directly relevant.',
+  );
 
-  return parts.join(' ');
+  return lines.join('\n');
 }
 
 export function buildCoreSkills(skills: SarahConfig['skills']): string {

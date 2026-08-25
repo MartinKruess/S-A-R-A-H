@@ -21,8 +21,7 @@ export class RoutingService {
     const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1 });
     const tookMs = Math.round(performance.now() - start);
     const parsed = parseRouteTag(response);
-    const trimmed = response.trimStart();
-    const hadTag = trimmed.startsWith('[ROUTE:') || trimmed.startsWith('[ACTION:');
+    const hadTag = /^\s*\[(?:ROUTE:\w+|ACTION:[a-z_]+(?::[^\]]*)?)]\s*$/.test(response);
     // Ground-truth diagnostic (action layer is young): show exactly what the
     // router model emitted and how it was understood, so a "geht nicht" report
     // is never guesswork.

@@ -54,7 +54,7 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
   grid.className = 'settings-grid';
 
   grid.appendChild(sarahInput({
-    label: 'Anzeigename',
+    label: 'Ansprechname',
     value: profile.displayName || '',
     onChange: (val) => { profile.displayName = val; save('profile', profile); showSaved(feedback); },
   }));

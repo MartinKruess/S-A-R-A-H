@@ -169,11 +169,7 @@ export class ProgramLauncher {
         if (settled) return;
         settled = true;
         child.unref();
-        resolve(
-          program.type === 'launcher'
-            ? { ok: true, speak: `Ich starte den Launcher von ${program.name}.` }
-            : { ok: true },
-        );
+        resolve({ ok: true });
       });
     });
   }

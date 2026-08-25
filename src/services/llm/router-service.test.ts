@@ -116,6 +116,20 @@ describe('RouterService (history & sessions)', () => {
     }
   });
 
+  it('passes the authoritative user name and fixed Du address to the worker system prompt', async () => {
+    ctx.parsedConfig.profile.displayName = 'Martin';
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Was weißt du über mich?');
+
+    const systemPrompt = workerProvider.lastMessages?.[0].content;
+    expect(systemPrompt).toContain('preferred_name: Martin');
+    expect(systemPrompt).toContain('german_address_style: informal_du');
+    expect(systemPrompt).toContain('always use informal du/dir/dein');
+    expect(systemPrompt).toContain('unless the user asks about their name');
+  });
+
   it('feeds the start context to the worker as a transient block, never persisting it (H5)', async () => {
     await ctx.db.insert('conversations', { mode: 'ambient' }); // old session, id 1
     await ctx.db.insert('messages', { conversation_id: 1, role: 'user', content: 'alte Frage' });
@@ -206,6 +220,7 @@ describe('RouterService (history & sessions)', () => {
 class ScriptedProvider implements LlmProvider {
   readonly id = 'scripted';
   lastMessages: ChatMessage[] | null = null;
+  calls = 0;
   private queue: string[];
   constructor(...replies: string[]) {
     this.queue = replies;
@@ -217,6 +232,7 @@ class ScriptedProvider implements LlmProvider {
     return true;
   }
   async chat(messages: ChatMessage[], onChunk: (t: string) => void): Promise<string> {
+    this.calls++;
     this.lastMessages = messages;
     const reply = this.queue.shift() ?? 'leer';
     onChunk(reply);
@@ -246,8 +262,8 @@ describe('RouterService (action layer)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('emits action:request with a fresh requestId and speaks the feedback', async () => {
-    const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify] Ich öffne Spotify.'); // 1. Reply = warmup
+  it('emits action:request with a fresh requestId and speaks fixed code feedback', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify]'); // 1. Reply = warmup
     router = new RouterService(ctx, routerP, new ScriptedProvider());
     await router.init();
 
@@ -271,8 +287,80 @@ describe('RouterService (action layer)', () => {
     expect(msgs.map((m) => m.content)).toContain('Ich öffne Spotify.'); // feedback persisted as assistant turn
   });
 
+  it('never exposes trailing router prose and safely falls back to the worker', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:open_program:spotify] Ich öffne Spotify vielleicht.',
+    );
+    const workerP = new ScriptedProvider('Antwort vom Worker.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (msg) => requests.push(msg.data));
+    ctx.bus.on('llm:done', (msg) => done.push(msg.data.fullText));
+
+    await router.handleChatMessage('Öffne Spotify');
+
+    expect(requests).toHaveLength(0);
+    expect(done).toEqual(['Antwort vom Worker.']);
+    expect(done.join(' ')).not.toContain('vielleicht');
+  });
+
+  it('expands a configured slash command before normal safe routing', async () => {
+    ctx.parsedConfig.controls.customCommands = [
+      { command: '/spotify', prompt: 'Öffne Spotify' },
+    ];
+    const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (msg) => requests.push(msg.data));
+
+    await router.handleChatMessage('/spotify');
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ action: 'open_program', param: 'spotify' });
+    expect(routerP.lastMessages?.at(-1)).toEqual({ role: 'user', content: 'Öffne Spotify' });
+  });
+
+  it('rejects unknown slash commands without calling an LLM', async () => {
+    const routerP = new ScriptedProvider('ok');
+    const workerP = new ScriptedProvider('sollte nie kommen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (msg) => done.push(msg.data.fullText));
+
+    await router.handleChatMessage('/unbekannt');
+
+    expect(done).toEqual(['Diesen Slash-Command kenne ich nicht: /unbekannt.']);
+    expect(routerP.calls).toBe(1);
+    expect(workerP.calls).toBe(0);
+  });
+
+  it('answers a known name question deterministically without calling either model', async () => {
+    ctx.parsedConfig.profile.displayName = 'Martin';
+    const routerP = new ScriptedProvider('ok');
+    const workerP = new ScriptedProvider('sollte nie kommen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (msg) => done.push(msg.data.fullText));
+    await router.handleChatMessage('Weißt du, wie ich heiße?');
+
+    expect(router.activeModel).toBe('2b');
+    expect(done).toEqual(['Du heißt Martin.']);
+    expect(routerP.calls).toBe(1);
+    expect(workerP.calls).toBe(0);
+  });
+
   it('rejects unknown action names honestly and never emits action:request', async () => {
-    const routerP = new ScriptedProvider('ok', '[ACTION:send_all_data:evil] Klar.');
+    const routerP = new ScriptedProvider('ok', '[ACTION:send_all_data:evil]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
     await router.init();
     const requests: string[] = [];
@@ -291,7 +379,7 @@ describe('RouterService (action layer)', () => {
   });
 
   it('speaks an action:result with matching requestId, drops unknown/duplicate ids', async () => {
-    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel] Ich schaue mal.');
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
     await router.init();
     const done: string[] = [];
@@ -314,12 +402,12 @@ describe('RouterService (action layer)', () => {
     });
     await new Promise((r) => setTimeout(r, 20)); // let the output queue drain
 
-    expect(done).toEqual(['Ich schaue mal.', 'Drei Hotels gefunden.']);
+    expect(done).toEqual(['Ich suche danach.', 'Drei Hotels gefunden.']);
   });
 
   it('serializes late results against a running worker stream (no interleaved chunks)', async () => {
     const workerP = new ScriptedProvider('Lange Antwort vom Worker.');
-    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.');
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
     router = new RouterService(ctx, routerP, workerP);
     await router.init();
     const events: string[] = [];
@@ -343,7 +431,7 @@ describe('RouterService (action layer)', () => {
   });
 
   it('heuristic gate: action command in 9B window swaps back and routes (R4-M1 state reset)', async () => {
-    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.', '[ACTION:open_program:spotify] Ich öffne Spotify.');
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', '[ACTION:open_program:spotify]');
     const workerP = new ScriptedProvider('Photosynthese ist …', 'sollte nie kommen');
     router = new RouterService(ctx, routerP, workerP);
     await router.init();
@@ -361,7 +449,7 @@ describe('RouterService (action layer)', () => {
   });
 
   it('heuristic gate: plain chat in 9B window goes straight to the worker', async () => {
-    const routerP = new ScriptedProvider('ok', '[ROUTE:9b] Moment.');
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
     const workerP = new ScriptedProvider('Erste Antwort.', 'Zweite Antwort.');
     router = new RouterService(ctx, routerP, workerP);
     await router.init();
@@ -374,7 +462,7 @@ describe('RouterService (action layer)', () => {
   });
 
   it('destroy() clears pendingActions and the shutdown guard blocks late output', async () => {
-    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:x y] Moment.');
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:x y]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
     await router.init();
     let requestId = '';

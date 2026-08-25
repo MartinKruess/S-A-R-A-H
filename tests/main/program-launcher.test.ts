@@ -99,7 +99,7 @@ describe('ProgramLauncher.launch', () => {
     const launcher2 = new ProgramLauncher(vi.fn().mockReturnValue(child), vi.fn());
     const resultP = launcher2.launch('epic', PROGRAMS);
     setTimeout(() => child.emit('spawn'), 5);
-    expect((await resultP).speak).toBe('Ich starte den Launcher von Epic Games Launcher.');
+    expect(await resultP).toEqual({ ok: true });
   });
 
   it('appx: ignores a non-zero explorer exit when the process is actually running (the false-negative bug)', async () => {

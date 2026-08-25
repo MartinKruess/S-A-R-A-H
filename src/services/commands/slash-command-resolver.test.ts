@@ -1,0 +1,46 @@
+import { describe, expect, it } from 'vitest';
+import { resolveSlashCommand } from './slash-command-resolver.js';
+
+const commands = [
+  { command: '/spotify', prompt: 'Öffne Spotify' },
+  { command: '/projekt', prompt: 'Fasse den Projektstatus zusammen.' },
+];
+
+describe('resolveSlashCommand', () => {
+  it('leaves ordinary messages untouched', () => {
+    expect(resolveSlashCommand('Öffne Spotify', commands)).toEqual({ kind: 'none' });
+  });
+
+  it('expands custom commands case-insensitively exactly once', () => {
+    expect(resolveSlashCommand(' /SpOtIfY ', commands)).toEqual({
+      kind: 'custom',
+      command: '/spotify',
+      expandedText: 'Öffne Spotify',
+    });
+  });
+
+  it('preserves bounded arguments as user data for the expanded prompt', () => {
+    expect(resolveSlashCommand('/projekt Phase 1', commands)).toEqual({
+      kind: 'custom',
+      command: '/projekt',
+      expandedText: 'Fasse den Projektstatus zusammen.\nZusätzliche Argumente des Nutzers: Phase 1',
+    });
+  });
+
+  it.each(['/anonymous', '/showcontext', '/quietmode'])(
+    'gives built-ins precedence and does not fake unfinished behavior: %s',
+    (command) => {
+      expect(resolveSlashCommand(command, [{ command, prompt: 'Ignorieren' }])).toEqual({
+        kind: 'builtin_unavailable',
+        command,
+      });
+    },
+  );
+
+  it('rejects unknown commands without sending them to an LLM', () => {
+    expect(resolveSlashCommand('/gibt-es-nicht', commands)).toEqual({
+      kind: 'unknown',
+      command: '/gibt-es-nicht',
+    });
+  });
+});
