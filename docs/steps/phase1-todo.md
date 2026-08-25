@@ -20,7 +20,7 @@
 - 🟢 Der Router erkennt einfache Befehle, die ohne großes LLM ausgeführt werden können.
 - 🟢 Der Router erkennt Anfragen, die das große LLM benötigen.
 - 🟡 Der Router erkennt Research-Anfragen.
-- 🔴 Der Router kann explizite Slash-Commands direkt routen.
+- 🟡 Der Router kann benutzerdefinierte Slash-Commands deterministisch vor dem Modellrouting auflösen; Built-ins und praktische Abnahme fehlen noch.
 - 🟢 Das große LLM wird nur bei Bedarf gestartet.
 - 🟢 Das kleine Modell bzw. der Router wird beim Start des großen Modells korrekt behandelt.
 - 🟢 Das große Modell bleibt nach einer Anfrage für einen definierten Zeitraum aktiv, damit Folgefragen ohne erneute Ladezeit möglich sind.
@@ -60,8 +60,8 @@
 - 🟡 Sarah lässt sich während ihrer Sprachausgabe zuverlässig unterbrechen.
 - 🟢 Nach einer Unterbrechung kann das Gespräch normal fortgesetzt werden.
 - 🟢 Sarah antwortet standardmäßig in natürlicher Gesprächssprache.
-- 🔴 Sarah duzt den Nutzer standardmäßig.
-- 🔴 Die gewünschte Ansprache mit Du oder Sie kann konfiguriert werden.
+- 🟢 Sarah duzt den Nutzer standardmäßig.
+- ⚪ Eine frei konfigurierbare Ansprache mit Du oder Sie ist für Desktop V1 bewusst nicht vorgesehen; formelle Ansprache kann später über einen Persona-Modus erfolgen.
 - 🟢 Ein benutzerdefinierter Name, mit dem Sarah den Nutzer ansprechen soll, kann hinterlegt werden.
 - 🟢 Nutzerpräferenzen beeinflussen Antworten sinnvoll.
 - 🟡 Hobbys und Interessen werden nur verwendet, wenn sie tatsächlich relevant sind.
@@ -759,12 +759,12 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 ## 12.1 Slash-Commands
 
-- 🔴 Slash-Commands werden unterstützt.
+- 🟡 Benutzerdefinierte Slash-Commands werden deterministisch erkannt und genau einmal expandiert; Built-ins und praktische Abnahme fehlen noch.
 - 🔴 `/research` kann Research direkt aufrufen.
 - 🔴 `/code` kann den vorgesehenen Coding-Modus direkt aufrufen.
 - 🔴 weitere Systemcommands können definiert werden.
-- 🔴 Slash-Commands umgehen unnötige Router-Interpretation.
-- 🔴 Slash-Commands können über PC verwendet werden.
+- 🟡 Erkannte benutzerdefinierte Slash-Commands umgehen unnötige Router-Interpretation; der vollständige Command-Vertrag fehlt noch.
+- 🟡 Slash-Commands können technisch über den PC-Eingabepfad verwendet werden; die praktische Abnahme fehlt noch.
 - ⚪ Slash-Commands sind für spätere Mobile-Nutzung vorgesehen.
 
 ## 12.2 Eigene Commands

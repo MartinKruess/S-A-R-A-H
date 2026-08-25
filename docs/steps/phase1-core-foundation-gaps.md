@@ -20,12 +20,14 @@ Ein grüner Produktpunkt kann für den Prototyp ausreichend sein und trotzdem au
 - **P1:** vor Features stabilisieren, die diesen Bereich verwenden
 - **P2:** vor der vollständigen Phase-1-Abnahme schließen
 
-## Snapshot nach dem zweiten Code-Review (24.08.2026)
+## Snapshot nach Prompt-/Router-Fundament und Layer 0 (25.08.2026)
 
 - 117 bewertete Core-Aussagen im Abschnitt `Aktueller Stand`
 - 19 🟢 ausreichend tragfähig
-- 35 🟡 vorhanden, aber noch nicht belastbar genug
-- 63 🔴 technisch offen
+- 40 🟡 vorhanden, aber noch nicht belastbar genug
+- 58 🔴 technisch offen
+- Prompt-/Router-Fundament und Layer 0 sind automatisiert umgesetzt.
+- Die verbleibende praktische Windows-Matrix hält die betroffenen Runtime-Aussagen bis zur realen Abnahme auf 🟡.
 
 Diese Zahlen sind eine Bestandsaufnahme des Fundaments und ausdrücklich **kein** zusätzlicher Produktfortschrittszähler neben den 704 Checkpunkten.
 
@@ -76,7 +78,7 @@ Vor Router, Worker und Tools muss genau eine kontrollierte Eingangsschicht entsc
 - 🟢 Aktionsnamen und Parameter werden hinter dem Router über eine zentrale Allowlist und Zod-Schemas geprüft.
 - 🟢 Ungültige oder textreiche Routerausgaben fallen sicher auf den Worker zurück und werden nicht als Routertext angezeigt.
 - 🟡 Der Router-Prompt wurde stark verkleinert, muss aber mit real gesprochenen Formulierungen praktisch geprüft werden.
-- 🔴 Die Browser-Suche lässt Zusammenfassungen derzeit vom jeweils warmen Provider erzeugen; ist der Worker nicht aktiv, wird dafür das Router-Modell zu freier Textgenerierung verwendet und umgeht damit die neue tag-only-Rollengrenze.
+- 🟡 Die Browser-Suche erzeugt freie Zusammenfassungen ausschließlich über den lokalen Worker; der reale Router-/Worker-/Search-Ablauf muss noch praktisch abgenommen werden.
 - 🔴 Ein echtes Backend-Ziel existiert noch nicht; Backend-, Extern- und Vision-Routen landen derzeit beim lokalen Worker.
 - 🟡 Interne Bezeichnungen `2b` und `9b` entsprechen nicht mehr den tatsächlich konfigurierten Modellgrößen und verschleiern die fachlichen Rollen.
 
@@ -441,11 +443,11 @@ Beschädigte oder mit einem falschen Schlüssel gelesene Daten dürfen niemals a
 ## Aktueller Stand
 
 - 🟢 Services können zentral registriert und grundsätzlich in umgekehrter Reihenfolge beendet werden.
-- 🟡 Router, Whisper und Piper schützen einzelne Initialisierungspfade bereits per Single-Flight gegen Doppelstart.
-- 🔴 Schlägt `ServiceRegistry.initAll()` bei einem Service fehl, bleiben vorherige Subscriptions beziehungsweise Initialisierungen bestehen und spätere Services werden nicht mehr gestartet; der Bootpfad protokolliert den Fehler und läuft dennoch weiter.
-- 🔴 Der Splash kann `router-ready` beziehungsweise `piper-ready` auch nach einem Fehler senden; es gibt keinen gemeinsamen, technisch verifizierten Ready-/Degraded-Snapshot aller benötigten Fähigkeiten.
-- 🔴 Ein Fehler in `destroy()` kann die Bereinigung nachfolgender Services verhindern; Browser, System-Timer und weitere Infrastruktur werden zusätzlich außerhalb der Registry manuell verwaltet.
-- 🔴 Der vollständige Cleanup hängt derzeit am Ereignis `window-all-closed`; direktes Beenden, Teilinitialisierung und Prozessfehler besitzen keinen gemeinsamen idempotenten Shutdown-Pfad.
+- 🟡 Router, Whisper und Piper schützen ihre Initialisierungspfade per Single-Flight gegen Doppelstart; die reale Mehrfachstart-Matrix steht noch aus.
+- 🟡 `ServiceRegistry` behandelt Teilfehler, initialisiert unabhängige Services weiter und bereinigt fehlgeschlagene Teilinitialisierungen; reale Degraded-Starts stehen noch aus.
+- 🟡 Splash und Renderer erhalten einen technisch abgeleiteten Ready-/Degraded-Snapshot statt zeitgesteuerter Erfolgsmeldungen; die sichtbare praktische Abnahme steht noch aus.
+- 🟡 Cleanup-Fehler werden gesammelt, während nachfolgende Services und registrierte externe Ressourcen weiter begrenzt bereinigt werden; die reale Prozesskontrolle steht noch aus.
+- 🟡 Fenster-Schließen, direkter Quit, fataler Bootstrap und Teilinitialisierung verwenden einen gemeinsamen idempotenten Shutdown-Orchestrator; die praktische Windows-Matrix steht noch aus.
 
 ## Fundamentlücke
 
@@ -535,8 +537,8 @@ Die Anwendung besitzt mehrere technisch ähnliche, aber getrennt gepflegte Vertr
 
 # Empfohlene Bearbeitungsreihenfolge
 
-1. Auf dem aktuellen Branch auch die freie Browser-Zusammenfassung aus dem Router-Provider entfernen; danach tag-only Router, feste Action-Rückmeldungen, Namensantwort und Custom-Command-Makros praktisch abnehmen und abschließen.
-2. App-/Service-Lifecycle und wahrheitsgemäße Ready-/Degraded-Zustände vereinheitlichen.
+1. **Automatisiert umgesetzt, praktisch offen:** tag-only Router, Worker-only Browser-Zusammenfassung, feste Action-Rückmeldungen, Namensantwort und Custom-Command-Makros praktisch abnehmen.
+2. **Automatisiert umgesetzt, praktisch offen:** App-/Service-Lifecycle und wahrheitsgemäße Ready-/Degraded-Zustände mit der Windows-Matrix abnehmen.
 3. IPC-/Event-Verträge, Turn-IDs und Listener-Fehlerisolation als gemeinsame Systemgrenzen festziehen.
 4. Turn-Steuerung, einheitliche Eingangsschicht und Unterbrechung als vollständigen End-to-End-Abbruch stabilisieren.
 5. Mikrofon-Aktivierungsgrenze, Persistence-Policy, `memoryAllowed` und echten Inkognito-Modus umsetzen.
