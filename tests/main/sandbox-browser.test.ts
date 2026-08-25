@@ -162,4 +162,16 @@ describe('SandboxBrowser.show', () => {
     windows[1].webContents.emit('did-finish-load');
     await expect(p2).resolves.toBe(true);
   });
+
+  it('aborts an active stored-result display during shutdown', async () => {
+    const { browser, windows } = makeBrowser();
+    const controller = new AbortController();
+    const showing = browser.show('https://example.com/seite', controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    controller.abort();
+
+    await expect(showing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(windows[0].webContents.stop).toHaveBeenCalled();
+  });
 });

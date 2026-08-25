@@ -11,5 +11,5 @@ export interface SttProvider {
   transcribe(audio: Float32Array, sampleRate: number, language?: string): Promise<string>;
 
   /** Clean up resources */
-  destroy(): Promise<void>;
+  destroy(signal?: AbortSignal): Promise<void>;
 }

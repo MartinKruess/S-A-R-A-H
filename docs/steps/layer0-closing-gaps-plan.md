@@ -109,13 +109,16 @@ Die praktische Matrix bleibt unverändert im Hauptplan dokumentiert. Tests ohne 
 - Ein abgebrochener oder fehlgeschlagener Modellwechsel räumt einen möglichen Teil-Load auf und stellt den Router sofort wieder her. Scheitert auch das, bleibt der Zustand ehrlich auf `error`.
 - Faster Whisper reagiert auf Abort, Spawn-Fehler und einen vorzeitigen Prozess-Exit; fehlgeschlagene Voice-Provider werden sofort best-effort bereinigt.
 - Der native Hotkey-Hook besitzt einen finalen Destroy-Pfad. Teilweise erzeugte Storage-Ressourcen und fatale Bootstrap-Fehler werden kontrolliert bereinigt.
-- Der dritte relevante Codeaudit ergab nach diesen Korrekturen keine weitere offene Layer-0-Codelücke.
+- Lifecycle-Cleanups und Service-Destroys besitzen feste Zeitgrenzen; ein hängender Besitzer verhindert nicht länger den restlichen Shutdown.
+- Ein nicht kooperativer Service, dessen Start erst nach dem ersten Cleanup endet, wird anschließend ein zweites Mal idempotent bereinigt.
+- Laufende Actions werden beim Shutdown abgebrochen beziehungsweise begrenzt drainiert. Search, Browseranzeige, AppX-Verifikation, Spotify/OAuth, Systembefehle und Media-Helper übernehmen dafür denselben Abbruchkontext; späte Action-Ergebnisse werden verworfen.
+- Ein abschließender erneuter Codeaudit ergab nach diesen Korrekturen keine weitere offene Layer-0-Codelücke.
 
 ### Automatisierte Abnahme
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 70 Testdateien mit 703 Tests erfolgreich.
+- 71 Testdateien mit 715 Tests erfolgreich.
 - `git diff --check` ohne Whitespace-Fehler; die ausgegebenen Hinweise betreffen nur die bestehende LF-/CRLF-Konfiguration.
 
 ### Verbleibende Grenze

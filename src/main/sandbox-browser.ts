@@ -193,11 +193,13 @@ export class SandboxBrowser {
   }
 
   /** Shows a stored session URL – true only after the page finished loading (Mi6). */
-  async show(url: string): Promise<boolean> {
+  async show(url: string, signal?: AbortSignal): Promise<boolean> {
     if (!isHttpUrl(url)) return false;
+    throwIfAborted(signal);
     const win = await this.getWindow();
+    throwIfAborted(signal);
     const wc = win.webContents;
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean>((resolve, reject) => {
       let settled = false;
       let redirects = 0;
 
@@ -208,6 +210,7 @@ export class SandboxBrowser {
         wc.removeListener('did-fail-load', onFail);
         wc.removeListener('will-redirect', onRedirect);
         wc.removeListener('render-process-gone', onGone);
+        signal?.removeEventListener('abort', onAbort);
       };
       const fail = (): void => {
         if (settled) return;
@@ -234,6 +237,12 @@ export class SandboxBrowser {
         fail();
         win.destroy();
       };
+      const onAbort = (): void => {
+        if (settled) return;
+        wc.stop();
+        cleanup();
+        reject(abortError('Browser display aborted'));
+      };
       const timeout = setTimeout(() => {
         wc.stop();
         fail();
@@ -243,6 +252,7 @@ export class SandboxBrowser {
       wc.on('did-fail-load', onFail);
       wc.on('will-redirect', onRedirect);
       wc.on('render-process-gone', onGone);
+      signal?.addEventListener('abort', onAbort, { once: true });
       win.loadURL(url).catch(() => onFail());
     });
   }

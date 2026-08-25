@@ -101,11 +101,11 @@ export class RouterService implements SarahService {
     this.status = 'running';
   }
 
-  async destroy(): Promise<void> {
+  async destroy(signal?: AbortSignal): Promise<void> {
     this.pendingActions.clear();
     this.history = [];
     try {
-      await this.modelRuntime.destroy();
+      await this.modelRuntime.destroy(signal);
     } finally {
       this.status = 'stopped';
     }

@@ -1,6 +1,7 @@
 // src/main/program-launcher.ts
 import { spawn as nodeSpawn, execFile as nodeExecFile } from 'child_process';
 import type { ProgramEntry } from '../core/config-schema.js';
+import { abortableDelay, abortError, throwIfAborted } from '../core/abort-utils.js';
 
 export type { ProgramEntry } from '../core/config-schema.js';
 
@@ -52,7 +53,7 @@ export function matchProgram(query: string, programs: ProgramEntry[]): MatchResu
 type SpawnFn = typeof nodeSpawn;
 type ExecFileFn = (cmd: string, args: string[], cb: (err: Error | null) => void) => void;
 /** Verifies a process is running by image name (e.g. "Spotify.exe"). */
-type ProcessCheckFn = (imageName: string) => Promise<boolean>;
+type ProcessCheckFn = (imageName: string, signal?: AbortSignal) => Promise<boolean>;
 
 /**
  * Fallback map for well-known Store apps whose process name can't be derived
@@ -69,9 +70,9 @@ function knownAppxProcess(aumid: string): string | undefined {
 }
 
 /** Default process check: tasklist filtered by image name (Windows). */
-function defaultProcessCheck(imageName: string): Promise<boolean> {
+function defaultProcessCheck(imageName: string, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
-    nodeExecFile('tasklist', ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV', '/NH'], (err, stdout) => {
+    nodeExecFile('tasklist', ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV', '/NH'], { signal }, (err, stdout) => {
       if (err) {
         resolve(false);
         return;
@@ -91,7 +92,8 @@ export class ProgramLauncher {
     private appxVerifyDelayMs = 2500,
   ) {}
 
-  async launch(query: string, programs: ProgramEntry[]): Promise<LaunchResult> {
+  async launch(query: string, programs: ProgramEntry[], signal?: AbortSignal): Promise<LaunchResult> {
+    throwIfAborted(signal);
     const match = matchProgram(query, programs);
     console.log(
       `[ProgramLauncher] query=${JSON.stringify(query)} programs=${programs.length} → ${match.kind}` +
@@ -110,7 +112,7 @@ export class ProgramLauncher {
       return { ok: false, speak: `Der Eintrag für ${program.name} zeigt auf einen Updater — ich starte den nicht.` };
     }
     if (program.type === 'appx') {
-      return this.launchAppx(program);
+      return this.launchAppx(program, signal);
     }
     return this.launchExe(program);
   }
@@ -123,34 +125,59 @@ export class ProgramLauncher {
    * ignore the exit code and verify via a process check when we know the image
    * name — otherwise stay optimistic instead of emitting a false failure.
    */
-  private launchAppx(program: ProgramEntry): Promise<LaunchResult> {
+  private launchAppx(program: ProgramEntry, signal?: AbortSignal): Promise<LaunchResult> {
     const aumid = program.path.replace(/^appx:/, '');
     const processName = program.processName ?? knownAppxProcess(aumid);
     console.log(
       `[ProgramLauncher] launchAppx explorer.exe shell:AppsFolder\\${aumid}` +
         ` (verify=${processName ?? 'none'})`,
     );
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => signal?.removeEventListener('abort', onAbort);
+      const finish = (result: LaunchResult): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(result);
+      };
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = (): void => fail(abortError());
+      signal?.addEventListener('abort', onAbort, { once: true });
+
       this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
+        if (settled) return;
         if (err) console.warn('[ProgramLauncher] launchAppx explorer exit non-zero (ignored):', aumid, err.message);
 
         if (!processName) {
           // Can't verify — never emit a false "not installed" for a delegated launch.
           console.log('[ProgramLauncher] launchAppx no processName → optimistic ok');
-          resolve({ ok: true });
+          finish({ ok: true });
           return;
         }
 
-        setTimeout(() => {
-          void this.verifyProcess(processName).then((running) => {
+        void (async () => {
+          try {
+            await abortableDelay(this.appxVerifyDelayMs, signal);
+            const running = signal
+              ? await this.verifyProcess(processName, signal)
+              : await this.verifyProcess(processName);
+            throwIfAborted(signal);
             console.log(`[ProgramLauncher] launchAppx verify ${processName} → running=${running}`);
-            resolve(
+            finish(
               running
                 ? { ok: true }
                 : { ok: false, speak: `${program.name} ließ sich nicht starten — vielleicht ist die App nicht mehr installiert.` },
             );
-          });
-        }, this.appxVerifyDelayMs);
+          } catch (error) {
+            fail(error);
+          }
+        })();
       });
     });
   }

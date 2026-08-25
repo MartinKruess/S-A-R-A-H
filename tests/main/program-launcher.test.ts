@@ -122,6 +122,19 @@ describe('ProgramLauncher.launch', () => {
     expect(result.speak).toContain('Spotify');
   });
 
+  it('aborts AppX verification during application shutdown', async () => {
+    const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null));
+    const verify = vi.fn().mockResolvedValue(true);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 10_000);
+    const controller = new AbortController();
+
+    const launching = launcher.launch('spotify', PROGRAMS, controller.signal);
+    controller.abort();
+
+    await expect(launching).rejects.toMatchObject({ name: 'AbortError' });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   it('appx without a known process name stays optimistic instead of a false failure', async () => {
     const programs = [prog({ name: 'LinkedIn', path: 'appx:7EE7776C.LinkedInforWindows_w1wdnht996qgy!App', type: 'appx' })];
     const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) =>

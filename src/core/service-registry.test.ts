@@ -175,6 +175,26 @@ describe('ServiceRegistry', () => {
     expect(svc.destroy).toHaveBeenCalledOnce();
     release();
     await starting;
+    expect(svc.destroy).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues cleanup after a service destroy exceeds its deadline', async () => {
+    registry = new ServiceRegistry(bus, { destroyTimeoutMs: 5 });
+    const healthy = createMockService('healthy');
+    const blocked = createMockService('blocked');
+    blocked.destroy = vi.fn(async () => new Promise<void>(() => {}));
+    registry.register(healthy);
+    registry.register(blocked);
+    await registry.initAll();
+
+    const report = await registry.destroyAll();
+
+    expect(healthy.destroy).toHaveBeenCalledOnce();
+    expect(report.ok).toBe(false);
+    expect(report.services.find((result) => result.id === 'blocked')).toMatchObject({
+      ok: false,
+      error: { name: 'TimeoutError' },
+    });
   });
 
   it('throws on duplicate service ID', () => {

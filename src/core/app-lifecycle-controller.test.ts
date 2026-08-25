@@ -94,6 +94,24 @@ describe('AppLifecycleController', () => {
     expect(lifecycle.acceptingWork).toBe(false);
   });
 
+  it('continues shutdown after an external cleanup exceeds its deadline', async () => {
+    const registry = new ServiceRegistry(new MessageBus());
+    const lifecycle = new AppLifecycleController(registry, { cleanupTimeoutMs: 5 });
+    const completed = vi.fn();
+    lifecycle.registerCleanup('after-timeout', completed);
+    lifecycle.registerCleanup('blocked', async () => new Promise<void>(() => {}));
+
+    const report = await lifecycle.shutdown();
+
+    expect(completed).toHaveBeenCalledOnce();
+    expect(report.ok).toBe(false);
+    expect(report.cleanups.find((result) => result.label === 'blocked')).toMatchObject({
+      ok: false,
+      error: { name: 'TimeoutError' },
+    });
+    expect(lifecycle.snapshot.state).toBe('stopped');
+  });
+
   it('detaches inbound bridges before services and closes resources afterwards', async () => {
     const order: string[] = [];
     const registry = new ServiceRegistry(new MessageBus());

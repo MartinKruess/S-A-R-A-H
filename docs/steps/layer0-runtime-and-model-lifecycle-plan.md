@@ -401,6 +401,8 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Voice-Initialisierung ist single-flight; STT und TTS werden getrennt als ready/unavailable gemeldet und unabhängig bereinigt.
 - Service-Starts sind über einen gemeinsamen Lifecycle-Abbruch kontrollierbar; der Shutdown wartet auf nicht kooperative Starts nur begrenzt.
 - Laufende Search-, Browser-, Container-, Modell- und Voice-Startoperationen reichen den Shutdown-Abbruch bis zu ihren blockierenden Adaptern weiter.
+- Lifecycle-Cleanups und Service-Destroys besitzen feste Fristen und lassen spätere Besitzer auch nach einem Timeout weiter bereinigen.
+- Ein verspätet abgeschlossener nicht kooperativer Service-Start erhält einen nachträglichen zweiten idempotenten Cleanup-Lauf.
 - Die neue `ModelRuntime` besitzt Containerstart, Provider, Availability, Residency, serielle Transitionen, Idle-Restore und Shutdown-Unload.
 - Modelloperationen tragen eine Lifecycle-Generation; verspätete Transitionen können nach Shutdown keinen geladenen Zustand zurückschreiben.
 - Fehlgeschlagene oder abgebrochene Worker-Transitionen bereinigen einen möglichen Teil-Load und stellen den Router sofort wieder her oder melden dessen Fehler ehrlich.
@@ -413,14 +415,15 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Splash unterscheidet Ready und terminalen Degraded-/Unavailable-Zustand und kann auch ohne STT beziehungsweise TTS fortfahren.
 - Faster-Whisper-Teilstarts, ausgefallene Voice-Provider, der native Hotkey-Hook und teilweise erzeugte Bootstrap-Storage-Ressourcen besitzen explizite Cleanup-Pfade.
 - Fatale Fehler vor einer vollständig erzeugten AppContext-Instanz enden in einer sichtbaren Fehlermeldung und einem kontrollierten App-Quit.
+- ActionService stoppt neue Arbeit beim Shutdown, bricht laufende Adapter soweit möglich ab, wartet begrenzt und sendet danach keine verspäteten Ergebnisse mehr.
 
 ### Automatisiert geprüft
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 70 Testdateien mit 703 Tests erfolgreich.
+- 71 Testdateien mit 715 Tests erfolgreich.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
-- Ein dritter Codeaudit nach dem Abschluss der Abbruch-, Rollback-, Voice- und Bootstrap-Lücken ergab keine weitere relevante Layer-0-Codelücke.
+- Ein abschließender erneuter Codeaudit nach den Cleanup-Fristen, dem Late-Init-Cleanup und dem Action-Drain ergab keine weitere relevante Layer-0-Codelücke.
 
 ### Realer Windows-Smoke-Test
 

@@ -15,6 +15,7 @@ import {
   randomState,
   refreshTokens,
 } from './oauth-pkce.js';
+import { abortError, throwIfAborted } from '../../core/abort-utils.js';
 
 type FetchFn = typeof fetch;
 
@@ -100,7 +101,8 @@ export class OAuthConnectionService {
    * the expiry skew. Missing token, unconfigured provider (empty clientId), or a
    * failed refresh → null (a failed refresh also disconnects the provider).
    */
-  async getAccessToken(id: string): Promise<string | null> {
+  async getAccessToken(id: string, signal?: AbortSignal): Promise<string | null> {
+    throwIfAborted(signal);
     const p = this.provider(id);
     if (!p || !p.clientId) return null;
 
@@ -112,7 +114,7 @@ export class OAuthConnectionService {
     }
 
     try {
-      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn);
+      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn, signal);
       const updated: StoredToken = {
         // Keep the existing refresh token unless the response rotated it.
         refreshToken: tokens.refreshToken ?? stored.refreshToken,
@@ -123,6 +125,7 @@ export class OAuthConnectionService {
       this.tokenStore.set(id, updated);
       return updated.accessToken;
     } catch (err) {
+      if (signal?.aborted) throw abortError();
       console.warn(`[OAuth] refresh failed for '${id}', disconnecting:`, (err as Error).message);
       this.tokenStore.delete(id);
       return null;

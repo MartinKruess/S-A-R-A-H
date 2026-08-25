@@ -7,7 +7,7 @@ import { OllamaProvider } from './providers/ollama-provider.js';
 import { RoutingService, type RoutingResult } from './routing-service.js';
 import { VramManager } from './vram-manager.js';
 import { WorkerService, type WorkerResult } from './worker-service.js';
-import { linkAbortSignals, throwIfAborted } from '../../core/abort-utils.js';
+import { linkAbortSignals, runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
 
 export type ModelRole = 'router' | 'local_worker';
@@ -43,7 +43,7 @@ export interface ModelRuntimePort extends WorkerTextGenerator {
   ): Promise<WorkerResult>;
   ensureRole(role: ModelRole): Promise<void>;
   scheduleRouterRestore(): void;
-  destroy(): Promise<void>;
+  destroy(signal?: AbortSignal): Promise<void>;
   /** Compatibility seam for focused legacy tests; productive code never calls it. */
   assumeRole(role: ModelRole): void;
 }
@@ -61,12 +61,14 @@ export interface ModelRuntimeDeps {
   onCapability?: (name: 'router' | 'local_worker', state: RuntimeState, message?: string) => void;
   idleTimeoutMs?: number;
   operationDrainTimeoutMs?: number;
+  cleanupTimeoutMs?: number;
   /** Test/legacy adapter only: let the real request perform Ollama's lazy model load. */
   eagerLoadTransitions?: boolean;
 }
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_DRAIN_TIMEOUT_MS = 10_000;
+const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 3_000;
 
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
@@ -103,6 +105,7 @@ export class ModelRuntime implements ModelRuntimePort {
   private readonly onCapability?: ModelRuntimeDeps['onCapability'];
   private readonly idleTimeoutMs: number;
   private readonly operationDrainTimeoutMs: number;
+  private readonly cleanupTimeoutMs: number;
   private readonly eagerLoadTransitions: boolean;
   private current: ModelRuntimeSnapshot;
   private initPromise: Promise<ModelRuntimeSnapshot> | null = null;
@@ -140,6 +143,7 @@ export class ModelRuntime implements ModelRuntimePort {
     this.onCapability = deps.onCapability;
     this.idleTimeoutMs = deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.operationDrainTimeoutMs = deps.operationDrainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
+    this.cleanupTimeoutMs = deps.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
     this.eagerLoadTransitions = deps.eagerLoadTransitions ?? true;
     this.current = {
       state: 'registered',
@@ -465,13 +469,13 @@ export class ModelRuntime implements ModelRuntimePort {
     this.current.roles[other].residency = 'unloaded';
   }
 
-  destroy(): Promise<void> {
+  destroy(signal?: AbortSignal): Promise<void> {
     if (this.destroyPromise) return this.destroyPromise;
-    this.destroyPromise = this.runDestroy();
+    this.destroyPromise = this.runDestroy(signal);
     return this.destroyPromise;
   }
 
-  private async runDestroy(): Promise<void> {
+  private async runDestroy(signal?: AbortSignal): Promise<void> {
     if (this.destroyed) return;
     this.shuttingDown = true;
     this.generation += 1;
@@ -481,21 +485,36 @@ export class ModelRuntime implements ModelRuntimePort {
     this.runtimeAbort.abort();
 
     await this.waitForOperationDrain();
-    const [routerReleased, workerReleased] = await Promise.all([
-      this.vram.unloadModel(this.config.routerModel),
-      this.vram.unloadModel(this.config.workerModel),
+    const releaseModel = async (model: string): Promise<void> => {
+      const released = await runWithTimeout(
+        (cleanupSignal) => this.vram.unloadModel(model, cleanupSignal),
+        this.cleanupTimeoutMs,
+        `Model cleanup timed out: ${model}`,
+        signal,
+      );
+      if (!released) throw new Error(`Model could not be unloaded: ${model}`);
+    };
+    const releases = await Promise.allSettled([
+      releaseModel(this.config.routerModel),
+      releaseModel(this.config.workerModel),
     ]);
     this.current.activeRole = null;
-    this.current.roles.router.residency = 'unloaded';
-    this.current.roles.local_worker.residency = 'unloaded';
+    this.current.roles.router.residency = releases[0].status === 'fulfilled' ? 'unloaded' : 'error';
+    this.current.roles.local_worker.residency = releases[1].status === 'fulfilled' ? 'unloaded' : 'error';
+    this.current.roles.router.message = releases[0].status === 'rejected'
+      ? errorMessage(releases[0].reason)
+      : undefined;
+    this.current.roles.local_worker.message = releases[1].status === 'rejected'
+      ? errorMessage(releases[1].reason)
+      : undefined;
     this.current.state = 'stopped';
     this.destroyed = true;
-    if (this.eagerLoadTransitions && (!routerReleased || !workerReleased)) {
+    const failures = releases.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (this.eagerLoadTransitions && failures.length > 0) {
       throw new AggregateError(
-        [
-          ...(!routerReleased ? [new Error(`Router model could not be unloaded: ${this.config.routerModel}`)] : []),
-          ...(!workerReleased ? [new Error(`Worker model could not be unloaded: ${this.config.workerModel}`)] : []),
-        ],
+        failures.map((failure) => failure.reason),
         'Model cleanup failed',
       );
     }

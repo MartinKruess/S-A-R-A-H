@@ -1,6 +1,6 @@
 import type { MessageBus } from './message-bus.js';
 import type { SarahService } from './service.interface.js';
-import { abortError, waitForSettlement } from './abort-utils.js';
+import { abortError, runWithTimeout, waitForSettlement } from './abort-utils.js';
 
 export interface ServiceInitResult {
   id: string;
@@ -27,9 +27,11 @@ export interface ServiceDestroyReport {
 
 export interface ServiceRegistryOptions {
   initDrainTimeoutMs?: number;
+  destroyTimeoutMs?: number;
 }
 
 const DEFAULT_INIT_DRAIN_TIMEOUT_MS = 2_000;
+const DEFAULT_DESTROY_TIMEOUT_MS = 10_000;
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -49,9 +51,11 @@ export class ServiceRegistry {
   private destroyed = false;
 
   private readonly initDrainTimeoutMs: number;
+  private readonly destroyTimeoutMs: number;
 
   constructor(private bus: MessageBus, options: ServiceRegistryOptions = {}) {
     this.initDrainTimeoutMs = options.initDrainTimeoutMs ?? DEFAULT_INIT_DRAIN_TIMEOUT_MS;
+    this.destroyTimeoutMs = options.destroyTimeoutMs ?? DEFAULT_DESTROY_TIMEOUT_MS;
   }
 
   /** Register a service. Must be called before initAll(). */
@@ -186,12 +190,21 @@ export class ServiceRegistry {
   private destroyServiceOnce(service: SarahService): Promise<ServiceDestroyResult> {
     const existing = this.cleanupPromises.get(service.id);
     if (existing) return existing;
-    const cleanup = Promise.resolve()
-      .then(() => service.destroy())
+    const attempt = runWithTimeout(
+      (signal) => service.destroy(signal),
+      this.destroyTimeoutMs,
+      `Service cleanup timed out: ${service.id}`,
+    )
       .then(
         () => ({ id: service.id, ok: true }) satisfies ServiceDestroyResult,
         (value) => ({ id: service.id, ok: false, error: toError(value) }) satisfies ServiceDestroyResult,
       );
+    let cleanup!: Promise<ServiceDestroyResult>;
+    cleanup = attempt.finally(() => {
+      if (this.cleanupPromises.get(service.id) === cleanup) {
+        this.cleanupPromises.delete(service.id);
+      }
+    });
     this.cleanupPromises.set(service.id, cleanup);
     return cleanup;
   }

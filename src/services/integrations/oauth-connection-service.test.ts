@@ -105,6 +105,25 @@ describe('OAuthConnectionService', () => {
     expect(store.has('spotify')).toBe(false);
   });
 
+  it('getAccessToken: shutdown abort preserves the stored connection', async () => {
+    const now = () => 1_000_000;
+    const store = fakeStore({
+      spotify: { refreshToken: 'keep', accessToken: 'stale', expiresAt: now() + 1000, scope: 's' },
+    });
+    const fetchFn = vi.fn((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('refresh aborted')), { once: true });
+    })) as unknown as typeof fetch;
+    const svc = makeService({ store, fetchFn, now });
+    const controller = new AbortController();
+
+    const refreshing = svc.getAccessToken('spotify', controller.signal);
+    controller.abort();
+
+    await expect(refreshing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(store.has('spotify')).toBe(true);
+    expect(store.get('spotify')?.refreshToken).toBe('keep');
+  });
+
   it('getAccessToken: no stored token → null', async () => {
     const svc = makeService({ store: fakeStore() });
     expect(await svc.getAccessToken('spotify')).toBeNull();

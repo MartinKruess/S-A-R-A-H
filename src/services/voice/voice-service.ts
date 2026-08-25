@@ -189,7 +189,7 @@ export class VoiceService implements SarahService {
     this.status = this.capabilities.stt || this.capabilities.tts ? 'running' : 'error';
   }
 
-  async destroy(): Promise<void> {
+  async destroy(signal?: AbortSignal): Promise<void> {
     const syncFailures: unknown[] = [];
     const attempt = (cleanup: () => void): void => {
       try {
@@ -218,9 +218,9 @@ export class VoiceService implements SarahService {
     }
 
     const cleanupResults = await Promise.allSettled([
-      Promise.resolve().then(() => this.stt.destroy()),
-      Promise.resolve().then(() => this.tts.destroy()),
-      Promise.resolve().then(() => this.wakeWord.destroy()),
+      Promise.resolve().then(() => this.stt.destroy(signal)),
+      Promise.resolve().then(() => this.tts.destroy(signal)),
+      Promise.resolve().then(() => this.wakeWord.destroy(signal)),
       Promise.resolve().then(() => this.audio.destroy()),
     ]);
 

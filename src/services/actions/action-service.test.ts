@@ -3,7 +3,7 @@ import { ActionService } from './action-service.js';
 import type { SearchLike } from './action-service.js';
 import { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
-import type { MediaController } from './media-controller.js';
+import type { MediaController, MediaResult } from './media-controller.js';
 import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
@@ -40,6 +40,7 @@ function makeService(over: {
   search?: Parameters<typeof makeSearch>[0];
   spotify?: SpotifyActions;
   media?: MediaController;
+  drainTimeoutMs?: number;
 } = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
@@ -49,7 +50,11 @@ function makeService(over: {
   const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
   const spotify = over.spotify ?? makeSpotify();
   const media = over.media ?? makeMedia();
-  const service = new ActionService(bus, { launcher, getPrograms: () => [], search, system, spotify, media });
+  const service = new ActionService(
+    bus,
+    { launcher, getPrograms: () => [], search, system, spotify, media },
+    { drainTimeoutMs: over.drainTimeoutMs },
+  );
   // Production wiring happens in ServiceRegistry.initAll() (bus.on per subscription,
   // before init()) — ActionService itself deliberately never self-subscribes, so tests
   // replicate that wiring here, same as router-service.test.ts does for its subscriptions.
@@ -99,7 +104,7 @@ describe('ActionService', () => {
     const { bus, service } = makeService({ spotify });
     await service.init();
     await request(bus, 'spotify_volume', '40');
-    expect(spotify.setVolume).toHaveBeenCalledWith(40);
+    expect(spotify.setVolume).toHaveBeenCalledWith(40, expect.any(AbortSignal));
   });
 
   it('dispatches spotify_volume_adjust to SpotifyActions.adjustVolume with the signed number', async () => {
@@ -107,7 +112,7 @@ describe('ActionService', () => {
     const { bus, service } = makeService({ spotify });
     await service.init();
     await request(bus, 'spotify_volume_adjust', '-25');
-    expect(spotify.adjustVolume).toHaveBeenCalledWith(-25);
+    expect(spotify.adjustVolume).toHaveBeenCalledWith(-25, expect.any(AbortSignal));
   });
 
   it('timer expiry emits action:notify via the bus wiring', async () => {
@@ -133,7 +138,7 @@ describe('ActionService', () => {
     const { bus, results, service } = makeService({ media });
     await service.init();
     await request(bus, 'media_next', '');
-    expect(media.next).toHaveBeenCalledWith('');
+    expect(media.next).toHaveBeenCalledWith('', expect.any(AbortSignal));
     expect(results[0]).toEqual({ requestId: 'rid-1', action: 'media_next', ok: true });
   });
 
@@ -142,6 +147,43 @@ describe('ActionService', () => {
     const { bus, service } = makeService({ media });
     await service.init();
     await request(bus, 'media_pause', 'spotify');
-    expect(media.pause).toHaveBeenCalledWith('spotify');
+    expect(media.pause).toHaveBeenCalledWith('spotify', expect.any(AbortSignal));
+  });
+
+  it('aborts active actions, suppresses late results, and ignores new work during shutdown', async () => {
+    let actionSignal: AbortSignal | undefined;
+    const media = makeMedia();
+    media.next = vi.fn((_target: string, signal?: AbortSignal) => {
+      actionSignal = signal;
+      return new Promise<MediaResult>((resolve) => {
+        signal?.addEventListener('abort', () => resolve({ ok: false }), { once: true });
+      });
+    });
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    bus.emit('test', 'action:request', { requestId: 'before', action: 'media_next', param: '' });
+    await vi.waitFor(() => expect(actionSignal).toBeDefined());
+
+    await service.destroy();
+    bus.emit('test', 'action:request', { requestId: 'after', action: 'media_next', param: '' });
+    await Promise.resolve();
+
+    expect(actionSignal?.aborted).toBe(true);
+    expect(media.next).toHaveBeenCalledOnce();
+    expect(results).toEqual([]);
+  });
+
+  it('does not block shutdown on an adapter that ignores cancellation', async () => {
+    const media = makeMedia();
+    media.next = vi.fn(async () => new Promise<MediaResult>(() => {}));
+    const { bus, results, service } = makeService({ media, drainTimeoutMs: 5 });
+    await service.init();
+    bus.emit('test', 'action:request', { requestId: 'blocked', action: 'media_next', param: '' });
+    await vi.waitFor(() => expect(media.next).toHaveBeenCalledOnce());
+
+    await service.destroy();
+
+    expect(service.status).toBe('stopped');
+    expect(results).toEqual([]);
   });
 });

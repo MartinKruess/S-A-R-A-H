@@ -8,6 +8,7 @@ import {
   abortableDelay,
   abortError,
   linkAbortSignals,
+  runWithTimeout,
   throwIfAborted,
 } from '../../../core/abort-utils.js';
 
@@ -141,16 +142,26 @@ export class FasterWhisperProvider implements SttProvider {
     }
   }
 
-  async destroy(): Promise<void> {
+  async destroy(signal?: AbortSignal): Promise<void> {
     this.lifecycleAbort.abort();
-    if (this.serverProcess) {
+    const process = this.serverProcess;
+    this.serverProcess = null;
+    if (process) {
       try {
-        await fetch(`${SERVER_URL}/shutdown`, { method: 'POST' });
+        await runWithTimeout(
+          (cleanupSignal) => fetch(`${SERVER_URL}/shutdown`, {
+            method: 'POST',
+            signal: cleanupSignal,
+          }).then(() => undefined),
+          1_500,
+          'Faster Whisper graceful shutdown timed out',
+          signal,
+        );
       } catch {
         // Server may already be gone
+      } finally {
+        process.kill();
       }
-      this.serverProcess.kill();
-      this.serverProcess = null;
     }
   }
 

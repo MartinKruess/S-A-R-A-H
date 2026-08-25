@@ -3,6 +3,7 @@ import type {
   ServiceInitReport,
   ServiceRegistry,
 } from './service-registry.js';
+import { runWithTimeout } from './abort-utils.js';
 
 export type RuntimeState =
   | 'registered'
@@ -38,9 +39,15 @@ export interface AppShutdownReport {
   ok: boolean;
 }
 
-type Cleanup = () => void | Promise<void>;
+type Cleanup = (signal?: AbortSignal) => void | Promise<void>;
 type SnapshotListener = (snapshot: RuntimeSnapshot) => void;
 type CleanupPhase = 'before_services' | 'after_services';
+
+export interface AppLifecycleOptions {
+  cleanupTimeoutMs?: number;
+}
+
+const DEFAULT_CLEANUP_TIMEOUT_MS = 10_000;
 
 function toError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -63,8 +70,14 @@ export class AppLifecycleController {
   private listeners = new Set<SnapshotListener>();
   private startPromise: Promise<RuntimeSnapshot> | null = null;
   private shutdownPromise: Promise<AppShutdownReport> | null = null;
+  private readonly cleanupTimeoutMs: number;
 
-  constructor(private readonly registry: ServiceRegistry) {}
+  constructor(
+    private readonly registry: ServiceRegistry,
+    options: AppLifecycleOptions = {},
+  ) {
+    this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
+  }
 
   get acceptingWork(): boolean {
     return this.state === 'ready' || this.state === 'degraded';
@@ -198,7 +211,11 @@ export class AppLifecycleController {
       for (const entry of [...this.cleanups].reverse()) {
         if (entry.phase !== phase) continue;
         try {
-          await entry.cleanup();
+          await runWithTimeout(
+            (signal) => entry.cleanup(signal),
+            this.cleanupTimeoutMs,
+            `Lifecycle cleanup timed out: ${entry.label}`,
+          );
           cleanups.push({ label: entry.label, ok: true });
         } catch (value) {
           cleanups.push({ label: entry.label, ok: false, error: toError(value) });

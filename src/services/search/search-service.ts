@@ -4,7 +4,7 @@ import type { SandboxBrowser } from '../../main/sandbox-browser.js';
 import type { LaunchResult } from '../../main/program-launcher.js';
 import type { SearchProvider, SearchResult } from './search-provider.interface.js';
 import { buildSummaryPrompt, type SummarizeFn } from './summarize-results.js';
-import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
+import { linkAbortSignals, throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 
 /** Single-slot result session (Mi4): show_browser never looks up by requestId. */
 interface ResultSession {
@@ -34,6 +34,9 @@ export class SearchService implements SarahService {
   async destroy(): Promise<void> {
     this.abort?.abort();
     if (this.activeSearch) await waitForSettlement(this.activeSearch, 2_000);
+    this.activeSearch = null;
+    this.abort = null;
+    this.searching = false;
     this.session = null;
     this.status = 'stopped';
   }
@@ -42,12 +45,13 @@ export class SearchService implements SarahService {
     // Invoked directly by ActionService — no bus subscriptions.
   }
 
-  async runSearch(query: string): Promise<string> {
+  async runSearch(query: string, signal?: AbortSignal): Promise<string> {
     if (this.searching) throw new Error('search already running');
     this.searching = true;
     this.abort = new AbortController();
     const controller = this.abort;
-    const operation = this.doRunSearch(query, controller);
+    const linked = linkAbortSignals(controller.signal, signal);
+    const operation = this.doRunSearch(query, linked.signal, controller).finally(() => linked.dispose());
     this.activeSearch = operation;
     void operation.finally(() => {
       if (this.activeSearch === operation) this.activeSearch = null;
@@ -55,22 +59,27 @@ export class SearchService implements SarahService {
     return operation;
   }
 
-  private async doRunSearch(query: string, controller: AbortController): Promise<string> {
+  private async doRunSearch(
+    query: string,
+    signal: AbortSignal,
+    controller: AbortController,
+  ): Promise<string> {
     this.browser.hide(); // F6: a new search ends display mode
     this.session = null; // the new search replaces the old session completely
     try {
-      throwIfAborted(controller.signal);
-      const results = await this.provider.search(query, controller.signal);
-      throwIfAborted(controller.signal);
+      throwIfAborted(signal);
+      const results = await this.provider.search(query, signal);
+      throwIfAborted(signal);
       this.session = { results };
-      return await this.summarize(buildSummaryPrompt(results), controller.signal);
+      return await this.summarize(buildSummaryPrompt(results), signal);
     } finally {
       this.searching = false;
       if (this.abort === controller) this.abort = null;
     }
   }
 
-  async showResult(param: string): Promise<LaunchResult> {
+  async showResult(param: string, signal?: AbortSignal): Promise<LaunchResult> {
+    throwIfAborted(signal);
     if (this.searching) return { ok: false, speak: 'Moment, ich suche gerade noch.' };
     if (!this.session || this.session.results.length === 0) {
       return { ok: false, speak: 'Ich habe gerade keine Suchergebnisse offen.' };
@@ -91,7 +100,9 @@ export class SearchService implements SarahService {
       target = hits[0];
     }
 
-    const shown = await this.browser.show(target.url); // only stored, validated session URLs
+    const shown = signal
+      ? await this.browser.show(target.url, signal)
+      : await this.browser.show(target.url); // only stored, validated session URLs
     return shown ? { ok: true } : { ok: false, speak: 'Die Seite ließ sich nicht öffnen.' };
   }
 }

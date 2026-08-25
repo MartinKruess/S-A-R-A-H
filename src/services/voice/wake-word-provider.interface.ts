@@ -17,5 +17,5 @@ export interface WakeWordProvider {
   stop(): void;
 
   /** Clean up resources */
-  destroy(): Promise<void>;
+  destroy(signal?: AbortSignal): Promise<void>;
 }

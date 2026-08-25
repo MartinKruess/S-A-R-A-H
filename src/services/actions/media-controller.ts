@@ -3,6 +3,7 @@
 // WindowsMediaController drives GSMTC via a small self-contained C# helper spoken to
 // over JSON stdin/stdout. `run` is injectable for tests.
 import { spawn } from 'child_process';
+import { abortError, throwIfAborted } from '../../core/abort-utils.js';
 
 export interface MediaResult {
   ok: boolean;
@@ -17,15 +18,15 @@ export type MediaAction =
   | 'media_previous';
 
 export interface MediaController {
-  play(target: string): Promise<MediaResult>;
-  pause(target: string): Promise<MediaResult>;
-  toggle(target: string): Promise<MediaResult>;
-  next(target: string): Promise<MediaResult>;
-  previous(target: string): Promise<MediaResult>;
+  play(target: string, signal?: AbortSignal): Promise<MediaResult>;
+  pause(target: string, signal?: AbortSignal): Promise<MediaResult>;
+  toggle(target: string, signal?: AbortSignal): Promise<MediaResult>;
+  next(target: string, signal?: AbortSignal): Promise<MediaResult>;
+  previous(target: string, signal?: AbortSignal): Promise<MediaResult>;
 }
 
 /** Runs the helper: writes requestJson to stdin, resolves with the stdout JSON line. */
-export type HelperRunner = (requestJson: string) => Promise<string>;
+export type HelperRunner = (requestJson: string, signal?: AbortSignal) => Promise<string>;
 
 const UNSUPPORTED: MediaResult = { ok: false, speak: 'Das unterstützt dein System nicht.' };
 const GENERIC: MediaResult = { ok: false, speak: 'Das hat gerade nicht geklappt.' };
@@ -45,21 +46,25 @@ export class WindowsMediaController implements MediaController {
     opts: { run?: HelperRunner; platform?: string } = {},
   ) {
     this.platform = opts.platform ?? process.platform;
-    this.run = opts.run ?? ((json) => this.defaultRun(json));
+    this.run = opts.run ?? ((json, signal) => this.defaultRun(json, signal));
   }
 
-  play(target: string): Promise<MediaResult> { return this.send('media_play', target); }
-  pause(target: string): Promise<MediaResult> { return this.send('media_pause', target); }
-  toggle(target: string): Promise<MediaResult> { return this.send('media_toggle', target); }
-  next(target: string): Promise<MediaResult> { return this.send('media_next', target); }
-  previous(target: string): Promise<MediaResult> { return this.send('media_previous', target); }
+  play(target: string, signal?: AbortSignal): Promise<MediaResult> { return this.send('media_play', target, signal); }
+  pause(target: string, signal?: AbortSignal): Promise<MediaResult> { return this.send('media_pause', target, signal); }
+  toggle(target: string, signal?: AbortSignal): Promise<MediaResult> { return this.send('media_toggle', target, signal); }
+  next(target: string, signal?: AbortSignal): Promise<MediaResult> { return this.send('media_next', target, signal); }
+  previous(target: string, signal?: AbortSignal): Promise<MediaResult> { return this.send('media_previous', target, signal); }
 
-  private async send(action: MediaAction, target: string): Promise<MediaResult> {
+  private async send(action: MediaAction, target: string, signal?: AbortSignal): Promise<MediaResult> {
+    throwIfAborted(signal);
     if (this.platform !== 'win32') return UNSUPPORTED;
     let stdout: string;
     try {
-      stdout = await this.run(JSON.stringify({ action, target }));
+      stdout = signal
+        ? await this.run(JSON.stringify({ action, target }), signal)
+        : await this.run(JSON.stringify({ action, target }));
     } catch (err) {
+      if (signal?.aborted) throw abortError();
       console.warn('[MediaController] helper exec failed:', action, (err as Error).message);
       return GENERIC;
     }
@@ -84,29 +89,43 @@ export class WindowsMediaController implements MediaController {
   }
 
   /** Spawns the helper, feeds requestJson on stdin, resolves stdout; kills on timeout. */
-  private defaultRun(requestJson: string): Promise<string> {
+  private defaultRun(requestJson: string, signal?: AbortSignal): Promise<string> {
+    throwIfAborted(signal);
     return new Promise<string>((resolve, reject) => {
       const child = spawn(this.helperPath, [], { windowsHide: true });
       let out = '';
       let settled = false;
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        child.kill();
+        reject(abortError());
+      };
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        cleanup();
         child.kill();
         reject(new Error('media-helper timeout'));
       }, HELPER_TIMEOUT_MS);
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       child.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
       child.on('error', (e) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         reject(e);
       });
       child.on('close', () => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cleanup();
         resolve(out.trim());
       });
 

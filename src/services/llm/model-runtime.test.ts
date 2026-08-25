@@ -314,10 +314,32 @@ describe('ModelRuntime', () => {
 
     await Promise.all([runtime.destroy(), runtime.destroy()]);
 
-    expect(memory.unloadModel).toHaveBeenCalledWith('router:1b');
-    expect(memory.unloadModel).toHaveBeenCalledWith('worker:9b');
+    expect(memory.unloadModel).toHaveBeenCalledWith('router:1b', expect.any(AbortSignal));
+    expect(memory.unloadModel).toHaveBeenCalledWith('worker:9b', expect.any(AbortSignal));
     expect(memory.unloadModel).toHaveBeenCalledTimes(2);
     expect(runtime.snapshot.state).toBe('stopped');
+  });
+
+  it('finishes shutdown honestly when Ollama model cleanup hangs', async () => {
+    const memory = vram();
+    (memory.unloadModel as ReturnType<typeof vi.fn>).mockImplementation(
+      async () => new Promise<boolean>(() => {}),
+    );
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: memory,
+      cleanupTimeoutMs: 5,
+    });
+    await runtime.init();
+
+    await expect(runtime.destroy()).rejects.toThrow('Model cleanup failed');
+
+    expect(runtime.snapshot.state).toBe('stopped');
+    expect(runtime.snapshot.activeRole).toBeNull();
+    expect(runtime.snapshot.roles.router.residency).toBe('error');
+    expect(runtime.snapshot.roles.local_worker.residency).toBe('error');
   });
 
   it('rejects a late model transition without restoring loaded state after shutdown', async () => {

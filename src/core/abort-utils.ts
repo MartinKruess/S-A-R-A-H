@@ -28,6 +28,13 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
   });
 }
 
+/** Create the shared error shape for a bounded operation that exceeded its deadline. */
+export function timeoutError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'TimeoutError';
+  return error;
+}
+
 export interface LinkedAbortSignal {
   signal: AbortSignal;
   dispose(): void;
@@ -78,4 +85,52 @@ export function linkAbortSignals(...signals: Array<AbortSignal | undefined>): Li
       listeners.clear();
     },
   };
+}
+
+/**
+ * Run cooperative work behind a hard deadline.
+ *
+ * - Passes one combined signal to the operation.
+ * - Rejects at the deadline even when the operation ignores cancellation.
+ * - Removes timers and signal listeners after settlement.
+ *
+ * @category Utility
+ */
+export async function runWithTimeout<T>(
+  operation: (signal: AbortSignal) => T | Promise<T>,
+  timeoutMs: number,
+  message: string,
+  parentSignal?: AbortSignal,
+): Promise<T> {
+  const timeoutController = new AbortController();
+  const linked = linkAbortSignals(parentSignal, timeoutController.signal);
+  if (linked.signal.aborted) {
+    const reason = linked.signal.reason;
+    linked.dispose();
+    throw reason instanceof Error ? reason : abortError();
+  }
+
+  let removeAbortListener = (): void => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = (): void => {
+      const reason = linked.signal.reason;
+      reject(reason instanceof Error ? reason : abortError());
+    };
+    removeAbortListener = () => linked.signal.removeEventListener('abort', onAbort);
+    linked.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  const deadlineError = timeoutError(message);
+  const timer = setTimeout(() => timeoutController.abort(deadlineError), Math.max(0, timeoutMs));
+  timer.unref?.();
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(linked.signal)),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    removeAbortListener();
+    linked.dispose();
+  }
 }

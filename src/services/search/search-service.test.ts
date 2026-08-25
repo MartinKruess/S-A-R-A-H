@@ -66,6 +66,25 @@ describe('SearchService.runSearch', () => {
     await expect(running).rejects.toThrow('summary aborted');
     expect(service.status).toBe('stopped');
   });
+
+  it('propagates an owning action abort into the search provider', async () => {
+    let providerSignal: AbortSignal | undefined;
+    const search = vi.fn((_query: string, signal: AbortSignal) => {
+      providerSignal = signal;
+      return new Promise<SearchResult[]>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('provider aborted')), { once: true });
+      });
+    });
+    const { service } = makeService({ search });
+    const controller = new AbortController();
+
+    const running = service.runSearch('abbrechen', controller.signal);
+    await vi.waitFor(() => expect(providerSignal).toBeDefined());
+    controller.abort();
+
+    await expect(running).rejects.toThrow('provider aborted');
+    expect(providerSignal?.aborted).toBe(true);
+  });
 });
 
 describe('SearchService.showResult', () => {

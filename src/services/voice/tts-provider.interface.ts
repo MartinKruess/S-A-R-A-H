@@ -14,5 +14,5 @@ export interface TtsProvider {
   stop(): void;
 
   /** Clean up resources */
-  destroy(): Promise<void>;
+  destroy(signal?: AbortSignal): Promise<void>;
 }
