@@ -20,6 +20,7 @@ interface ShutdownContext {
 
 export interface ElectronShutdownCoordinator {
   shutdown(): Promise<void>;
+  handlePrimaryWindowClosed(): void;
   dispose(): void;
 }
 
@@ -76,6 +77,9 @@ export function registerElectronShutdown(
 
   return {
     shutdown,
+    handlePrimaryWindowClosed: () => {
+      if (platform !== 'darwin') void shutdown();
+    },
     dispose: () => {
       electronApp.removeListener('before-quit', onBeforeQuit);
       electronApp.removeListener('window-all-closed', onWindowAllClosed);

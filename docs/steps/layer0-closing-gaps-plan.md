@@ -118,7 +118,7 @@ Die praktische Matrix bleibt unverändert im Hauptplan dokumentiert. Tests ohne 
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 71 Testdateien mit 715 Tests erfolgreich.
+- 71 Testdateien mit 716 Tests erfolgreich.
 - `git diff --check` ohne Whitespace-Fehler; die ausgegebenen Hinweise betreffen nur die bestehende LF-/CRLF-Konfiguration.
 
 ### Verbleibende Grenze

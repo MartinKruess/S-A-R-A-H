@@ -53,6 +53,17 @@ describe('registerElectronShutdown', () => {
     expect(app.quit).toHaveBeenCalledOnce();
   });
 
+  it('runs cleanup when the primary window closes while an auxiliary window remains', async () => {
+    const app = fakeApp();
+    const shutdown = vi.fn(async () => successfulReport());
+    const coordinator = registerElectronShutdown(app, () => ({ lifecycle: { shutdown } }), 'win32');
+
+    coordinator.handlePrimaryWindowClosed();
+
+    await vi.waitFor(() => expect(app.quit).toHaveBeenCalledOnce());
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
   it('keeps the application alive after closing all windows on macOS', () => {
     const app = fakeApp();
     registerElectronShutdown(app, () => null, 'darwin');

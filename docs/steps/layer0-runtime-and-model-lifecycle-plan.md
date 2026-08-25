@@ -421,7 +421,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 71 Testdateien mit 715 Tests erfolgreich.
+- 71 Testdateien mit 716 Tests erfolgreich.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
 - Ein abschließender erneuter Codeaudit nach den Cleanup-Fristen, dem Late-Init-Cleanup und dem Action-Drain ergab keine weitere relevante Layer-0-Codelücke.
 
@@ -432,10 +432,18 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Faster-Whisper startete seinen Python-Prozess, lud `large-v3-turbo` und beantwortete den Healthcheck erfolgreich.
 - Nach dem erzwungenen Ende des Dev-Watchers blieben keine Electron-, Python- oder Piper-Prozesse bestehen.
 - Der Dev-Watcher beendet Kindprozesse ausdrücklich mit `SIGKILL`; dieser Stopp kann den Electron-Quit-Lifecycle nicht praktisch abnehmen. Das dadurch noch geladene Routermodell wurde anschließend kontrolliert entladen und `/api/ps` war leer.
+- Der produktive Electron-Startpfad wurde anschließend mit einer realen Spracheingabe abgenommen: `Wie heiße ich?` ergab deterministisch `Du heißt Martin.`; STT und TTS liefen erfolgreich.
+- Normales Schließen über das sichtbare Fenster durchlief den echten Quit-Lifecycle. Danach liefen weder Sarah-Electron noch Whisper/Python oder Piper; die Ports `8786` und `8888` waren frei und Ollama meldete keine geladenen Modelle.
+- Offener Befund: Die gesprochene Meldung `Huch, jetzt bin ich einsatzbereit` kam sichtbar beziehungsweise hörbar zu spät. Ready-Anzeige und Ready-Sprachausgabe sind praktisch noch nicht sauber synchronisiert; der Zustands-/Readiness-Punkt bleibt deshalb gelb.
+- Ein anschließender Warmstart meldete Ready rechtzeitig, beantwortete die Namensfrage genau einmal und registrierte damit praktisch keine sichtbaren doppelten Listener. Auch der zweite normale Fenstershutdown hinterließ null Sarah-Electron-/Voice-Prozesse, null Sarah-Ports und null geladene Ollama-Modelle.
+- Der reale Router-/Worker-/Search-Lauf wechselte von `phi4-mini:3.8b` zu `qwen3:8b`, erzeugte die Search-Zusammenfassung ausschließlich über den Worker und kehrte für eine Spotify-Action zum Router zurück. Endantworten und Actions erschienen jeweils genau einmal.
+- Dabei wurden drei praktische UX-/Robustheitsbefunde sichtbar: Der Router erzeugte bei einer Wissensfrage freien Text plus einen unpassenden Action-Tag, der sicher auf den Worker zurückfiel; die erste Worker-TTS-Ausgabe war teilweise holprig beziehungsweise unvollständig; Search sprach zwei zeitlich getrennte Füllmeldungen vor der einzigen Endantwort.
+- Das Schließen des Hauptfensters nach einer Search ließ zunächst zwei Electron-Prozesse, Whisper/Python und das Routermodell aktiv, weil das versteckte Sandbox-Browserfenster `window-all-closed` verhinderte. Die Testinstanz wurde kontrolliert beendet und das Sarah-Modell entladen. Der primäre Fensterschluss stößt deshalb nun den gemeinsamen Shutdown explizit an.
+- Die Korrektur bestand 71 Testdateien mit 716 Tests sowie den identischen realen Search-→Fensterschluss-Regressionslauf. Danach standen Sarah-Electron, Voice-Prozesse, Sarah-Ports und geladene Ollama-Modelle jeweils auf null.
 
 ### Noch praktisch abzunehmen
 
-- normales Schließen des sichtbaren App-Fensters und direkte Quit-Aktion mit anschließender Prozess-/VRAM-Prüfung
+- direkte Quit-Aktion mit anschließender Prozess-/VRAM-Prüfung; normales Schließen des sichtbaren App-Fensters ist bestanden
 - realer Start ohne Docker/Ollama
 - realer Start mit fehlendem Worker-Modell
 - realer STT- und TTS-Teilausfall

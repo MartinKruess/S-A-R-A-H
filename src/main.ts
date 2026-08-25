@@ -38,7 +38,7 @@ let systemActions: SystemActions | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
 
-registerElectronShutdown(app, () => appContext);
+const electronShutdown = registerElectronShutdown(app, () => appContext);
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -85,6 +85,15 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+  });
+
+  // Auxiliary windows (for example the hidden sandbox browser used by Search)
+  // can keep Electron alive after the primary UI closes. The primary window is
+  // the application ownership boundary on Windows, so close it through the same
+  // idempotent shutdown coordinator instead of waiting for window-all-closed.
+  mainWindow.once('closed', () => {
+    mainWindow = null;
+    electronShutdown.handlePrimaryWindowClosed();
   });
 
   // Windows does not guarantee Electron's before-quit/will-quit events during
