@@ -131,6 +131,25 @@ describe('RouterService (history & sessions)', () => {
     expect(systemPrompt).toContain('unless the user asks about their name');
   });
 
+  it('uses the voice prompt for a typed request whose source remains chat', async () => {
+    const r = makeRouter(ctx);
+    await r.init();
+    r.activeModel = '9b';
+    const request: TurnRequest = {
+      turnId: '12121212-1212-4212-8212-121212121212',
+      source: 'chat',
+      mode: 'voice',
+      originalText: 'Antworte mir gesprochen',
+      createdAt: new Date().toISOString(),
+    };
+
+    await r.handleTurnRequest(request);
+
+    const systemPrompt = workerProvider.lastMessages?.[0].content;
+    expect(systemPrompt).toContain('This is a voice conversation.');
+    expect(systemPrompt).toContain('plain spoken words');
+  });
+
   it('feeds the start context to the worker as a transient block, never persisting it (H5)', async () => {
     await ctx.db.insert('conversations', { mode: 'ambient' }); // old session, id 1
     await ctx.db.insert('messages', { conversation_id: 1, role: 'user', content: 'alte Frage' });
@@ -241,6 +260,24 @@ class ScriptedProvider implements LlmProvider {
   }
 }
 
+class FailingAfterWarmupProvider implements LlmProvider {
+  readonly id = 'failing-after-warmup';
+  private calls = 0;
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+
+  async chat(_messages: ChatMessage[], onChunk: (text: string) => void): Promise<string> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      onChunk('ok');
+      return 'ok';
+    }
+    throw new Error('router connection failed');
+  }
+}
+
 class UnavailableProvider implements LlmProvider {
   readonly id = 'unavailable';
 
@@ -302,6 +339,7 @@ describe('RouterService (action layer)', () => {
     ctx.bus.on('action:result', (msg) => router?.onMessage(msg));
     ctx.bus.on('action:notify', (msg) => router?.onMessage(msg));
     ctx.bus.on('turn:cancel', (msg) => router?.onMessage(msg));
+    ctx.bus.on('turn:terminal', (msg) => router?.onMessage(msg));
   });
 
   afterEach(async () => {
@@ -333,6 +371,58 @@ describe('RouterService (action layer)', () => {
     expect(done).toEqual(['Ich öffne Spotify.']);
     const msgs = await ctx.db.query<{ role: string; content: string }>('messages');
     expect(msgs.map((m) => m.content)).toContain('Ich öffne Spotify.'); // feedback persisted as assistant turn
+  });
+
+  it('keeps an action turn open after acknowledgement until its correlated result completes', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+    let resolveRequest = (_request: BusEvents['action:request']): void => {};
+    const requestSeen = new Promise<BusEvents['action:request']>((resolve) => { resolveRequest = resolve; });
+    ctx.bus.on('action:request', (message) => resolveRequest(message.data));
+
+    const active = router.handleChatMessage('Such Hotels in Kiel', 'voice');
+    const request = await requestSeen;
+    await vi.waitFor(() => expect(done).toEqual(['Ich suche danach.']));
+
+    expect(terminals.filter((terminal) => terminal.turnId === request.turnId)).toHaveLength(0);
+    expect(ctx.bus.isTurnOpen(request.turnId)).toBe(true);
+    ctx.bus.emit('test', 'action:result', {
+      turnId: request.turnId,
+      requestId: request.requestId,
+      action: request.action,
+      ok: true,
+      speak: 'Drei Hotels gefunden.',
+    });
+    await active;
+
+    expect(done).toEqual(['Ich suche danach.', 'Drei Hotels gefunden.']);
+    expect(terminals.filter((terminal) => terminal.turnId === request.turnId)).toEqual([
+      { turnId: request.turnId, status: 'done' },
+    ]);
+  });
+
+  it('emits one visible router error and one terminal when routing fails', async () => {
+    router = new RouterService(ctx, new FailingAfterWarmupProvider(), new ScriptedProvider('worker'));
+    await router.init();
+    const errors: BusEvents['llm:error'][] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('llm:error', (message) => errors.push(message.data));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+
+    await router.handleChatMessage('Das Routing schlägt fehl', 'voice');
+
+    expect(errors).toHaveLength(1);
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({
+      turnId: errors[0].turnId,
+      status: 'error',
+      message: errors[0].message,
+    });
   });
 
   async function runActionTurn(
@@ -503,6 +593,91 @@ describe('RouterService (action layer)', () => {
     expect(done).toEqual(['Ich suche danach.', 'Drei Hotels gefunden.']);
   });
 
+  it('links show_browser to the exact successful search request', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:web_search:hotels kiel]',
+      '[ACTION:show_browser:1]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+
+    const searchTurn = router.handleChatMessage('Such Hotels in Kiel');
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const searchRequest = requests[0];
+    ctx.bus.emit('test', 'action:result', {
+      turnId: searchRequest.turnId,
+      requestId: searchRequest.requestId,
+      action: 'web_search',
+      ok: true,
+      speak: 'Drei Hotels gefunden.',
+    });
+    await searchTurn;
+
+    const showTurn = router.handleChatMessage('Zeig mir das erste Ergebnis');
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    const showRequest = requests[1];
+    expect(showRequest).toMatchObject({
+      action: 'show_browser',
+      sourceRequestId: searchRequest.requestId,
+    });
+    ctx.bus.emit('test', 'action:result', {
+      turnId: showRequest.turnId,
+      requestId: showRequest.requestId,
+      action: 'show_browser',
+      ok: true,
+    });
+    await showTurn;
+  });
+
+  it('clears the visible search pointer when a newer search fails', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:web_search:erste suche]',
+      '[ACTION:web_search:zweite suche]',
+      '[ACTION:show_browser:1]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+
+    const first = router.handleChatMessage('Erste Suche');
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    ctx.bus.emit('test', 'action:result', {
+      turnId: requests[0].turnId,
+      requestId: requests[0].requestId,
+      action: 'web_search',
+      ok: true,
+    });
+    await first;
+
+    const second = router.handleChatMessage('Zweite Suche');
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    ctx.bus.emit('test', 'action:result', {
+      turnId: requests[1].turnId,
+      requestId: requests[1].requestId,
+      action: 'web_search',
+      ok: false,
+      speak: 'Suche fehlgeschlagen.',
+    });
+    await second;
+
+    const show = router.handleChatMessage('Zeig das erste Ergebnis');
+    await vi.waitFor(() => expect(requests).toHaveLength(3));
+    expect(requests[2]).toMatchObject({ action: 'show_browser' });
+    expect(requests[2].sourceRequestId).toBeUndefined();
+    ctx.bus.emit('test', 'action:result', {
+      turnId: requests[2].turnId,
+      requestId: requests[2].requestId,
+      action: 'show_browser',
+      ok: false,
+    });
+    await show;
+  });
+
   it('propagates a canceled pending action and does not commit its partial acknowledgement', async () => {
     const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
@@ -637,6 +812,34 @@ describe('RouterService (action layer)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
+  it('stops an active worker when another owner terminalizes the turn', async () => {
+    const worker = new BlockingProvider();
+    router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
+    await router.init();
+    router.activeModel = '9b';
+    const chunks: string[] = [];
+    ctx.bus.on('llm:chunk', (message) => chunks.push(message.data.text));
+    const request: TurnRequest = {
+      turnId: '88888888-8888-4888-8888-888888888888',
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Extern beenden',
+      createdAt: new Date().toISOString(),
+    };
+
+    const active = router.handleTurnRequest(request);
+    await vi.waitFor(() => expect(worker.calls).toBe(1));
+    ctx.bus.emit('runtime', 'turn:terminal', {
+      turnId: request.turnId,
+      status: 'error',
+      message: 'Runtime stopped the turn',
+    });
+    await active;
+
+    expect(chunks).not.toContain('late-after-abort');
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+  });
+
   it('refuses a duplicate active turnId before it can execute twice', async () => {
     const worker = new BlockingProvider();
     router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
@@ -658,6 +861,30 @@ describe('RouterService (action layer)', () => {
     worker.releaseFirst();
     await first;
     expect(await ctx.db.query('messages')).toHaveLength(2);
+  });
+
+  it('refuses a centrally terminal turn before routing or persistence', async () => {
+    const worker = new ScriptedProvider('should-not-run');
+    router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
+    await router.init();
+    const request: TurnRequest = {
+      turnId: '77777777-7777-4777-8777-777777777777',
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Nicht mehr ausführen',
+      createdAt: new Date().toISOString(),
+    };
+    ctx.bus.emit('test', 'turn:accepted', {
+      turnId: request.turnId,
+      source: request.source,
+      mode: request.mode,
+    });
+    ctx.bus.emit('test', 'turn:terminal', { turnId: request.turnId, status: 'canceled' });
+
+    await router.handleTurnRequest(request);
+
+    expect(worker.calls).toBe(0);
+    expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
   it('destroy() clears pendingActions and the shutdown guard blocks late output', async () => {

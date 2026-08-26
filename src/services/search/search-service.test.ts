@@ -10,6 +10,17 @@ const RESULTS: SearchResult[] = [
   { title: 'Nordsee Zimmer', url: 'https://nordsee.example/', snippet: 'Ab 49 Euro.' },
 ];
 
+const SEARCH_ONE = { turnId: '11111111-1111-4111-8111-111111111111', requestId: 'search-1' };
+const SEARCH_TWO = { turnId: '22222222-2222-4222-8222-222222222222', requestId: 'search-2' };
+
+function showCorrelation(sourceRequestId: string) {
+  return {
+    turnId: '33333333-3333-4333-8333-333333333333',
+    requestId: 'show-1',
+    sourceRequestId,
+  };
+}
+
 function makeService(over: {
   search?: Mock;
   show?: Mock;
@@ -28,7 +39,7 @@ function makeService(over: {
 describe('SearchService.runSearch', () => {
   it('hides the display, replaces the session, summarizes without URLs', async () => {
     const { service, calls } = makeService();
-    const speak = await service.runSearch('hotels kiel');
+    const speak = await service.runSearch('hotels kiel', SEARCH_ONE);
     expect(calls.hide).toHaveBeenCalled(); // F6: neue Suche beendet Anzeige
     expect(speak).toBe('Zwei Hotels an der Förde.');
     const prompt = calls.summarize.mock.calls[0][0] as string;
@@ -37,14 +48,28 @@ describe('SearchService.runSearch', () => {
     expect(prompt).not.toContain('https://'); // keine URLs im Prompt
   });
 
-  it('replaces the previous session completely', async () => {
+  it('opens only the result set explicitly linked to the action', async () => {
     const { service, calls } = makeService();
-    await service.runSearch('erste suche');
+    await service.runSearch('erste suche', SEARCH_ONE);
     calls.search.mockResolvedValue([{ title: 'Neu', url: 'https://neu.example/', snippet: 'x' }]);
-    await service.runSearch('zweite suche');
-    const result = await service.showResult('1');
+    await service.runSearch('zweite suche', SEARCH_TWO);
+    const result = await service.showResult('1', showCorrelation(SEARCH_TWO.requestId));
     expect(calls.show).toHaveBeenCalledWith('https://neu.example/');
     expect(result.ok).toBe(true);
+
+    await service.showResult('1', showCorrelation(SEARCH_ONE.requestId));
+    expect(calls.show).toHaveBeenLastCalledWith('https://hotel-kiel.example/');
+  });
+
+  it('does not publish results when summarization fails', async () => {
+    const summarize = vi.fn().mockRejectedValue(new Error('summary failed'));
+    const { service, calls } = makeService({ summarize });
+
+    await expect(service.runSearch('hotels', SEARCH_ONE)).rejects.toThrow('summary failed');
+    const result = await service.showResult('1', showCorrelation(SEARCH_ONE.requestId));
+
+    expect(result).toEqual({ ok: false, speak: 'Ich habe gerade keine Suchergebnisse offen.' });
+    expect(calls.show).not.toHaveBeenCalled();
   });
 
   it('aborts and drains an active summary during service shutdown', async () => {
@@ -95,18 +120,18 @@ describe('SearchService.showResult', () => {
 
   it('opens by 1-based index and by unique keyword; asks on ambiguity', async () => {
     const { service, calls } = makeService();
-    await service.runSearch('hotels');
-    expect((await service.showResult('2')).ok).toBe(true);
+    await service.runSearch('hotels', SEARCH_ONE);
+    expect((await service.showResult('2', showCorrelation(SEARCH_ONE.requestId))).ok).toBe(true);
     expect(calls.show).toHaveBeenLastCalledWith('https://nordsee.example/');
 
-    expect((await service.showResult('nordsee')).ok).toBe(true);
+    expect((await service.showResult('nordsee', showCorrelation(SEARCH_ONE.requestId))).ok).toBe(true);
 
     calls.search.mockResolvedValue([
       { title: 'Hotel A', url: 'https://a.example/', snippet: '' },
       { title: 'Hotel B', url: 'https://b.example/', snippet: '' },
     ]);
-    await service.runSearch('hotels');
-    const amb = await service.showResult('hotel');
+    await service.runSearch('hotels', SEARCH_TWO);
+    const amb = await service.showResult('hotel', showCorrelation(SEARCH_TWO.requestId));
     expect(amb.ok).toBe(false);
     expect(amb.speak).toContain('Hotel A');
     expect(amb.speak).toContain('Hotel B');
@@ -114,8 +139,8 @@ describe('SearchService.showResult', () => {
 
   it('index out of range → honest miss', async () => {
     const { service } = makeService();
-    await service.runSearch('hotels');
-    const result = await service.showResult('7');
+    await service.runSearch('hotels', SEARCH_ONE);
+    const result = await service.showResult('7', showCorrelation(SEARCH_ONE.requestId));
     expect(result.ok).toBe(false);
   });
 
@@ -123,8 +148,8 @@ describe('SearchService.showResult', () => {
     let release: (r: SearchResult[]) => void = () => {};
     const search = vi.fn().mockReturnValue(new Promise<SearchResult[]>((r) => { release = r; }));
     const { service } = makeService({ search });
-    const running = service.runSearch('langsam');
-    expect(await service.showResult('1')).toEqual({ ok: false, speak: 'Moment, ich suche gerade noch.' });
+    const running = service.runSearch('langsam', SEARCH_ONE);
+    expect(await service.showResult('1', showCorrelation(SEARCH_ONE.requestId))).toEqual({ ok: false, speak: 'Moment, ich suche gerade noch.' });
     release(RESULTS);
     await running;
   });

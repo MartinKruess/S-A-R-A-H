@@ -40,11 +40,13 @@ function createManager(
     healthTimeoutMs: options.healthTimeoutMs ?? 50,
     healthPollMs: options.healthPollMs ?? 1,
     gpuRetryDelayMs: options.gpuRetryDelayMs ?? 1,
+    requestTimeoutMs: options.requestTimeoutMs ?? 5,
   });
   return { manager, calls };
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -167,6 +169,23 @@ describe('OllamaContainerManager.ensureRunning', () => {
     );
   });
 
+  it('bounds an individual health request that accepts but never responds', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const { manager } = createManager({
+      execResults: [{ stdout: 'true\n' }],
+      healthTimeoutMs: 10,
+      requestTimeoutMs: 4,
+      healthPollMs: 1,
+    });
+
+    const starting = manager.ensureRunning();
+    const timeoutAssertion = expect(starting).rejects.toThrow(/antwortet nicht/);
+    await vi.advanceTimersByTimeAsync(12);
+
+    await timeoutAssertion;
+  });
+
   it('aborts health polling when application shutdown begins', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new Error('fetch aborted')), { once: true });
@@ -224,6 +243,17 @@ describe('OllamaContainerManager.checkGpu', () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
     const { manager } = createManager();
     expect(await manager.checkGpu()).toBe('unknown');
+  });
+
+  it('returns unknown within the probe deadline when the GPU endpoint hangs', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const { manager } = createManager({ requestTimeoutMs: 5 });
+
+    const checking = manager.checkGpu();
+    await vi.advanceTimersByTimeAsync(5);
+
+    await expect(checking).resolves.toBe('unknown');
   });
 
   it('returns unknown when the API responds non-ok', async () => {

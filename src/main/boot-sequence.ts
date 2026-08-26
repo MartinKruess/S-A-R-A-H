@@ -11,6 +11,7 @@ import { isValidChatInput, isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
 import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../core/chat-availability.js';
+import { runWithTimeout } from '../core/abort-utils.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
@@ -20,6 +21,10 @@ export interface BootSequenceDeps {
 }
 
 type BootSeverity = 'info' | 'warning' | 'error';
+const SPLASH_TTS_EXPIRY_MS = 8_000;
+const ROUTER_CAPABILITY_TIMEOUT_MS = 150_000;
+const GPU_PROBE_TIMEOUT_MS = 5_000;
+const LIFECYCLE_BOOT_TIMEOUT_MS = 330_000;
 
 /**
  * Register the splash, chat and boot bridge for the current main-process run.
@@ -38,6 +43,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   let transitionInterval: ReturnType<typeof setInterval> | null = null;
   let revealTimeout: ReturnType<typeof setTimeout> | null = null;
   let revealResolver: (() => void) | null = null;
+  let activeSplashTts: {
+    controller: AbortController;
+    expiry: ReturnType<typeof setTimeout>;
+  } | null = null;
   const pendingDelays = new Set<{
     timer: ReturnType<typeof setTimeout>;
     resolve: () => void;
@@ -86,17 +95,27 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     ctx: AppContext,
     name: string,
     startPromise: Promise<unknown>,
-  ): Promise<CapabilitySnapshot | undefined> => new Promise((resolve) => {
+    signal?: AbortSignal,
+  ): Promise<CapabilitySnapshot | undefined> => new Promise((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
     let unsubscribeAfterRegistration = false;
     let settled = false;
     const finish = (capability?: CapabilitySnapshot): void => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', onAbort);
       if (unsubscribe) unsubscribe();
       else unsubscribeAfterRegistration = true;
       resolve(capability);
     };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      if (unsubscribe) unsubscribe();
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : new Error('Capability wait aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     unsubscribe = ctx.lifecycle.subscribe((snapshot) => {
       const capability = snapshot.capabilities[name];
       if (capability && !['registered', 'starting'].includes(capability.state)) {
@@ -117,11 +136,19 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
 
     try {
       const lifecycleStart = ctx.lifecycle.start();
-      const router = await waitForCapability(ctx, 'router', lifecycleStart);
+      const router = await runWithTimeout(
+        (signal) => waitForCapability(ctx, 'router', lifecycleStart, signal),
+        ROUTER_CAPABILITY_TIMEOUT_MS,
+        'Sarah-Protokoll konnte nicht rechtzeitig aktiviert werden.',
+      );
       const routerStep = deriveBootCapabilitySteps(router, { stt: false, tts: false }).router;
 
       if (routerStep === 'router-ready') {
-        const gpu = await containerManager.checkGpu();
+        const gpu = await runWithTimeout(
+          (signal) => containerManager.checkGpu(signal),
+          GPU_PROBE_TIMEOUT_MS,
+          'GPU-Status konnte nicht rechtzeitig geprüft werden.',
+        ).catch(() => 'unknown' as const);
         if (gpu === 'cpu') {
           send(
             'router',
@@ -141,7 +168,11 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       }
 
       const reveal = waitForReveal();
-      await lifecycleStart;
+      await runWithTimeout(
+        () => lifecycleStart,
+        LIFECYCLE_BOOT_TIMEOUT_MS,
+        'Sarah-Dienste konnten nicht rechtzeitig aktiviert werden.',
+      );
       const voice = ctx.registry.get('voice') as VoiceService | undefined;
       const voiceCapabilities = voice?.capabilitySnapshot ?? { stt: false, tts: false };
       const steps = deriveBootCapabilitySteps(router, voiceCapabilities);
@@ -176,26 +207,37 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   const onBootReady = (): void => { void runBoot(); };
   ipcMain.once('boot-ready', onBootReady);
 
+  const cancelSplashTts = (): void => {
+    const request = activeSplashTts;
+    if (!request) return;
+    activeSplashTts = null;
+    clearTimeout(request.expiry);
+    request.controller.abort();
+  };
+
   ipcMain.handle('splash-tts', async (_event, text: string) => {
     if (!isValidChatMessage(text)) {
       console.warn('[IPC] invalid payload for splash-tts');
-      return;
+      return null;
     }
+    cancelSplashTts();
+    const controller = new AbortController();
+    const request = {
+      controller,
+      expiry: setTimeout(() => controller.abort(), SPLASH_TTS_EXPIRY_MS),
+    };
+    request.expiry.unref?.();
+    activeSplashTts = request;
     try {
-      const audio = await piperProvider.speak(text);
-      const mainWindow = getMainWindow();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const turnId = randomUUID();
-        mainWindow.webContents.send('voice:play-audio', {
-          turnId,
-          outputId: randomUUID(),
-          playbackId: randomUUID(),
-          audio: Array.from(audio),
-          sampleRate: 22050,
-        });
-      }
+      const audio = await piperProvider.speak(text, controller.signal);
+      if (stopped || controller.signal.aborted || activeSplashTts !== request) return null;
+      return { audio: Array.from(audio), sampleRate: 22050 };
     } catch (err) {
-      console.error('[Boot] Splash TTS failed:', err);
+      if (!controller.signal.aborted) console.error('[Boot] Splash TTS failed:', err);
+      return null;
+    } finally {
+      clearTimeout(request.expiry);
+      if (activeSplashTts === request) activeSplashTts = null;
     }
   });
 
@@ -236,8 +278,18 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       console.warn('[IPC] invalid payload for chat-message');
       return { accepted: false, turnId: randomUUID() };
     }
-    const { turnId, message } = input;
+    const { turnId, message, mode } = input;
     const ctx = getAppContext();
+    if (ctx.bus.isTurnKnown(turnId)) {
+      console.warn('[IPC] duplicate turnId for chat-message refused:', turnId);
+      return { accepted: false, turnId };
+    }
+    const accepted = ctx.bus.emit('runtime', 'turn:accepted', {
+      turnId,
+      source: 'chat',
+      mode,
+    });
+    if (!accepted) return { accepted: false, turnId };
     if (!isChatAvailable(ctx.lifecycle.snapshot)) {
       ctx.bus.emit('runtime', 'llm:error', {
         turnId,
@@ -250,18 +302,14 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       });
       return { accepted: false, turnId };
     }
-    const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
-    if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
-      voiceService.setChatSpeak();
-    }
-    ctx.bus.emit('renderer', 'chat:message', {
+    const published = ctx.bus.emit('renderer', 'chat:message', {
       turnId,
       source: 'chat',
-      mode: 'chat',
+      mode,
       originalText: message,
       createdAt: new Date().toISOString(),
     });
-    return { accepted: true, turnId };
+    return { accepted: published, turnId };
   });
   ipcMain.handle('get-runtime-status', () => getAppContext().lifecycle.snapshot);
 
@@ -279,11 +327,27 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     if (win && !win.isDestroyed()) win.webContents.send('runtime-status', snapshot);
   });
 
-  const perfByTurn = new Map<string, { startedAt: number; data: Record<string, unknown> }>();
+  const perfByTurn = new Map<string, {
+    startedAt: number;
+    data: Record<string, unknown>;
+    terminal: boolean;
+    voiceExpected: boolean;
+    voiceDone: boolean;
+    fallback: ReturnType<typeof setTimeout> | null;
+  }>();
   unsubscribers.push(bus.on('perf:timing', (msg) => {
     const { turnId, label, ms, meta } = msg.data;
     if (!turnId) return;
-    const current = perfByTurn.get(turnId) ?? { startedAt: Date.now(), data: {} };
+    const existing = perfByTurn.get(turnId);
+    if (!existing && bus.isTurnTerminal(turnId)) return;
+    const current = existing ?? {
+      startedAt: Date.now(),
+      data: {},
+      terminal: false,
+      voiceExpected: false,
+      voiceDone: false,
+      fallback: null,
+    };
     current.data[`${label}Ms`] = ms;
     if (meta) Object.assign(current.data, meta);
     if (label === 'router') current.data.usedWorker = false;
@@ -294,6 +358,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   const logPerf = (turnId: string): void => {
     const current = perfByTurn.get(turnId);
     if (!current) return;
+    if (current.fallback) clearTimeout(current.fallback);
     const msKeys = Object.keys(current.data).filter((key) => key.endsWith('Ms'));
     const totalMs = msKeys.reduce((sum, key) => sum + (current.data[key] as number), 0);
     console.log('\n[Performance]', JSON.stringify({
@@ -304,9 +369,38 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     }, null, 2));
     perfByTurn.delete(turnId);
   };
-  unsubscribers.push(bus.on('turn:terminal', (msg) => logPerf(msg.data.turnId)));
+  unsubscribers.push(bus.on('voice:speaking', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId) ?? {
+      startedAt: Date.now(),
+      data: {},
+      terminal: false,
+      voiceExpected: false,
+      voiceDone: false,
+      fallback: null,
+    };
+    current.voiceExpected = true;
+    perfByTurn.set(msg.data.turnId, current);
+  }));
+  unsubscribers.push(bus.on('voice:done', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId);
+    if (!current) return;
+    current.voiceDone = true;
+    if (current.terminal) logPerf(msg.data.turnId);
+  }));
+  unsubscribers.push(bus.on('turn:terminal', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId);
+    if (!current) return;
+    current.terminal = true;
+    if (!current.voiceExpected || current.voiceDone) {
+      logPerf(msg.data.turnId);
+      return;
+    }
+    current.fallback = setTimeout(() => logPerf(msg.data.turnId), 30_000);
+    current.fallback.unref?.();
+  }));
 
   const onBootDone = (): void => {
+    cancelSplashTts();
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -354,6 +448,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       pending.resolve();
     }
     pendingDelays.clear();
+    cancelSplashTts();
     ipcMain.removeListener('boot-ready', onBootReady);
     ipcMain.removeListener('splash-done', onSplashDone);
     ipcMain.removeListener('wizard-done', onWizardDone);
@@ -361,6 +456,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     ipcMain.removeHandler('splash-tts');
     ipcMain.removeHandler('chat-message');
     ipcMain.removeHandler('get-runtime-status');
+    for (const perf of perfByTurn.values()) {
+      if (perf.fallback) clearTimeout(perf.fallback);
+    }
+    perfByTurn.clear();
     for (const unsubscribe of unsubscribers) unsubscribe();
     runtimeUnsubscribe();
   };

@@ -3,7 +3,9 @@ import type {
   OutputId,
   PlaybackId,
   TurnId,
+  TurnMode,
   TurnRequest,
+  TurnSource,
   TurnTerminalStatus,
   VoiceCaptureId,
 } from './turn-contract.js';
@@ -14,6 +16,7 @@ import type {
  */
 export type BusEvents = {
   'chat:message':        TurnRequest;
+  'turn:accepted':       { turnId: TurnId; source: TurnSource; mode: TurnMode };
   'turn:cancel':         { turnId: TurnId; reason: string };
   'turn:terminal':       { turnId: TurnId; status: TurnTerminalStatus; message?: string };
   'llm:chunk':           { turnId: TurnId; outputId: OutputId; sequence: number; text: string };
@@ -29,8 +32,9 @@ export type BusEvents = {
   'voice:transcript':    { turnId: TurnId; captureId: VoiceCaptureId; text: string };
   'voice:speaking':      { turnId: TurnId; outputId: OutputId; text: string };
   'voice:play-audio':    { turnId: TurnId; outputId: OutputId; playbackId: PlaybackId; audio: number[]; sampleRate: number };
+  'voice:stop-playback': { turnId: TurnId; playbackId: PlaybackId };
   'voice:done':          { turnId: TurnId };
-  'voice:error':         { message: string; turnId?: TurnId };
+  'voice:error':         { message: string; turnId?: TurnId; outputId?: OutputId };
   'voice:capability':    { stt: boolean; tts: boolean };
   'voice:interrupted':   { turnId: TurnId };
   'voice:wake':          Record<string, never>;
@@ -38,7 +42,7 @@ export type BusEvents = {
   'perf:timing':         { label: string; ms: number; turnId?: TurnId; meta?: Record<string, unknown> };
   'boot:status':         { step: string; message?: string };
   'storage:degraded':    { message: string };
-  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string };
+  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };
   'action:result':       { turnId: TurnId; requestId: string; action: string; ok: boolean; speak?: string };
   'action:notify':       { notificationId: string; speak: string };

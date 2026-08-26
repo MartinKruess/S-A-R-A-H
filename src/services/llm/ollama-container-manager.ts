@@ -2,7 +2,7 @@
 import { execFile } from 'child_process';
 import * as fs from 'fs';
 import { promisify } from 'util';
-import { abortableDelay, throwIfAborted } from '../../core/abort-utils.js';
+import { abortableDelay, runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -29,6 +29,7 @@ export interface ContainerManagerOptions {
   healthTimeoutMs?: number;
   healthPollMs?: number;
   gpuRetryDelayMs?: number;
+  requestTimeoutMs?: number;
 }
 
 const DOCKER_ERROR_MESSAGES: Record<Exclude<DockerState, 'ok'>, string> = {
@@ -45,6 +46,7 @@ export class OllamaContainerManager {
   private healthTimeoutMs: number;
   private healthPollMs: number;
   private gpuRetryDelayMs: number;
+  private requestTimeoutMs: number;
 
   constructor(
     private baseUrl: string,
@@ -64,6 +66,7 @@ export class OllamaContainerManager {
     this.healthTimeoutMs = options.healthTimeoutMs ?? 30_000;
     this.healthPollMs = options.healthPollMs ?? 500;
     this.gpuRetryDelayMs = options.gpuRetryDelayMs ?? 500;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
   }
 
   async getStatus(signal?: AbortSignal): Promise<ContainerStatus> {
@@ -111,23 +114,26 @@ export class OllamaContainerManager {
     await this.waitForApi(signal);
   }
 
-  async checkGpu(): Promise<GpuStatus> {
-    const first = await this.readVramStatus();
+  async checkGpu(signal?: AbortSignal): Promise<GpuStatus> {
+    const first = await this.readVramStatus(signal);
     if (first !== 'cpu') return first;
     // A model can still be loading right after warmup — retry once before
     // raising a CPU-mode alarm.
-    await abortableDelay(this.gpuRetryDelayMs);
-    return this.readVramStatus();
+    await abortableDelay(this.gpuRetryDelayMs, signal);
+    return this.readVramStatus(signal);
   }
 
-  private async readVramStatus(): Promise<GpuStatus> {
+  private async readVramStatus(signal?: AbortSignal): Promise<GpuStatus> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/ps`);
-      if (!res.ok) return 'unknown';
-      const data = (await res.json()) as { models: { size_vram: number }[] };
-      if (!Array.isArray(data.models) || data.models.length === 0) return 'unknown';
-      return data.models.some((m) => m.size_vram > 0) ? 'gpu' : 'cpu';
+      return await runWithTimeout(async (requestSignal) => {
+        const res = await fetch(`${this.baseUrl}/api/ps`, { signal: requestSignal });
+        if (!res.ok) return 'unknown';
+        const data = (await res.json()) as { models: { size_vram: number }[] };
+        if (!Array.isArray(data.models) || data.models.length === 0) return 'unknown';
+        return data.models.some((m) => m.size_vram > 0) ? 'gpu' : 'cpu';
+      }, this.requestTimeoutMs, 'Ollama GPU probe timed out', signal);
     } catch {
+      throwIfAborted(signal);
       return 'unknown';
     }
   }
@@ -154,12 +160,19 @@ export class OllamaContainerManager {
     const deadline = Date.now() + this.healthTimeoutMs;
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`${this.baseUrl}/api/tags`, { signal });
+        const remainingMs = Math.max(1, deadline - Date.now());
+        const res = await runWithTimeout(
+          (requestSignal) => fetch(`${this.baseUrl}/api/tags`, { signal: requestSignal }),
+          Math.min(this.requestTimeoutMs, remainingMs),
+          'Ollama health probe timed out',
+          signal,
+        );
         if (res.ok) return;
       } catch {
         throwIfAborted(signal);
         // API not up yet — keep polling
       }
+      if (Date.now() >= deadline) break;
       await abortableDelay(this.healthPollMs, signal);
     }
     throw new Error(

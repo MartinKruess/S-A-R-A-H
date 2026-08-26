@@ -85,4 +85,44 @@ describe('MessageBus', () => {
     expect(healthy).toHaveBeenCalledOnce();
     expect(wildcard).toHaveBeenCalledOnce();
   });
+
+  it('accepts exactly one terminal event per turn across all producers', () => {
+    const terminals = vi.fn();
+    bus.on('turn:terminal', terminals);
+    bus.emit('voice', 'turn:accepted', { turnId: 'turn-1', source: 'voice', mode: 'voice' });
+
+    expect(bus.emit('voice', 'turn:terminal', { turnId: 'turn-1', status: 'canceled' })).toBe(true);
+    expect(bus.emit('router', 'turn:terminal', { turnId: 'turn-1', status: 'done' })).toBe(false);
+    expect(terminals).toHaveBeenCalledOnce();
+    expect(bus.isTurnTerminal('turn-1')).toBe(true);
+  });
+
+  it('publishes an accepted turn request exactly once', () => {
+    const handler = vi.fn();
+    bus.on('chat:message', handler);
+    bus.emit('runtime', 'turn:accepted', { turnId: turn.turnId, source: 'chat', mode: 'chat' });
+
+    expect(bus.emit('renderer', 'chat:message', turn)).toBe(true);
+    expect(bus.emit('renderer', 'chat:message', turn)).toBe(false);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a terminal event without a previously accepted turn', () => {
+    const handler = vi.fn();
+    bus.on('turn:terminal', handler);
+
+    expect(bus.emit('runtime', 'turn:terminal', { turnId: 'unknown', status: 'error' })).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+    expect(bus.isTurnKnown('unknown')).toBe(false);
+  });
+
+  it('refuses to reopen a terminal turn through chat input', () => {
+    bus.emit('voice', 'turn:accepted', { turnId: 'turn-1', source: 'voice', mode: 'voice' });
+    bus.emit('voice', 'turn:terminal', { turnId: 'turn-1', status: 'canceled' });
+    const handler = vi.fn();
+    bus.on('chat:message', handler);
+
+    expect(bus.emit('renderer', 'chat:message', turn)).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
 });

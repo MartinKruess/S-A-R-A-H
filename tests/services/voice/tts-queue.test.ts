@@ -1,6 +1,6 @@
 // tests/services/voice/tts-queue.test.ts
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { TtsQueue } from '../../../src/services/voice/tts-queue.js';
 import type { TtsProvider } from '../../../src/services/voice/tts-provider.interface.js';
 
@@ -27,6 +27,7 @@ describe('TtsQueue', () => {
   let onAudioReady: ReturnType<typeof vi.fn>;
   let onQueueEmpty: ReturnType<typeof vi.fn>;
   let onError: ReturnType<typeof vi.fn>;
+  let onPlaybackCancel: ReturnType<typeof vi.fn>;
   let queue: TtsQueue;
 
   beforeEach(() => {
@@ -35,7 +36,20 @@ describe('TtsQueue', () => {
     onAudioReady = vi.fn();
     onQueueEmpty = vi.fn();
     onError = vi.fn();
-    queue = new TtsQueue(mockTts, onAudioReady, onQueueEmpty, onError);
+    onPlaybackCancel = vi.fn();
+    queue = new TtsQueue(
+      mockTts,
+      onAudioReady,
+      onQueueEmpty,
+      onError,
+      undefined,
+      undefined,
+      onPlaybackCancel,
+    );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   function playbackDone(callIndex = onAudioReady.mock.calls.length - 1): void {
@@ -62,10 +76,12 @@ describe('TtsQueue', () => {
       22_050,
     );
     expect(onQueueEmpty).not.toHaveBeenCalled();
+    expect(queue.hasTurn(TURN_ID)).toBe(true);
 
     playbackDone();
 
     expect(onQueueEmpty).toHaveBeenCalledOnce();
+    expect(queue.hasTurn(TURN_ID)).toBe(false);
   });
 
   // ── Multiple sentences in order ──────────────────────────────────────────────
@@ -150,6 +166,10 @@ describe('TtsQueue', () => {
 
     expect(queue.isActive).toBe(false);
     expect(queue.pendingCount).toBe(0);
+    expect(onPlaybackCancel).toHaveBeenCalledWith(
+      TURN_ID,
+      onAudioReady.mock.calls[0][1],
+    );
     // onQueueEmpty should NOT fire after stop()
     expect(onQueueEmpty).not.toHaveBeenCalled();
   });
@@ -171,7 +191,7 @@ describe('TtsQueue', () => {
     await vi.waitUntil(() => onError.mock.calls.length > 0);
 
     expect(onError).toHaveBeenCalledOnce();
-    expect(onError).toHaveBeenCalledWith(boom);
+    expect(onError).toHaveBeenCalledWith(boom, item('Bad sentence.'));
     expect(onAudioReady).not.toHaveBeenCalled();
   });
 
@@ -190,6 +210,40 @@ describe('TtsQueue', () => {
     expect(() => queue.playbackDone(TURN_ID, 'missing')).not.toThrow();
     expect(onQueueEmpty).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('reports a correlated renderer playback failure and continues the queue', async () => {
+    const second = { turnId: 'turn-2', outputId: 'output-2', text: 'Second.' };
+    queue.enqueue(item('First.'));
+    queue.enqueue(second);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+    const firstPlaybackId = onAudioReady.mock.calls[0][1] as string;
+    const error = new Error('Renderer playback failed');
+
+    queue.playbackFailed(TURN_ID, firstPlaybackId, error);
+
+    expect(onError).toHaveBeenCalledWith(error, item('First.'));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(second);
+    expect(queue.hasTurn('turn-2')).toBe(true);
+
+    playbackDone(1);
+    expect(queue.isActive).toBe(false);
+    expect(onQueueEmpty).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a stale renderer playback failure', async () => {
+    queue.enqueue(item('Current.'));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    const playbackId = onAudioReady.mock.calls[0][1] as string;
+
+    queue.playbackFailed(TURN_ID, 'stale-playback', new Error('stale'));
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(queue.isActive).toBe(true);
+    queue.playbackDone(TURN_ID, playbackId);
+    expect(queue.isActive).toBe(false);
   });
 
   // ── isActive / pendingCount ──────────────────────────────────────────────────
@@ -237,6 +291,46 @@ describe('TtsQueue', () => {
     expect(onQueueEmpty).toHaveBeenCalledOnce();
   });
 
+  it('recovers when the renderer never acknowledges playback and ignores its late ACK', async () => {
+    vi.useFakeTimers();
+    queue.enqueue(item('First.'));
+    queue.enqueue({ turnId: 'turn-2', outputId: 'output-2', text: 'Second.' });
+    await vi.runAllTicks();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    const firstPlaybackId = onAudioReady.mock.calls[0][1] as string;
+
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Audio playback acknowledgement timed out' }),
+      item('First.'),
+    );
+    expect(onPlaybackCancel).toHaveBeenCalledWith(TURN_ID, firstPlaybackId);
+    expect(onAudioReady).toHaveBeenCalledTimes(2);
+
+    queue.playbackDone(TURN_ID, firstPlaybackId);
+    expect(onAudioReady).toHaveBeenCalledTimes(2);
+    expect(queue.hasTurn('turn-2')).toBe(true);
+
+    playbackDone(1);
+    expect(queue.isActive).toBe(false);
+    expect(onQueueEmpty).toHaveBeenCalledOnce();
+  });
+
+  it('clears the playback timeout when stopped', async () => {
+    vi.useFakeTimers();
+    queue.enqueue(item('Stop before timeout.'));
+    await vi.runAllTicks();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+
+    queue.stop();
+    await vi.advanceTimersByTimeAsync(120_001);
+
+    expect(onError).not.toHaveBeenCalled();
+    expect(onQueueEmpty).not.toHaveBeenCalled();
+    expect(queue.isActive).toBe(false);
+  });
+
   it('discards synthesis that resolves after stop and never injects it into the next turn', async () => {
     let resolveOld = (_audio: Float32Array): void => {};
     vi.mocked(mockTts.speak)
@@ -255,5 +349,72 @@ describe('TtsQueue', () => {
       outputId: 'new-output',
     });
     expect(onAudioReady.mock.calls[0][2]).toEqual(new Float32Array([2]));
+  });
+
+  it('cancels only the selected turn and ignores its late synthesis', async () => {
+    let resolveOld = (_audio: Float32Array): void => {};
+    vi.mocked(mockTts.speak)
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce(new Float32Array([2]));
+
+    queue.enqueue(item('Old turn.', 'old-output'));
+    queue.enqueue({ turnId: 'turn-2', outputId: 'new-output', text: 'New turn.' });
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledOnce());
+
+    queue.cancelTurn(TURN_ID);
+    resolveOld(new Float32Array([1]));
+
+    await vi.waitUntil(() => onAudioReady.mock.calls.length === 1);
+    expect(onAudioReady.mock.calls[0][0]).toMatchObject({
+      turnId: 'turn-2',
+      outputId: 'new-output',
+    });
+  });
+
+  it('keeps another turn queued when the canceled turn owns active playback', async () => {
+    const turnTwo = { turnId: 'turn-2', outputId: 'new-output', text: 'New turn.' };
+    queue.enqueue(item('Old turn.', 'old-output'));
+    queue.enqueue(turnTwo);
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+
+    queue.cancelTurn(TURN_ID);
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onPlaybackCancel).toHaveBeenCalledWith(
+      TURN_ID,
+      onAudioReady.mock.calls[0][1],
+    );
+    expect(onAudioReady.mock.calls[1][0]).toEqual(turnTwo);
+    expect(mockTts.stop).not.toHaveBeenCalled();
+    expect(queue.hasTurn(TURN_ID)).toBe(false);
+    expect(queue.hasTurn('turn-2')).toBe(true);
+  });
+
+  it('drops canceled prebuffer synthesis but continues with the next turn', async () => {
+    let resolveCanceledPrebuffer = (_audio: Float32Array): void => {};
+    vi.mocked(mockTts.speak)
+      .mockResolvedValueOnce(new Float32Array([1]))
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => {
+        resolveCanceledPrebuffer = resolve;
+      }))
+      .mockResolvedValueOnce(new Float32Array([3]));
+
+    queue.enqueue(item('Old one.', 'old-output-1'));
+    queue.enqueue(item('Old two.', 'old-output-2'));
+    queue.enqueue({ turnId: 'turn-2', outputId: 'new-output', text: 'New turn.' });
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+
+    queue.cancelTurn(TURN_ID);
+    resolveCanceledPrebuffer(new Float32Array([2]));
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls.map(([queuedItem]) => queuedItem.text)).toEqual([
+      'Old one.',
+      'New turn.',
+    ]);
+    expect(queue.hasTurn(TURN_ID)).toBe(false);
+    expect(queue.hasTurn('turn-2')).toBe(true);
   });
 });

@@ -6,8 +6,10 @@ import { forwardToRenderers } from './forward-to-renderers.js';
 import { getService } from './ipc-helpers.js';
 import {
   isValidAudioInput,
+  isValidCaptureFailureInput,
   isValidInteractionMode,
   isValidPlaybackDoneInput,
+  isValidPlaybackFailureInput,
 } from './ipc-validation.js';
 
 export interface VoiceHandlerDeps {
@@ -19,7 +21,18 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   const { getAppContext, onChunk } = deps;
 
   ipcMain.handle('voice-get-state', () => {
-    return getService<VoiceService>(getAppContext(), 'voice').voiceState;
+    return getService<VoiceService>(getAppContext(), 'voice').voiceStateSnapshot;
+  });
+
+  ipcMain.handle('voice-capture-failed', (_event, input: unknown) => {
+    if (!isValidCaptureFailureInput(input)) {
+      console.warn('[IPC] invalid payload for voice-capture-failed');
+      return;
+    }
+    getService<VoiceService>(getAppContext(), 'voice').handleCaptureFailure(
+      input.captureId,
+      input.message,
+    );
   });
 
   ipcMain.handle('voice-playback-done', (_event, input: { turnId: string; playbackId: string }) => {
@@ -28,6 +41,26 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
       return;
     }
     getAppContext().bus.emit('renderer', 'voice:playback-done', input);
+  });
+
+  ipcMain.handle('voice-playback-failed', (_event, input: unknown) => {
+    if (!isValidPlaybackFailureInput(input)) {
+      console.warn('[IPC] invalid payload for voice-playback-failed');
+      return;
+    }
+    getService<VoiceService>(getAppContext(), 'voice').handlePlaybackFailure(
+      input.turnId,
+      input.playbackId,
+      input.message,
+    );
+  });
+
+  ipcMain.handle('voice-set-capture-ready', (_event, ready: unknown) => {
+    if (typeof ready !== 'boolean') {
+      console.warn('[IPC] invalid payload for voice-set-capture-ready');
+      return;
+    }
+    getService<VoiceService>(getAppContext(), 'voice').setRendererCaptureReady(ready);
   });
 
   ipcMain.handle('voice-audio-chunk', (_event, input: { captureId: string; chunk: number[] }) => {
@@ -60,13 +93,17 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
     forwardToRenderers(bus, 'voice:error'),
     forwardToRenderers(bus, 'voice:capability'),
     forwardToRenderers(bus, 'voice:play-audio'),
+    forwardToRenderers(bus, 'voice:stop-playback'),
   ];
 
   return () => {
     for (const unsubscribe of unsubscribers) unsubscribe();
     for (const channel of [
       'voice-get-state',
+      'voice-capture-failed',
       'voice-playback-done',
+      'voice-playback-failed',
+      'voice-set-capture-ready',
       'voice-audio-chunk',
       'voice-set-interaction-mode',
       'voice-config-changed',

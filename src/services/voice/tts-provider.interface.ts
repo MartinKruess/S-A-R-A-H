@@ -1,5 +1,10 @@
 // src/services/voice/tts-provider.interface.ts
 
+export interface TtsAvailability {
+  available: boolean;
+  message?: string;
+}
+
 export interface TtsProvider {
   /** Unique provider ID, e.g. 'piper' */
   readonly id: string;
@@ -9,6 +14,9 @@ export interface TtsProvider {
 
   /** Convert text to PCM audio. Returns raw PCM Float32Array at 22050 Hz. */
   speak(text: string, signal?: AbortSignal): Promise<Float32Array>;
+
+  /** Subscribe to runtime synthesis failures and successful recovery. */
+  onAvailabilityChange?(listener: (state: TtsAvailability) => void): () => void;
 
   /** Stop any in-progress speech generation and playback */
   stop(): void;

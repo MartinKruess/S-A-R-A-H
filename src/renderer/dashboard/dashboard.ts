@@ -142,7 +142,7 @@ chatInput.addEventListener('keydown', (e) => {
 
     addBubble('user', text);
     const turnId = crypto.randomUUID();
-    void sarah.chat(text, turnId).then((result) => {
+    void sarah.chat(text, turnId, chatMode ? 'chat' : 'voice').then((result) => {
       if (!result.accepted) terminalTurns.add(turnId);
     }).catch((error) => {
       terminalTurns.add(turnId);
@@ -174,9 +174,19 @@ sarah.onChatChunk((data) => {
 
 // Done
 sarah.onChatDone((data) => {
+  if (terminalTurns.has(data.turnId)) return;
   const output = outputBubbles.get(data.outputId);
-  if (output && data.sequence !== output.nextSequence) {
+  if (!output) {
+    if (data.fullText) addBubble('assistant', data.fullText);
+    return;
+  }
+  if (output.turnId !== data.turnId) {
+    console.warn('[Dashboard] Assistant completion owner mismatch', data);
+    return;
+  }
+  if (data.sequence !== output.nextSequence) {
     console.warn('[Dashboard] Assistant completion sequence mismatch', data);
+    output.bubble.textContent = data.fullText;
   }
   outputBubbles.delete(data.outputId);
 });
@@ -237,7 +247,14 @@ window.addEventListener('beforeunload', () => {
 
 // ── Boot Sequence ──
 if (document.body.classList.contains('boot-mode') && orb) {
-  startBootSequence(orb).then(() => startAudioBridge());
+  void startBootSequence(orb)
+    .then(() => startAudioBridge())
+    .catch((error) => {
+      console.error('[Dashboard] Boot sequence failed; continuing in degraded mode:', error);
+      document.body.classList.remove('boot-mode');
+      sarah.bootDone();
+      startAudioBridge();
+    });
 } else {
   startAudioBridge();
 }

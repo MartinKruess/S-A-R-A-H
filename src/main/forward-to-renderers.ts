@@ -11,6 +11,15 @@ export function forwardToRenderers(bus: MessageBus, topic: BusTopic): () => void
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) {
         win.webContents.send(topic, msg.data);
+        const turnId = 'turnId' in Object(msg.data)
+          ? (msg.data as { turnId?: string }).turnId
+          : undefined;
+        win.webContents.send('bus:diagnostic', {
+          topic: msg.topic,
+          source: msg.source,
+          timestamp: msg.timestamp,
+          ...(turnId ? { turnId } : {}),
+        });
       }
     }
   });

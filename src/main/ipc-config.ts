@@ -55,6 +55,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         const ctx = getAppContext();
         const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
         const previousAudio = ctx.parsedConfig.audio;
+        const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
         const previousLlm = ctx.parsedConfig.llm;
         const merged = { ...existing, ...config };
 
@@ -64,8 +65,31 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         await ctx.config.set('root', merged);
         ctx.parsedConfig = parsed;
 
-        if ('controls' in config) {
-          await getService<VoiceService>(ctx, 'voice').applyConfig();
+        const inputDeviceChanged = previousAudio.inputDeviceId !== parsed.audio.inputDeviceId;
+        const voiceModeChanged = previousVoiceMode !== parsed.controls.voiceMode;
+        const voiceService = 'controls' in config || inputDeviceChanged
+          ? getService<VoiceService>(ctx, 'voice')
+          : null;
+        if (voiceService && (voiceModeChanged || inputDeviceChanged)) {
+          // Invalidate readiness synchronously in main before the renderer event
+          // crosses the process boundary. Otherwise an off -> PTT switch has a
+          // brief window in which the old readiness could register the hotkey.
+          voiceService.setRendererCaptureReady(false);
+        }
+        if (voiceModeChanged) {
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            // Renderer capture ownership must move before the main-process hotkey
+            // is reconfigured. This prevents a newly-enabled PTT key from
+            // accepting input while the microphone graph is still cold.
+            win.webContents.send('voice-input-config-changed', {
+              voiceMode: parsed.controls.voiceMode,
+            });
+          }
+        }
+
+        if ('controls' in config && voiceService) {
+          await voiceService.applyConfig();
         }
 
         if (!isAudioConfigEqual(previousAudio, parsed.audio)) {

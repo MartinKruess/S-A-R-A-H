@@ -143,7 +143,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
 
   sarah.voice
     .getState()
-    .then((state) => applyState({ state }))
+    .then(applyState)
     .catch((err: Error) => {
       console.warn('[VoiceIn] initial voice state fetch failed:', err);
     });

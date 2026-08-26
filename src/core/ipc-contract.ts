@@ -1,6 +1,6 @@
 import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
-import type { VoiceState } from '../services/voice/voice-types.js';
 import type { BusEvents } from './bus-events.js';
+import type { BusTopic } from './bus-events.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
 import type { SaveConfigResult } from './config-apply.js';
 import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
@@ -19,15 +19,27 @@ export interface IpcCommands {
   'open-dialog':                { input: string; output: void };
   'open-external-url':          { input: string; output: void };
   'chat-message':               {
-    input: { turnId: TurnId; message: string };
+    input: { turnId: TurnId; message: string; mode: 'chat' | 'voice' };
     output: { accepted: boolean; turnId: TurnId };
   };
-  'voice-get-state':            { input: void; output: VoiceState };
+  'voice-get-state':            { input: void; output: BusEvents['voice:state'] };
+  'voice-capture-failed':       {
+    input: { captureId?: VoiceCaptureId; message: string };
+    output: void;
+  };
   'voice-playback-done':        { input: { turnId: TurnId; playbackId: PlaybackId }; output: void };
+  'voice-playback-failed':      {
+    input: { turnId: TurnId; playbackId: PlaybackId; message: string };
+    output: void;
+  };
+  'voice-set-capture-ready':    { input: boolean; output: void };
   'voice-audio-chunk':          { input: { captureId: VoiceCaptureId; chunk: number[] }; output: void };
   'voice-set-interaction-mode': { input: 'chat' | 'voice'; output: void };
   'voice-config-changed':       { input: void; output: void };
-  'splash-tts':                 { input: string; output: void };
+  'splash-tts':                 {
+    input: string;
+    output: { audio: number[]; sampleRate: number } | null;
+  };
   'connections-list':           { input: void;   output: ConnectionInfo[] };
   'connection-connect':         { input: string; output: { ok: boolean; error?: string } };
   'connection-disconnect':      { input: string; output: void };
@@ -35,6 +47,7 @@ export interface IpcCommands {
 
 /** IPC events sent from main to renderer (one-way, forwarded bus events) */
 export interface IpcEvents {
+  'bus:diagnostic':     BusDiagnostic;
   'llm:chunk':         BusEvents['llm:chunk'];
   'llm:done':          BusEvents['llm:done'];
   'llm:error':         BusEvents['llm:error'];
@@ -43,12 +56,14 @@ export interface IpcEvents {
   'voice:state':       BusEvents['voice:state'];
   'voice:transcript':  BusEvents['voice:transcript'];
   'voice:play-audio':  BusEvents['voice:play-audio'];
+  'voice:stop-playback': BusEvents['voice:stop-playback'];
   'voice:error':       BusEvents['voice:error'];
   'voice:capability':  BusEvents['voice:capability'];
   'boot-status':       BusEvents['boot:status'];
   'system:metrics':        SystemMetrics;
   'voice:level':           VoiceLevel;
   'audio-config-changed':  AudioConfig;
+  'voice-input-config-changed': { voiceMode: SarahConfig['controls']['voiceMode'] };
   'runtime-status':        RuntimeSnapshot;
   'transition-start':      void;
 }
@@ -75,7 +90,10 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'open-external-url': true,
   'chat-message': true,
   'voice-get-state': true,
+  'voice-capture-failed': true,
   'voice-playback-done': true,
+  'voice-playback-failed': true,
+  'voice-set-capture-ready': true,
   'voice-audio-chunk': true,
   'voice-set-interaction-mode': true,
   'voice-config-changed': true,
@@ -86,6 +104,7 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
 };
 
 export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
+  'bus:diagnostic': true,
   'llm:chunk': true,
   'llm:done': true,
   'llm:error': true,
@@ -94,15 +113,24 @@ export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
   'voice:state': true,
   'voice:transcript': true,
   'voice:play-audio': true,
+  'voice:stop-playback': true,
   'voice:error': true,
   'voice:capability': true,
   'boot-status': true,
   'system:metrics': true,
   'voice:level': true,
   'audio-config-changed': true,
+  'voice-input-config-changed': true,
   'runtime-status': true,
   'transition-start': true,
 };
+
+export interface BusDiagnostic {
+  topic: BusTopic;
+  source: string;
+  timestamp: string;
+  turnId?: TurnId;
+}
 
 export const IPC_SEND_CHANNELS: Readonly<Record<keyof IpcSendEvents, true>> = {
   'splash-done': true,

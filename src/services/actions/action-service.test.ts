@@ -63,6 +63,7 @@ function makeService(over: {
   bus.on('action:request', (msg) => service.onMessage(msg));
   bus.on('action:cancel', (msg) => service.onMessage(msg));
   bus.on('turn:cancel', (msg) => service.onMessage(msg));
+  bus.on('turn:terminal', (msg) => service.onMessage(msg));
   return { bus, results, service, spotify, media };
 }
 
@@ -208,6 +209,53 @@ describe('ActionService', () => {
 
     expect(media.next).toHaveBeenCalledOnce();
     expect(results).toHaveLength(1);
+  });
+
+  it('refuses an action request after its owning turn is terminal', async () => {
+    const media = makeMedia();
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    bus.emit('test', 'turn:accepted', { turnId: TURN_ID, source: 'chat', mode: 'chat' });
+    bus.emit('test', 'turn:terminal', { turnId: TURN_ID, status: 'canceled' });
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'too-late',
+      action: 'media_next',
+      param: '',
+    });
+    await Promise.resolve();
+
+    expect(media.next).not.toHaveBeenCalled();
+    expect(results).toEqual([]);
+  });
+
+  it('suppresses a late action result when the turn became terminal in flight', async () => {
+    let finish = (_result: MediaResult): void => {};
+    let actionSignal: AbortSignal | undefined;
+    const media = makeMedia();
+    media.next = vi.fn((_target: string, signal?: AbortSignal) => {
+      actionSignal = signal;
+      return new Promise<MediaResult>((resolve) => { finish = resolve; });
+    });
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    bus.emit('test', 'turn:accepted', { turnId: TURN_ID, source: 'chat', mode: 'chat' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'in-flight',
+      action: 'media_next',
+      param: '',
+    });
+    await vi.waitFor(() => expect(media.next).toHaveBeenCalledOnce());
+
+    bus.emit('test', 'turn:terminal', { turnId: TURN_ID, status: 'error' });
+    expect(actionSignal?.aborted).toBe(true);
+    finish({ ok: true, speak: 'Zu spät.' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(results).toEqual([]);
   });
 
   it('aborts only actions belonging to the canceled turn and suppresses their result', async () => {

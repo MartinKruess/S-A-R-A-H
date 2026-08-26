@@ -47,6 +47,14 @@ const api: SarahApi = {
     ipcRenderer.on('runtime-status', handler);
     return () => ipcRenderer.removeListener('runtime-status', handler);
   },
+  onVoiceInputConfigChanged: (callback) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      data: IpcEvents['voice-input-config-changed'],
+    ) => callback(data);
+    ipcRenderer.on('voice-input-config-changed', handler);
+    return () => ipcRenderer.removeListener('voice-input-config-changed', handler);
+  },
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
@@ -55,7 +63,7 @@ const api: SarahApi = {
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
 
   // Chat API
-  chat: (message, turnId) => ipcRenderer.invoke('chat-message', { turnId, message }),
+  chat: (message, turnId, mode) => ipcRenderer.invoke('chat-message', { turnId, message, mode }),
   onChatChunk: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['llm:chunk']) => callback(data);
     ipcRenderer.on('llm:chunk', handler);
@@ -81,10 +89,19 @@ const api: SarahApi = {
     ipcRenderer.on('storage:degraded', handler);
     return () => ipcRenderer.removeListener('storage:degraded', handler);
   },
+  onBusDiagnostic: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['bus:diagnostic']) => callback(data);
+    ipcRenderer.on('bus:diagnostic', handler);
+    return () => ipcRenderer.removeListener('bus:diagnostic', handler);
+  },
 
   // Voice API
   voice: {
     getState: () => ipcRenderer.invoke('voice-get-state'),
+    captureFailed: (captureId, message) => ipcRenderer.invoke(
+      'voice-capture-failed',
+      { captureId, message },
+    ),
     onStateChange: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['voice:state']) => callback(data);
       ipcRenderer.on('voice:state', handler);
@@ -100,7 +117,17 @@ const api: SarahApi = {
       ipcRenderer.on('voice:play-audio', handler);
       return () => ipcRenderer.removeListener('voice:play-audio', handler);
     },
+    onStopPlayback: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['voice:stop-playback']) => callback(data);
+      ipcRenderer.on('voice:stop-playback', handler);
+      return () => ipcRenderer.removeListener('voice:stop-playback', handler);
+    },
     playbackDone: (turnId, playbackId) => ipcRenderer.invoke('voice-playback-done', { turnId, playbackId }),
+    playbackFailed: (turnId, playbackId, message) => ipcRenderer.invoke(
+      'voice-playback-failed',
+      { turnId, playbackId, message },
+    ),
+    setCaptureReady: (ready) => ipcRenderer.invoke('voice-set-capture-ready', ready),
     onError: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
       ipcRenderer.on('voice:error', handler);

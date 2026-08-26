@@ -19,7 +19,7 @@ export interface SearchLike {
   ): Promise<string>;
   showResult(
     param: string,
-    correlation: { turnId: string; requestId: string },
+    correlation: { turnId: string; requestId: string; sourceRequestId?: string },
     signal?: AbortSignal,
   ): Promise<LaunchResult>;
 }
@@ -45,7 +45,7 @@ const DEFAULT_ACTION_DRAIN_TIMEOUT_MS = 2_000;
  */
 export class ActionService implements SarahService {
   readonly id = 'actions';
-  readonly subscriptions = ['action:request', 'action:cancel', 'turn:cancel'] as const;
+  readonly subscriptions = ['action:request', 'action:cancel', 'turn:cancel', 'turn:terminal'] as const;
   status: ServiceStatus = 'pending';
   private activeActions = new Map<string, {
     turnId: string;
@@ -91,28 +91,40 @@ export class ActionService implements SarahService {
       if (active?.turnId === msg.data.turnId) active.controller.abort();
       return;
     }
-    if (msg.topic === 'turn:cancel') {
+    if (msg.topic === 'turn:cancel' || msg.topic === 'turn:terminal') {
       for (const { turnId, controller } of this.activeActions.values()) {
         if (turnId === msg.data.turnId) controller.abort();
       }
       return;
     }
     if (msg.topic !== 'action:request' || this.status !== 'running') return;
-    const { turnId, requestId, action, param } = msg.data;
+    const { turnId, requestId, action, param, sourceRequestId } = msg.data;
+    if (this.bus.isTurnTerminal(turnId)) {
+      console.warn('[Actions] request for terminal turn refused:', turnId, requestId, action);
+      return;
+    }
     if (this.seenRequestIds.has(requestId)) {
       console.warn('[Actions] duplicate request refused:', requestId, action);
       return;
     }
     this.rememberRequestId(requestId);
     const controller = new AbortController();
-    const operation = this.execute(turnId, requestId, action, param, controller.signal);
+    const operation = this.execute(turnId, requestId, action, param, sourceRequestId, controller.signal);
     this.activeActions.set(requestId, { turnId, operation, controller });
     void operation
       .then((result) => {
-        if (controller.signal.aborted || this.status !== 'running') return;
+        if (
+          controller.signal.aborted
+          || this.status !== 'running'
+          || this.bus.isTurnTerminal(turnId)
+        ) return;
         this.emitResult(turnId, requestId, action, param, result);
       }, (err) => {
-        if (controller.signal.aborted || this.status !== 'running') return;
+        if (
+          controller.signal.aborted
+          || this.status !== 'running'
+          || this.bus.isTurnTerminal(turnId)
+        ) return;
         console.warn('[Actions] dispatch failed:', action, err);
         this.emitResult(turnId, requestId, action, param, {
           ok: false,
@@ -157,6 +169,7 @@ export class ActionService implements SarahService {
     requestId: string,
     action: string,
     param: string,
+    sourceRequestId: string | undefined,
     signal: AbortSignal,
   ): Promise<LaunchResult> {
     throwIfAborted(signal);
@@ -180,7 +193,11 @@ export class ActionService implements SarahService {
           speak: await this.deps.search.runSearch(parsed.data as string, { turnId, requestId }, signal),
         };
       case 'show_browser':
-        return this.deps.search.showResult(parsed.data as string, { turnId, requestId }, signal);
+        return this.deps.search.showResult(
+          parsed.data as string,
+          { turnId, requestId, ...(sourceRequestId ? { sourceRequestId } : {}) },
+          signal,
+        );
       case 'set_volume':
         return this.deps.system.setVolume(parsed.data as number, signal);
       case 'spotify_volume':

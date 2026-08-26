@@ -33,14 +33,20 @@ const OUTPUT_ANALYSER_FFT_SIZE = 256;
 /** Timeout guarding `HTMLAudioElement.setSinkId` so an unplugged USB sink
  *  can't freeze the TTS pipeline. On timeout we fall back to the default sink. */
 const SET_SINK_ID_TIMEOUT_MS = 2000;
+const PLAYBACK_SETUP_TIMEOUT_MS = 4000;
+const CAPTURE_RESUME_TIMEOUT_MS = 3000;
+const CAPTURE_WORKLET_TIMEOUT_MS = 5000;
+const CAPTURE_DEVICE_TIMEOUT_MS = 10_000;
 
 /** Path to the capture AudioWorklet module, relative to the renderer root. */
 const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
 
-/** Number of most-recent capture chunks kept warm in the pre-roll ring buffer.
- *  At 16kHz with 2048-sample chunks, 3 chunks ≈ 384ms — enough to cover the
- *  mic-warm→recording handoff so the very start of an utterance isn't clipped. */
-const PRE_ROLL_CHUNKS = 3;
+const CAPTURE_FAILED_MESSAGE =
+  'Mikrofon konnte nicht gestartet werden. Bitte Berechtigung und Audiogerät prüfen.';
+const CAPTURE_LOST_MESSAGE =
+  'Die Mikrofonverbindung wurde unterbrochen. Bitte Audiogerät prüfen und erneut versuchen.';
+const PLAYBACK_FAILED_MESSAGE =
+  'Die Sprachausgabe konnte nicht wiedergegeben werden. Bitte Audiogerät prüfen.';
 
 /**
  * Feature-detect `HTMLAudioElement.setSinkId`. Electron on current Chromium
@@ -63,6 +69,59 @@ interface SinkIdCapable {
   setSinkId(sinkId: string): Promise<void>;
 }
 
+class AudioOperationAbortedError extends Error {
+  constructor() {
+    super('Audio operation aborted');
+    this.name = 'AbortError';
+  }
+}
+
+function isAudioOperationAborted(error: Error): boolean {
+  return error.name === 'AbortError';
+}
+
+/** Race a browser audio operation against lifecycle cancellation and a hard timeout. */
+function waitForAudioOperation<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  timeoutMessage: string,
+  onLateValue?: (value: T) => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(new AudioOperationAbortedError()));
+
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    timeout = setTimeout(() => {
+      finish(() => reject(new Error(timeoutMessage)));
+    }, timeoutMs);
+
+    void operation.then(
+      (value) => {
+        if (settled) {
+          onLateValue?.(value);
+          return;
+        }
+        finish(() => resolve(value));
+      },
+      (error) => finish(() => reject(error instanceof Error ? error : new Error(String(error)))),
+    );
+  });
+}
+
 export class AudioBridge {
   private captureCtx: AudioContext | null = null;
   private stream: MediaStream | null = null;
@@ -75,13 +134,23 @@ export class AudioBridge {
    *  `capturing` (mic graph warm) so the mic can stay hot between utterances. */
   private recording = false;
   private currentCaptureId: VoiceCaptureId | null = null;
-  /** Ring buffer of the most-recent capture chunks, kept even while not
-   *  recording. Flushed at the start of an utterance so the leading samples
-   *  captured during the warm→record handoff reach STT (fixes clipped starts). */
-  private preRoll: Float32Array[] = [];
+  private activeInputDeviceId: string | undefined = undefined;
+  private preferredInputRecoveryPending = false;
+  private voiceMode: 'off' | 'push-to-talk' | 'keyword' = 'off';
+  private sttAvailable = false;
+  private reportedCaptureReady: boolean | null = null;
 
   private playbackCtx: AudioContext | null = null;
   private currentPlaybackSource: AudioBufferSourceNode | null = null;
+  private currentPlaybackGeneration = 0;
+  private currentPlaybackTurnId: TurnId | null = null;
+  private currentPlaybackId: PlaybackId | null = null;
+  private playbackGeneration = 0;
+  private playbackStartTail: Promise<void> = Promise.resolve();
+  private readonly playbackStartControllers = new Map<PlaybackId, {
+    turnId: TurnId;
+    controller: AbortController;
+  }>();
   /** Analyser node tapping the output graph pre-gain. Lives for the lifetime
    *  of `playbackCtx` so RAF sampling doesn't re-allocate per utterance. */
   private outputAnalyser: AnalyserNode | null = null;
@@ -93,6 +162,7 @@ export class AudioBridge {
   /** MediaStreamDestination that feeds `outputAudioElement` when Path B is
    *  active. Kept null on Path A. */
   private outputStreamDest: MediaStreamAudioDestinationNode | null = null;
+  private outputUsesDefaultSink = false;
   /** Active RAF handle for the VU meter loop. */
   private outputLevelRAF: number | null = null;
   /** `performance.now()` captured when the current playback source ended.
@@ -107,7 +177,10 @@ export class AudioBridge {
 
   private unsubState: (() => void) | null = null;
   private unsubPlayAudio: (() => void) | null = null;
+  private unsubStopPlayback: (() => void) | null = null;
   private unsubAudioConfig: (() => void) | null = null;
+  private unsubVoiceInputConfig: (() => void) | null = null;
+  private unsubCapability: (() => void) | null = null;
 
   /** Latest applied audio config — used to short-circuit no-op updates. */
   private currentAudio: AudioConfig | undefined = undefined;
@@ -117,6 +190,7 @@ export class AudioBridge {
    *  honoured on the NEXT `playAudio` — in-flight playback finishes on the
    *  device it started on. Abrupt cross-fade is out of scope for Phase 6. */
   private currentOutputDeviceId: string | undefined = undefined;
+  private failedOutputDeviceId: string | undefined = undefined;
   /** Last device id for which we logged the "setSinkId unsupported" warning.
    *  Keeps the log out of the per-utterance hot path while still surfacing
    *  the misconfiguration once per device change. */
@@ -129,6 +203,17 @@ export class AudioBridge {
   /** Latched once `destroy()` begins, so in-flight operations can bail before
    * they allocate new resources the caller won't reach to tear down. */
   private destroyed = false;
+  /** Invalidates asynchronous capture setup when teardown or a device switch wins. */
+  private captureGeneration = 0;
+  /** Current setup operation, awaited by destroy so late media resources cannot survive it. */
+  private captureStartPromise: Promise<boolean> | null = null;
+  private readonly captureStartPromises = new Set<Promise<boolean>>();
+  private captureSetupAbort: AbortController | null = null;
+  private captureRecoveryPromise: Promise<void> | null = null;
+  private captureLifecyclePromise: Promise<void> = Promise.resolve();
+  private readonly deviceChangeHandler = (): void => {
+    void this.handleMediaDevicesChanged();
+  };
 
   /** Chain of pending `applyAudioConfig` runs. Each new call appends, so two
    * rapid device changes execute in order — the second reads the committed
@@ -136,26 +221,23 @@ export class AudioBridge {
   private applyPromise: Promise<void> = Promise.resolve();
 
   async start(): Promise<void> {
-    // Seed audio config first so the initial handleStateChange picks up
-    // stored gain/device values before any capture is started.
+    // Seed config/capability before exposing PTT readiness. VoiceService keeps
+    // the hotkey gated until setCaptureReady(true) arrives.
     try {
       const initialConfig = await sarah.getConfig();
       this.currentAudio = initialConfig.audio;
       this.currentInputDeviceId = initialConfig.audio.inputDeviceId;
       this.currentOutputDeviceId = initialConfig.audio.outputDeviceId;
       this.muted = initialConfig.audio.inputMuted;
-
-      // Pre-warm the mic if voice input is enabled at all. Acquiring the mic
-      // fresh on the first utterance costs ~200–500ms (getUserMedia + resume +
-      // worklet), which clips the sentence start. Warming here keeps the graph
-      // hot so 'listening' only flips `recording` on. Optional chaining so a
-      // config without `controls` simply doesn't warm.
-      const voiceMode = initialConfig.controls?.voiceMode;
-      if (voiceMode === 'push-to-talk' || voiceMode === 'keyword') {
-        void this.startCapture();
-      }
+      this.voiceMode = initialConfig.controls?.voiceMode ?? 'off';
     } catch (err) {
       console.warn('[AudioBridge] initial config fetch failed:', err);
+    }
+    try {
+      const runtime = await sarah.getRuntimeStatus();
+      this.sttAvailable = runtime.capabilities.stt?.state === 'ready';
+    } catch (err) {
+      console.warn('[AudioBridge] initial STT capability fetch failed:', err);
     }
 
     this.unsubState = sarah.voice.onStateChange(({ state, captureId }) => {
@@ -163,24 +245,56 @@ export class AudioBridge {
     });
 
     this.unsubPlayAudio = sarah.voice.onPlayAudio(({ turnId, playbackId, audio, sampleRate }) => {
-      this.playAudio(turnId, playbackId, audio, sampleRate);
+      const generation = ++this.playbackGeneration;
+      const controller = new AbortController();
+      this.playbackStartControllers.set(playbackId, { turnId, controller });
+      const start = (): Promise<void> => this.playAudio(
+        generation,
+        turnId,
+        playbackId,
+        audio,
+        sampleRate,
+        controller.signal,
+      ).finally(() => {
+        const pending = this.playbackStartControllers.get(playbackId);
+        if (pending?.controller === controller) this.playbackStartControllers.delete(playbackId);
+      });
+      this.playbackStartTail = this.playbackStartTail.then(start, start);
     });
+
+    this.unsubStopPlayback = sarah.voice.onStopPlayback(({ turnId, playbackId }) => {
+      this.stopPlayback(turnId, playbackId);
+    });
+
+    navigator.mediaDevices.addEventListener?.('devicechange', this.deviceChangeHandler);
 
     this.unsubAudioConfig = sarah.onAudioConfigChanged((audio) => {
       void this.applyAudioConfig(audio);
     });
+    this.unsubVoiceInputConfig = sarah.onVoiceInputConfigChanged(({ voiceMode }) => {
+      this.voiceMode = voiceMode;
+      void this.reconcileVoiceInputLifecycle();
+    });
+    this.unsubCapability = sarah.voice.onCapability(({ stt }) => {
+      this.sttAvailable = stt;
+      void this.reconcileVoiceInputLifecycle();
+    });
+
+    this.started = true;
+    await this.reconcileVoiceInputLifecycle();
 
     // Check initial state (may trigger startCapture with seeded device id)
     const initialState = await sarah.voice.getState();
-    this.handleStateChange(initialState);
-
-    this.started = true;
+    this.handleStateChange(initialState.state, initialState.captureId);
   }
 
   async destroy(): Promise<void> {
     // Latch FIRST so any in-flight apply/startCapture bails before allocating
     // a new stream or worklet that we'd leak past teardown.
     this.destroyed = true;
+    this.stopCapture();
+    await this.reportCaptureReady(false);
+    for (const pending of this.playbackStartControllers.values()) pending.controller.abort();
 
     // Let any queued applyAudioConfig run to completion — it'll see `destroyed`
     // and early-return without grabbing new resources. Swallow its rejection;
@@ -188,17 +302,33 @@ export class AudioBridge {
     await this.applyPromise.catch(() => {
       /* ignore */
     });
+    await this.captureLifecyclePromise.catch(() => {
+      /* teardown continues after a failed lifecycle reconciliation */
+    });
 
-    this.stopCapture();
+    await Promise.allSettled([...this.captureStartPromises]);
+    await this.captureRecoveryPromise?.catch(() => {
+      /* teardown continues after a failed recovery */
+    });
     this.stopPlayback();
+    await this.playbackStartTail.catch(() => {
+      /* teardown continues after a failed playback setup */
+    });
     this.stopOutputLevelLoop();
     this.teardownPlaybackGraph();
     this.unsubState?.();
     this.unsubPlayAudio?.();
+    this.unsubStopPlayback?.();
     this.unsubAudioConfig?.();
+    this.unsubVoiceInputConfig?.();
+    this.unsubCapability?.();
     this.unsubState = null;
     this.unsubPlayAudio = null;
+    this.unsubStopPlayback = null;
     this.unsubAudioConfig = null;
+    this.unsubVoiceInputConfig = null;
+    this.unsubCapability = null;
+    navigator.mediaDevices.removeEventListener?.('devicechange', this.deviceChangeHandler);
 
     if (this.captureCtx) {
       await this.captureCtx.close();
@@ -213,23 +343,76 @@ export class AudioBridge {
 
   private handleStateChange(state: string, captureId?: VoiceCaptureId): void {
     if (state === 'listening') {
-      this.currentCaptureId = captureId ?? crypto.randomUUID();
+      this.currentCaptureId = captureId ?? null;
       this.stopPlayback();
-      this.recording = true;
-      // Ensure the mic graph is warm (it usually already is from start() or a
-      // previous utterance). We deliberately do NOT tear it down on the way out
-      // — the mic stays warm so the next utterance has no acquisition latency.
-      if (!this.capturing) void this.startCapture();
-      // Flush pre-roll AFTER recording is true so the leading chunks captured
-      // during the warm handoff reach STT ahead of the live stream.
-      this.flushPreRoll();
+      this.recording = false;
+      if (!captureId) {
+        void sarah.voice.captureFailed(
+          undefined,
+          'Sprachaufnahme konnte nicht gestartet werden, weil die Aufnahme-ID fehlt.',
+        );
+        return;
+      }
+      if (this.isCaptureReady()) {
+        this.recording = true;
+      } else {
+        // Normally unreachable because main keeps PTT disabled until the warm
+        // graph is acknowledged. Keep a safe recovery path for a mid-start
+        // state snapshot without ever forwarding audio from before key-down.
+        void this.startCapture().then((ready) => {
+          if (ready && this.currentCaptureId === captureId) this.recording = true;
+        });
+      }
     } else {
       // Any non-listening state: stop streaming this utterance but keep the mic
       // warm. Capture is torn down only by destroy() and the device-change reset
       // path in applyAudioConfig.
       this.recording = false;
       this.currentCaptureId = null;
+      if (state === 'idle' || state === 'processing') this.stopPlayback();
+      if (this.preferredInputRecoveryPending) {
+        this.preferredInputRecoveryPending = false;
+        this.scheduleCaptureRecovery();
+      }
     }
+  }
+
+  private shouldKeepCaptureWarm(): boolean {
+    return this.sttAvailable && this.voiceMode !== 'off';
+  }
+
+  private isCaptureReady(): boolean {
+    return this.capturing
+      && this.captureStartPromise === null
+      && this.stream !== null
+      && this.workletNode !== null;
+  }
+
+  private async reportCaptureReady(ready: boolean): Promise<void> {
+    if (this.reportedCaptureReady === ready) return;
+    this.reportedCaptureReady = ready;
+    await sarah.voice.setCaptureReady(ready).catch((error) => {
+      if (this.reportedCaptureReady === ready) this.reportedCaptureReady = null;
+      console.error('[AudioBridge] Capture readiness could not be reported:', error);
+    });
+  }
+
+  private reconcileVoiceInputLifecycle(): Promise<void> {
+    this.captureLifecyclePromise = this.captureLifecyclePromise.then(async () => {
+      if (this.destroyed) return;
+      if (!this.shouldKeepCaptureWarm()) {
+        await this.reportCaptureReady(false);
+        this.recording = false;
+        this.currentCaptureId = null;
+        await this.closeCaptureGraph();
+        return;
+      }
+      const ready = await this.startCapture();
+      await this.reportCaptureReady(ready);
+    }, async () => {
+      if (!this.destroyed) await this.reportCaptureReady(false);
+    });
+    return this.captureLifecyclePromise;
   }
 
   // ── Audio-Config reactions ──
@@ -273,11 +456,16 @@ export class AudioBridge {
     // Read prevDeviceId INSIDE the serialized section so a queued call B sees
     // call A's committed state, not the state that was live when B was queued.
     const prevDeviceId = this.currentInputDeviceId;
+    const prevOutputDeviceId = this.currentOutputDeviceId;
     const prevOutputVolume = this.currentAudio?.outputVolume;
+    const captureWasActive = this.recording || this.currentCaptureId !== null;
     this.currentAudio = audio;
     this.currentInputDeviceId = audio.inputDeviceId;
     this.currentOutputDeviceId = audio.outputDeviceId;
     this.muted = audio.inputMuted;
+    if (prevOutputDeviceId !== audio.outputDeviceId) {
+      this.failedOutputDeviceId = undefined;
+    }
 
     // ── Playback-side reactions (no graph rebuild, just live updates) ──
     if (!playbackEqual) {
@@ -300,6 +488,7 @@ export class AudioBridge {
 
     if (decision === 'reset') {
       // Device swapped while we were capturing — rebuild the graph.
+      await this.reportCaptureReady(false);
       this.stopCapture();
       this.workletLoaded = false; // critical: next AudioContext needs a fresh addModule
       if (this.captureCtx) {
@@ -308,7 +497,10 @@ export class AudioBridge {
         });
         this.captureCtx = null;
       }
-      await this.startCapture();
+      if (this.shouldKeepCaptureWarm() || captureWasActive) {
+        const ready = await this.startCapture();
+        await this.reportCaptureReady(ready);
+      }
       // startCapture applies gain via rampCaptureGain after wiring.
       return;
     }
@@ -337,67 +529,144 @@ export class AudioBridge {
 
   // ── Capture ──
 
-  private async startCapture(): Promise<void> {
+  private async startCapture(): Promise<boolean> {
     // Teardown races: destroy() latches first, so a startCapture scheduled
     // from an in-flight apply must not allocate a new graph behind it.
-    if (this.destroyed) return;
-    if (this.capturing) return;
+    if (this.destroyed) return false;
+    if (this.isCaptureReady()) return true;
+    if (this.capturing) return this.captureStartPromise ?? Promise.resolve(false);
     this.capturing = true;
+    const generation = ++this.captureGeneration;
+    const deviceId = this.currentInputDeviceId;
+    const controller = new AbortController();
+    this.captureSetupAbort = controller;
+    const startPromise = this.initializeCapture(generation, deviceId, controller.signal);
+    this.captureStartPromise = startPromise;
+    this.captureStartPromises.add(startPromise);
+    try {
+      return await startPromise;
+    } finally {
+      this.captureStartPromises.delete(startPromise);
+      if (this.captureStartPromise === startPromise) this.captureStartPromise = null;
+      if (this.captureSetupAbort === controller) this.captureSetupAbort = null;
+    }
+  }
+
+  private async initializeCapture(
+    generation: number,
+    deviceId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    let context: AudioContext | null = null;
+    let stream: MediaStream | null = null;
+    let sourceNode: MediaStreamAudioSourceNode | null = null;
+    let captureGain: GainNode | null = null;
+    let workletNode: AudioWorkletNode | null = null;
+
+    const disposeLocal = async (): Promise<void> => {
+      workletNode?.disconnect();
+      captureGain?.disconnect();
+      sourceNode?.disconnect();
+      for (const track of stream?.getTracks() ?? []) track.stop();
+      await context?.close().catch(() => {
+        /* ignore cleanup failures */
+      });
+    };
+    const isStale = (): boolean => this.destroyed || generation !== this.captureGeneration;
 
     try {
-      // Create AudioContext at 16kHz (STT sample rate)
-      if (!this.captureCtx) {
-        this.captureCtx = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
+      context = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
+      const captureContext = context;
+      if (captureContext.state === 'suspended') {
+        await waitForAudioOperation(
+          captureContext.resume(),
+          signal,
+          CAPTURE_RESUME_TIMEOUT_MS,
+          'Microphone AudioContext resume timed out',
+        );
       }
-      if (this.captureCtx.state === 'suspended') {
-        await this.captureCtx.resume();
+      if (isStale()) {
+        await disposeLocal();
+        return false;
       }
 
-      // Load worklet processor (only once per AudioContext instance)
-      if (!this.workletLoaded) {
-        await this.captureCtx.audioWorklet.addModule(WORKLET_MODULE_URL);
-        this.workletLoaded = true;
+      await waitForAudioOperation(
+        captureContext.audioWorklet.addModule(WORKLET_MODULE_URL),
+        signal,
+        CAPTURE_WORKLET_TIMEOUT_MS,
+        'Microphone AudioWorklet setup timed out',
+      );
+      if (isStale()) {
+        await disposeLocal();
+        return false;
       }
 
-      // Get mic stream — honor configured device, fall back if it vanished.
-      this.stream = await this.acquireMicStream();
+      stream = await waitForAudioOperation(
+        this.acquireMicStream(deviceId),
+        signal,
+        CAPTURE_DEVICE_TIMEOUT_MS,
+        'Microphone acquisition timed out',
+        (lateStream) => {
+          for (const track of lateStream.getTracks()) track.stop();
+        },
+      );
+      if (isStale()) {
+        await disposeLocal();
+        return false;
+      }
+      for (const track of stream.getTracks()) {
+        track.addEventListener?.('ended', () => {
+          if (!isStale()) this.scheduleCaptureRecovery();
+        }, { once: true });
+      }
 
-      // Wire up: mic → gain → worklet → IPC
-      this.sourceNode = this.captureCtx.createMediaStreamSource(this.stream);
-      this.captureGain = this.captureCtx.createGain();
-      // Seed the GainNode value directly (no ramp) so the first samples
-      // already respect stored settings. Subsequent changes ramp.
-      const initialGain = this.currentAudio ? computeEffectiveGain(this.currentAudio) : 1;
-      this.captureGain.gain.value = initialGain;
-
-      this.workletNode = new AudioWorkletNode(this.captureCtx, 'capture-processor');
-
-      this.workletNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => {
+      sourceNode = captureContext.createMediaStreamSource(stream);
+      captureGain = captureContext.createGain();
+      captureGain.gain.value = this.currentAudio ? computeEffectiveGain(this.currentAudio) : 1;
+      workletNode = new AudioWorkletNode(captureContext, 'capture-processor');
+      workletNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => {
+        if (isStale()) return;
         const samples = event.data.samples;
 
-        // Always keep the pre-roll ring buffer topped up (even while not
-        // recording) so the warm→record handoff doesn't clip the utterance
-        // start. Retain only the most recent PRE_ROLL_CHUNKS chunks.
-        this.preRoll.push(samples);
-        if (this.preRoll.length > PRE_ROLL_CHUNKS) {
-          this.preRoll.shift();
-        }
-
-        // Only stream to main while actively recording an utterance. Mute still
-        // short-circuits IPC (Lücke #13): the GainNode produces zeros, but we
-        // skip the send to avoid flooding STT with silence.
-        if (!this.recording || this.muted) return;
-        if (this.currentCaptureId) {
-          sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(samples));
-        }
+        // PTT is a hard privacy boundary: samples produced before the listening
+        // state are discarded, never attached to a later capture id.
+        if (!this.recording) return;
+        if (this.muted || !this.currentCaptureId) return;
+        void sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(samples));
       };
 
-      this.sourceNode.connect(this.captureGain);
-      this.captureGain.connect(this.workletNode);
-      this.workletNode.connect(this.captureCtx.destination);
+      sourceNode.connect(captureGain);
+      captureGain.connect(workletNode);
+      workletNode.connect(captureContext.destination);
+      if (isStale()) {
+        await disposeLocal();
+        return false;
+      }
+
+      this.captureCtx = captureContext;
+      this.stream = stream;
+      this.sourceNode = sourceNode;
+      this.captureGain = captureGain;
+      this.workletNode = workletNode;
+      this.workletLoaded = true;
+      this.activeInputDeviceId = stream.getTracks()
+        .map((track) => track.getSettings().deviceId)
+        .find(Boolean);
+      return true;
     } catch (err) {
+      await disposeLocal();
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (isStale() || isAudioOperationAborted(error)) return false;
       console.error('[AudioBridge] Capture failed:', err);
       this.capturing = false;
+      this.recording = false;
+      const failedCaptureId = this.currentCaptureId ?? undefined;
+      this.currentCaptureId = null;
+      await sarah.voice.captureFailed(failedCaptureId, CAPTURE_FAILED_MESSAGE).catch((reportError) => {
+        console.error('[AudioBridge] Capture failure could not be reported:', reportError);
+      });
+      await this.reportCaptureReady(false);
+      return false;
     }
   }
 
@@ -408,14 +677,13 @@ export class AudioBridge {
    * user isn't locked out — the stored id stays intact so a re-plug auto-heals
    * on the next capture cycle.
    */
-  private async acquireMicStream(): Promise<MediaStream> {
+  private async acquireMicStream(deviceId: string | undefined): Promise<MediaStream> {
     const baseConstraints: MediaTrackConstraints = {
       echoCancellation: true,
       noiseSuppression: true,
       sampleRate: CAPTURE_SAMPLE_RATE,
     };
 
-    const deviceId = this.currentInputDeviceId;
     if (deviceId) {
       try {
         return await navigator.mediaDevices.getUserMedia({
@@ -434,24 +702,85 @@ export class AudioBridge {
     return await navigator.mediaDevices.getUserMedia({ audio: baseConstraints });
   }
 
-  /** Send the buffered pre-roll chunks to main in capture order, then clear
-   *  the buffer. Called at the start of an utterance so the leading samples
-   *  captured during the warm→record handoff reach STT. Respects mute. */
-  private flushPreRoll(): void {
-    if (!this.muted) {
-      for (const chunk of this.preRoll) {
-        if (this.currentCaptureId) {
-          sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(chunk));
-        }
+  private async handleMediaDevicesChanged(): Promise<void> {
+    if (this.destroyed) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+
+      if (
+        this.failedOutputDeviceId
+        && devices.some((device) => (
+          device.kind === 'audiooutput' && device.deviceId === this.failedOutputDeviceId
+        ))
+      ) {
+        this.failedOutputDeviceId = undefined;
       }
+
+      if (!this.capturing || !this.stream) return;
+      const tracks = this.stream.getTracks();
+      if (tracks.some((track) => track.readyState === 'ended')) {
+        this.scheduleCaptureRecovery();
+        return;
+      }
+
+      const activeDeviceId = this.activeInputDeviceId
+        ?? tracks.map((track) => track.getSettings().deviceId).find(Boolean);
+      const desiredDeviceId = this.currentInputDeviceId;
+      const activeStillPresent = !activeDeviceId || devices.some((device) => (
+        device.kind === 'audioinput' && device.deviceId === activeDeviceId
+      ));
+
+      if (!activeStillPresent) {
+        this.scheduleCaptureRecovery();
+        return;
+      }
+
+      const preferredReturned = Boolean(
+        desiredDeviceId
+        && desiredDeviceId !== activeDeviceId
+        && devices.some((device) => (
+          device.kind === 'audioinput' && device.deviceId === desiredDeviceId
+        )),
+      );
+      if (preferredReturned) {
+        if (this.recording) this.preferredInputRecoveryPending = true;
+        else this.scheduleCaptureRecovery();
+      }
+    } catch (error) {
+      console.warn('[AudioBridge] Audio device change could not be inspected:', error);
     }
-    this.preRoll = [];
+  }
+
+  private scheduleCaptureRecovery(): void {
+    if (this.destroyed || this.captureRecoveryPromise) return;
+    void this.reportCaptureReady(false);
+    const failedCaptureId = this.recording ? this.currentCaptureId ?? undefined : undefined;
+    this.captureRecoveryPromise = this.recoverCapture(failedCaptureId).finally(() => {
+      this.captureRecoveryPromise = null;
+    });
+  }
+
+  private async recoverCapture(failedCaptureId: VoiceCaptureId | undefined): Promise<void> {
+    this.recording = false;
+    this.currentCaptureId = null;
+    await this.closeCaptureGraph();
+    if (failedCaptureId) {
+      await sarah.voice.captureFailed(failedCaptureId, CAPTURE_LOST_MESSAGE).catch((error) => {
+        console.error('[AudioBridge] Capture loss could not be reported:', error);
+      });
+    }
+    if (!this.destroyed && this.shouldKeepCaptureWarm()) {
+      const ready = await this.startCapture();
+      await this.reportCaptureReady(ready);
+    }
   }
 
   private stopCapture(): void {
-    if (!this.capturing) return;
+    this.captureGeneration += 1;
+    this.captureSetupAbort?.abort();
+    this.captureSetupAbort = null;
     this.capturing = false;
-    this.preRoll = [];
+    this.activeInputDeviceId = undefined;
 
     this.workletNode?.disconnect();
     this.captureGain?.disconnect();
@@ -465,6 +794,17 @@ export class AudioBridge {
         track.stop();
       }
       this.stream = null;
+    }
+  }
+
+  private async closeCaptureGraph(): Promise<void> {
+    this.stopCapture();
+    this.workletLoaded = false;
+    if (this.captureCtx) {
+      await this.captureCtx.close().catch(() => {
+        /* teardown continues even if Chromium already closed the context */
+      });
+      this.captureCtx = null;
     }
   }
 
@@ -485,7 +825,7 @@ export class AudioBridge {
    *            The <audio> plays through the chosen sink; analyser still sees
    *            the pre-gain signal via the shared graph so VU meters work.
    */
-  private async ensurePlaybackGraph(sampleRate: number): Promise<void> {
+  private async ensurePlaybackGraph(sampleRate: number, signal: AbortSignal): Promise<void> {
     // Rebuild if sample rate changed (mismatched context would up-sample and
     // distort the analyser tap) or if the context was closed/lost.
     const needsNewCtx =
@@ -507,7 +847,12 @@ export class AudioBridge {
     if (!ctx) return; // satisfy narrowing; can't happen after the new above
 
     if (ctx.state === 'suspended') {
-      await ctx.resume();
+      await waitForAudioOperation(
+        ctx.resume(),
+        signal,
+        PLAYBACK_SETUP_TIMEOUT_MS,
+        'Audio playback setup timed out',
+      );
     }
 
     // Build the analyser + gain once per context. Subsequent playAudio() calls
@@ -529,7 +874,9 @@ export class AudioBridge {
     // between utterances.
     const desiredDeviceId = this.currentOutputDeviceId;
     const setSinkIdSupported = hasSetSinkIdSupport();
-    const wantPathB = !!desiredDeviceId && setSinkIdSupported;
+    const wantPathB = !!desiredDeviceId
+      && desiredDeviceId !== this.failedOutputDeviceId
+      && setSinkIdSupported;
     const havePathB = !!this.outputAudioElement;
 
     // Log once per unique device-id when the caller asked for a specific
@@ -549,6 +896,7 @@ export class AudioBridge {
 
     if (wantPathB !== havePathB) {
       this.outputGain.disconnect();
+      this.outputUsesDefaultSink = false;
       if (this.outputStreamDest) {
         try {
           this.outputStreamDest.disconnect();
@@ -576,6 +924,7 @@ export class AudioBridge {
         // encoding + ObjectURL lifecycle.
         this.outputStreamDest = ctx.createMediaStreamDestination();
         this.outputGain.connect(this.outputStreamDest);
+        this.outputUsesDefaultSink = false;
       }
       if (!this.outputAudioElement) {
         const audioEl = new Audio();
@@ -586,6 +935,17 @@ export class AudioBridge {
         // lifetime — simpler than one-shot cleanup.
         audioEl.addEventListener('error', () => {
           console.warn('[AudioBridge] <audio> element error:', audioEl.error?.message);
+          if (
+            this.outputAudioElement === audioEl
+            && this.currentPlaybackTurnId
+            && this.currentPlaybackId
+          ) {
+            void this.failPlayback(
+              this.currentPlaybackTurnId,
+              this.currentPlaybackId,
+              new Error(audioEl.error?.message ?? PLAYBACK_FAILED_MESSAGE),
+            );
+          }
         });
         this.outputAudioElement = audioEl;
       }
@@ -593,27 +953,53 @@ export class AudioBridge {
       // wrap in a timeout race and fall back to default sink in either case.
       if (desiredDeviceId) {
         const sinkEl = this.outputAudioElement as HTMLAudioElement & SinkIdCapable;
-        await Promise.race([
-          sinkEl.setSinkId(desiredDeviceId),
-          new Promise<void>((_, reject) =>
-            setTimeout(
-              () => reject(new Error('setSinkId timeout')),
-              SET_SINK_ID_TIMEOUT_MS,
-            ),
-          ),
-        ]).catch((err) => {
+        try {
+          await waitForAudioOperation(
+            sinkEl.setSinkId(desiredDeviceId),
+            signal,
+            SET_SINK_ID_TIMEOUT_MS,
+            'setSinkId timeout',
+          );
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          if (isAudioOperationAborted(error)) throw error;
           console.warn(
             `[AudioBridge] setSinkId("${desiredDeviceId}") failed/timed out, falling back:`,
             err,
           );
-          // Don't rethrow — let playback continue on the default sink.
-        });
+          this.failedOutputDeviceId = desiredDeviceId;
+          this.switchPlaybackToDefaultSink(ctx);
+        }
       }
     } else if (!wantPathB) {
       // Path A: gain → destination. Idempotent connect (disconnect above
       // when switching paths means we only ever connect once per path).
-      this.outputGain.connect(ctx.destination);
+      if (!this.outputUsesDefaultSink) {
+        this.outputGain.connect(ctx.destination);
+        this.outputUsesDefaultSink = true;
+      }
     }
+  }
+
+  /** Detach a failed specific-sink route and reconnect the live graph to the OS default. */
+  private switchPlaybackToDefaultSink(ctx: AudioContext): void {
+    this.outputGain?.disconnect();
+    if (this.outputAudioElement) {
+      this.outputAudioElement.pause();
+      this.outputAudioElement.srcObject = null;
+      this.outputAudioElement.load();
+      this.outputAudioElement = null;
+    }
+    if (this.outputStreamDest) {
+      try {
+        this.outputStreamDest.disconnect();
+      } catch {
+        /* already disconnected */
+      }
+      this.outputStreamDest = null;
+    }
+    this.outputGain?.connect(ctx.destination);
+    this.outputUsesDefaultSink = true;
   }
 
   /** Tear down just the playback nodes — leaves `playbackCtx` itself alone
@@ -642,6 +1028,7 @@ export class AudioBridge {
         /* already disconnected */
       }
       this.outputGain = null;
+      this.outputUsesDefaultSink = false;
     }
     if (this.outputAnalyser) {
       try {
@@ -655,20 +1042,31 @@ export class AudioBridge {
   }
 
   private async playAudio(
+    generation: number,
     turnId: TurnId,
     playbackId: PlaybackId,
     audio: number[],
     sampleRate: number,
+    signal: AbortSignal,
   ): Promise<void> {
+    if (signal.aborted) return;
+    this.currentPlaybackTurnId = turnId;
+    this.currentPlaybackId = playbackId;
     try {
-      await this.ensurePlaybackGraph(sampleRate);
+      await this.ensurePlaybackGraph(sampleRate, signal);
+      if (signal.aborted) {
+        this.clearPlaybackCorrelation(turnId, playbackId);
+        return;
+      }
+      if (this.destroyed || generation !== this.playbackGeneration) {
+        this.clearPlaybackCorrelation(turnId, playbackId);
+        await sarah.voice.playbackDone(turnId, playbackId);
+        return;
+      }
       const ctx = this.playbackCtx;
       const analyser = this.outputAnalyser;
       if (!ctx || !analyser) {
-        // ensurePlaybackGraph should always set these up; if it didn't,
-        // the error branch below already called playbackDone().
-        await sarah.voice.playbackDone(turnId, playbackId);
-        return;
+        throw new Error('Playback graph is unavailable');
       }
 
       const buffer = ctx.createBuffer(1, audio.length, sampleRate);
@@ -679,10 +1077,18 @@ export class AudioBridge {
       source.connect(analyser);
 
       this.currentPlaybackSource = source;
+      this.currentPlaybackGeneration = generation;
       this.outputPlaybackEndedAt = null;
 
       source.onended = () => {
-        this.currentPlaybackSource = null;
+        if (
+          this.currentPlaybackSource === source
+          && this.currentPlaybackGeneration === generation
+        ) {
+          this.currentPlaybackSource = null;
+          this.currentPlaybackGeneration = 0;
+          this.clearPlaybackCorrelation(turnId, playbackId);
+        }
         // Idempotent: stopPlayback() may have primed decay synchronously before
         // `onended` fired (mid-sentence interrupt). In that case, keep the
         // earlier timestamp so the decay window started exactly at the cut.
@@ -695,12 +1101,74 @@ export class AudioBridge {
       source.start();
       this.startOutputLevelLoop();
     } catch (err) {
-      console.error('[AudioBridge] Playback failed:', err);
-      await sarah.voice.playbackDone(turnId, playbackId);
+      const error = err instanceof Error ? err : new Error(String(err));
+      if (isAudioOperationAborted(error)) {
+        this.clearPlaybackCorrelation(turnId, playbackId);
+        return;
+      }
+      console.error('[AudioBridge] Playback failed:', error);
+      await this.failPlayback(
+        turnId,
+        playbackId,
+        error,
+      );
     }
   }
 
-  private stopPlayback(): void {
+  private async failPlayback(
+    turnId: TurnId,
+    playbackId: PlaybackId,
+    error: Error,
+  ): Promise<void> {
+    if (
+      this.currentPlaybackTurnId !== turnId
+      || this.currentPlaybackId !== playbackId
+    ) return;
+    // A renderer failure is terminal and must never race its source.onended
+    // into a success ACK before the correlated failure reaches main.
+    if (this.currentPlaybackSource) this.currentPlaybackSource.onended = null;
+    this.stopPlayback(turnId, playbackId);
+    await sarah.voice.playbackFailed(
+      turnId,
+      playbackId,
+      error.message || PLAYBACK_FAILED_MESSAGE,
+    ).catch((reportError) => {
+      console.error('[AudioBridge] Playback failure could not be reported:', reportError);
+    });
+  }
+
+  private clearPlaybackCorrelation(turnId: TurnId, playbackId: PlaybackId): void {
+    if (
+      this.currentPlaybackTurnId === turnId
+      && this.currentPlaybackId === playbackId
+    ) {
+      this.currentPlaybackTurnId = null;
+      this.currentPlaybackId = null;
+    }
+  }
+
+  private stopPlayback(turnId?: TurnId, playbackId?: PlaybackId): void {
+    if (turnId !== undefined && playbackId !== undefined) {
+      const pending = this.playbackStartControllers.get(playbackId);
+      if (pending?.turnId === turnId) pending.controller.abort();
+    } else {
+      for (const pending of this.playbackStartControllers.values()) pending.controller.abort();
+    }
+    if (
+      turnId !== undefined
+      && playbackId !== undefined
+      && (
+        this.currentPlaybackTurnId !== turnId
+        || this.currentPlaybackId !== playbackId
+      )
+    ) return;
+    this.playbackGeneration += 1;
+    if (turnId !== undefined && playbackId !== undefined) {
+      this.clearPlaybackCorrelation(turnId, playbackId);
+    } else {
+      this.currentPlaybackTurnId = null;
+      this.currentPlaybackId = null;
+    }
     if (this.currentPlaybackSource) {
       // Prime decay SYNCHRONOUSLY so the next RAF tick sees the decay branch
       // even if `source.onended` hasn't fired yet (it may be queued on a
@@ -714,6 +1182,7 @@ export class AudioBridge {
         // Already stopped
       }
       this.currentPlaybackSource = null;
+      this.currentPlaybackGeneration = 0;
       // Leave the RAF loop running — it self-terminates via the decay branch
       // (allBelow → stopOutputLevelLoop) for a smooth fade-out.
     }

@@ -2,7 +2,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import type { SttProvider } from '../stt-provider.interface.js';
+import type { SttAvailability, SttProvider } from '../stt-provider.interface.js';
 import { normalizeUtterance } from '../normalize-audio.js';
 import {
   abortableDelay,
@@ -16,12 +16,23 @@ const SERVER_PORT = 8786;
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const STARTUP_TIMEOUT_MS = 300_000;
 const HEALTH_POLL_MS = 500;
+const RESTART_MAX_DELAY_MS = 30_000;
+const PROCESS_EXIT_TIMEOUT_MS = 1_000;
+const HTTP_PROBE_TIMEOUT_MS = 5_000;
+const SHUTDOWN_PROBE_TIMEOUT_MS = 1_500;
 
 export class FasterWhisperProvider implements SttProvider {
   readonly id = 'faster-whisper';
   private serverProcess: ChildProcess | null = null;
   private scriptPath: string;
   private lifecycleAbort = new AbortController();
+  private readonly availabilityListeners = new Set<(state: SttAvailability) => void>();
+  private readonly expectedStops = new Set<ChildProcess>();
+  private availability: SttAvailability = { available: false };
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private restartAttempt = 0;
+  private everReady = false;
+  private destroyed = false;
 
   constructor(private resourcesPath: string) {
     this.scriptPath = path.join(resourcesPath, 'whisper', 'faster-whisper-server.py');
@@ -31,11 +42,59 @@ export class FasterWhisperProvider implements SttProvider {
 
   // init() is single-flight (A8): repeated calls return the same promise.
   init(signal?: AbortSignal): Promise<void> {
+    if (this.destroyed) return Promise.reject(abortError('Faster Whisper has been destroyed'));
     if (!this.initPromise) {
-      const linked = linkAbortSignals(signal, this.lifecycleAbort.signal);
-      this.initPromise = this.doInit(linked.signal).finally(() => linked.dispose());
+      // Initial application startup belongs to the lifecycle caller. Recovery
+      // startup is shared provider work: an individual F9 turn may stop waiting
+      // for it, but must never kill the replacement process for all later turns.
+      const linked = linkAbortSignals(
+        this.everReady ? undefined : signal,
+        this.lifecycleAbort.signal,
+      );
+      let attempt!: Promise<void>;
+      attempt = this.doInit(linked.signal)
+        .catch((error) => {
+          if (this.initPromise === attempt) this.initPromise = null;
+          if (this.everReady && !this.destroyed) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.publishAvailability(false, message);
+            this.scheduleRestart();
+          }
+          throw error;
+        })
+        .finally(() => linked.dispose());
+      this.initPromise = attempt;
     }
-    return this.initPromise;
+    if (!signal || !this.everReady) return this.initPromise;
+    return this.waitForSharedInit(this.initPromise, signal);
+  }
+
+  private waitForSharedInit(attempt: Promise<void>, signal: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = (): void => signal.removeEventListener('abort', onAbort);
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const onAbort = (): void => finish(() => {
+        const reason = signal.reason;
+        reject(reason instanceof Error ? reason : abortError());
+      });
+      signal.addEventListener('abort', onAbort, { once: true });
+      attempt.then(
+        () => finish(resolve),
+        (error: Error) => finish(() => reject(error)),
+      );
+    });
+  }
+
+  onAvailabilityChange(listener: (state: SttAvailability) => void): () => void {
+    this.availabilityListeners.add(listener);
+    return () => this.availabilityListeners.delete(listener);
   }
 
   private async doInit(signal?: AbortSignal): Promise<void> {
@@ -49,7 +108,15 @@ export class FasterWhisperProvider implements SttProvider {
 
     // Kill any leftover server from a previous run
     try {
-      await fetch(`${SERVER_URL}/shutdown`, { method: 'POST', signal });
+      await runWithTimeout(
+        (requestSignal) => fetch(`${SERVER_URL}/shutdown`, {
+          method: 'POST',
+          signal: requestSignal,
+        }).then(() => undefined),
+        SHUTDOWN_PROBE_TIMEOUT_MS,
+        'Faster Whisper previous-runtime shutdown probe timed out',
+        signal,
+      );
       await abortableDelay(1000, signal);
     } catch {
       throwIfAborted(signal);
@@ -64,7 +131,7 @@ export class FasterWhisperProvider implements SttProvider {
     let startupComplete = false;
 
     // Start the Python server process
-    this.serverProcess = spawn('python', [
+    const child = spawn('python', [
       this.scriptPath,
       '--port', String(SERVER_PORT),
       // large-v3-turbo: big German accuracy jump over 'small'. int8 keeps VRAM
@@ -73,34 +140,39 @@ export class FasterWhisperProvider implements SttProvider {
       '--device', 'auto',
       '--compute-type', 'int8',
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    this.serverProcess = child;
 
-    this.serverProcess.stdout?.on('data', (data: Buffer) => {
+    child.stdout?.on('data', (data: Buffer) => {
       console.log(data.toString('utf-8').trimEnd());
     });
 
-    this.serverProcess.stderr?.on('data', (data: Buffer) => {
+    child.stderr?.on('data', (data: Buffer) => {
       console.error(data.toString('utf-8').trimEnd());
     });
 
-    this.serverProcess.on('error', (err) => {
+    child.on('error', (err) => {
       console.error('[FasterWhisper] Server process error:', err.message);
-      this.serverProcess = null;
-      rejectOnSpawnError(new Error(`Failed to start faster-whisper (is Python in PATH?): ${err.message}`));
+      const error = new Error(`Failed to start faster-whisper (is Python in PATH?): ${err.message}`);
+      if (startupComplete) this.handleRuntimeFailure(child, error.message);
+      else rejectOnSpawnError(error);
     });
 
     const processExited = new Promise<never>((_, reject) => {
-      this.serverProcess?.once('exit', (code, exitSignal) => {
-        this.serverProcess = null;
+      child.once('exit', (code, exitSignal) => {
+        if (this.expectedStops.has(child)) return;
+        const detail = exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`;
         if (!startupComplete) {
-          const detail = exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`;
           reject(new Error(`faster-whisper exited before becoming ready (${detail})`));
+        } else {
+          this.handleRuntimeFailure(child, `faster-whisper server stopped unexpectedly (${detail})`);
         }
       });
     });
 
     const onAbort = (): void => {
-      this.serverProcess?.kill();
-      this.serverProcess = null;
+      if (this.serverProcess === child) this.serverProcess = null;
+      this.expectedStops.add(child);
+      child.kill();
       rejectOnSpawnError(abortError('Faster Whisper startup aborted'));
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -109,8 +181,11 @@ export class FasterWhisperProvider implements SttProvider {
       // Wait for server to be ready, abort immediately if the process itself fails.
       await Promise.race([this.waitForServer(signal), spawnFailed, processExited]);
       startupComplete = true;
+      this.everReady = true;
+      this.restartAttempt = 0;
+      this.publishAvailability(true);
     } catch (error) {
-      await this.destroy();
+      await this.stopProcess(child);
       throw error;
     } finally {
       signal?.removeEventListener('abort', onAbort);
@@ -123,7 +198,9 @@ export class FasterWhisperProvider implements SttProvider {
     language = 'de',
     signal?: AbortSignal,
   ): Promise<string> {
-    throwIfAborted(signal);
+    this.throwIfRequestAborted(signal);
+    await this.init(signal);
+    this.throwIfRequestAborted(signal);
     // Normalize the utterance level before Whisper — the capture path applies no
     // AGC, so this is what stops "only works when I shout" quiet/clipped input.
     const wavBuffer = this.encodeWav(normalizeUtterance(audio), sampleRate);
@@ -132,14 +209,34 @@ export class FasterWhisperProvider implements SttProvider {
     fs.writeFileSync(tmpPath, wavBuffer);
 
     try {
-      const res = await fetch(`${SERVER_URL}/transcribe?language=${language}&file=${encodeURIComponent(tmpPath)}`, {
-        method: 'POST',
-        signal,
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${SERVER_URL}/transcribe?language=${language}&file=${encodeURIComponent(tmpPath)}`, {
+          method: 'POST',
+          signal,
+        });
+      } catch (value) {
+        const reason = signal?.aborted && signal.reason instanceof Error
+          ? signal.reason
+          : value instanceof Error
+            ? value
+            : new Error(String(value));
+        // A user/F9 cancellation is expected turn control and must not tear down
+        // the shared model. A hard TimeoutError or a real transport failure can
+        // leave native inference wedged, so recycle the owned runtime there.
+        if (!signal?.aborted || reason.name === 'TimeoutError') {
+          await this.recycleRuntime(reason.message);
+        }
+        throw reason;
+      }
 
       if (!res.ok) {
         const detail = await res.text();
-        throw new Error(`faster-whisper error ${res.status}: ${detail}`);
+        const error = new Error(`faster-whisper error ${res.status}: ${detail}`);
+        if (res.status >= 500) {
+          await this.recycleRuntime(`faster-whisper server error ${res.status}`);
+        }
+        throw error;
       }
 
       const text = await res.text();
@@ -149,11 +246,23 @@ export class FasterWhisperProvider implements SttProvider {
     }
   }
 
+  private throwIfRequestAborted(signal?: AbortSignal): void {
+    if (!signal?.aborted) return;
+    const reason = signal.reason;
+    throw reason instanceof Error ? reason : abortError();
+  }
+
   async destroy(signal?: AbortSignal): Promise<void> {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
     this.lifecycleAbort.abort();
     const process = this.serverProcess;
     this.serverProcess = null;
+    this.initPromise = null;
     if (process) {
+      this.expectedStops.add(process);
       try {
         await runWithTimeout(
           (cleanupSignal) => fetch(`${SERVER_URL}/shutdown`, {
@@ -168,8 +277,76 @@ export class FasterWhisperProvider implements SttProvider {
         // Server may already be gone
       } finally {
         process.kill();
+        await this.waitForProcessExit(process);
+        this.expectedStops.delete(process);
       }
     }
+    this.availabilityListeners.clear();
+  }
+
+  private handleRuntimeFailure(process: ChildProcess, message: string): void {
+    if (
+      this.destroyed
+      || this.expectedStops.has(process)
+      || this.serverProcess !== process
+    ) return;
+    this.serverProcess = null;
+    this.initPromise = null;
+    this.publishAvailability(false, message);
+    this.scheduleRestart();
+  }
+
+  private async recycleRuntime(message: string): Promise<void> {
+    const process = this.serverProcess;
+    this.serverProcess = null;
+    this.initPromise = null;
+    this.publishAvailability(false, message);
+    if (process) await this.stopProcess(process);
+    this.scheduleRestart();
+  }
+
+  private async stopProcess(process: ChildProcess): Promise<void> {
+    this.expectedStops.add(process);
+    if (this.serverProcess === process) this.serverProcess = null;
+    process.kill();
+    await this.waitForProcessExit(process);
+    this.expectedStops.delete(process);
+  }
+
+  private waitForProcessExit(process: ChildProcess): Promise<void> {
+    if (process.exitCode !== null || process.signalCode !== null) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const finish = (): void => {
+        if (timer) clearTimeout(timer);
+        process.removeListener('exit', finish);
+        resolve();
+      };
+      process.once('exit', finish);
+      timer = setTimeout(finish, PROCESS_EXIT_TIMEOUT_MS);
+      timer.unref?.();
+    });
+  }
+
+  private scheduleRestart(): void {
+    if (this.destroyed || !this.everReady || this.restartTimer) return;
+    const delayMs = Math.min(1_000 * (2 ** this.restartAttempt), RESTART_MAX_DELAY_MS);
+    this.restartAttempt += 1;
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void this.init().catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[FasterWhisper] Automatic restart failed:', message);
+      });
+    }, delayMs);
+    this.restartTimer.unref?.();
+  }
+
+  private publishAvailability(available: boolean, message?: string): void {
+    const next = message ? { available, message } : { available };
+    if (this.availability.available === next.available && this.availability.message === next.message) return;
+    this.availability = next;
+    for (const listener of this.availabilityListeners) listener({ ...next });
   }
 
   private async waitForServer(signal?: AbortSignal): Promise<void> {
@@ -177,12 +354,19 @@ export class FasterWhisperProvider implements SttProvider {
 
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`${SERVER_URL}/health`, { signal });
+        const remainingMs = Math.max(1, deadline - Date.now());
+        const res = await runWithTimeout(
+          (requestSignal) => fetch(`${SERVER_URL}/health`, { signal: requestSignal }),
+          Math.min(HTTP_PROBE_TIMEOUT_MS, remainingMs),
+          'Faster Whisper health probe timed out',
+          signal,
+        );
         if (res.ok) return;
       } catch {
         throwIfAborted(signal);
         // Server not ready yet
       }
+      if (Date.now() >= deadline) break;
       await abortableDelay(HEALTH_POLL_MS, signal);
     }
 

@@ -36,7 +36,13 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export class RouterService implements SarahService {
   readonly id = 'router';
-  readonly subscriptions = ['chat:message', 'turn:cancel', 'action:result', 'action:notify'] as const;
+  readonly subscriptions = [
+    'chat:message',
+    'turn:cancel',
+    'turn:terminal',
+    'action:result',
+    'action:notify',
+  ] as const;
   status: ServiceStatus = 'pending';
 
   private history: ChatMessage[] = [];
@@ -49,7 +55,7 @@ export class RouterService implements SarahService {
   private readonly coordinator = new TurnCoordinator();
   private readonly terminalTurns = new Set<TurnId>();
   private readonly terminalTurnOrder: TurnId[] = [];
-  private readonly terminalWaiters = new Map<TurnId, Array<() => void>>();
+  private readonly errorTurns = new Set<TurnId>();
   private readonly turnDrafts = new Map<TurnId, {
     historyUser: string;
     persistedUser: string;
@@ -60,6 +66,7 @@ export class RouterService implements SarahService {
     action: string;
     resolve: (result: BusEvents['action:result']) => void;
   }>();
+  private lastSearchSessionId: string | null = null;
 
   constructor(
     private context: AppContext,
@@ -127,7 +134,9 @@ export class RouterService implements SarahService {
   async destroy(signal?: AbortSignal): Promise<void> {
     this.coordinator.destroy();
     this.pendingActions.clear();
+    this.lastSearchSessionId = null;
     this.turnDrafts.clear();
+    this.errorTurns.clear();
     this.history = [];
     try {
       await this.modelRuntime.destroy(signal);
@@ -141,6 +150,10 @@ export class RouterService implements SarahService {
       void this.handleTurnRequest(msg.data);
     } else if (msg.topic === 'turn:cancel') {
       this.coordinator.cancel(msg.data.turnId, msg.data.reason);
+    } else if (msg.topic === 'turn:terminal') {
+      if (msg.source !== this.id) {
+        this.coordinator.cancel(msg.data.turnId, msg.data.message ?? `Turn ${msg.data.status}`);
+      }
     } else if (msg.topic === 'action:result') {
       const { requestId, turnId, action } = msg.data;
       const pending = this.pendingActions.get(requestId);
@@ -163,13 +176,29 @@ export class RouterService implements SarahService {
    * interleaved output, Spec §3). Once no turn is in flight, speak right away.
    */
   private emitSystemNotification(turnId: TurnId, text: string): void {
-    const emit = (): void => { void this.emitAssistantResponse(turnId, text).then(
-      () => this.emitTerminal(turnId, 'done'),
-      () => this.emitTerminal(turnId, 'error', ERROR_MESSAGES.connection),
-    ); };
-    const activeTurnId = this.coordinator.activeTurnId;
-    if (activeTurnId) this.afterTerminal(activeTurnId, emit);
-    else emit();
+    if (!this.context.bus.isTurnKnown(turnId)) {
+      this.context.bus.emit(this.id, 'turn:accepted', { turnId, source: 'system', mode: 'voice' });
+    }
+    void this.coordinator.enqueue({ turnId }, async (signal) => {
+      try {
+        await this.emitAssistantResponse(turnId, text, signal, false);
+        throwIfAborted(signal);
+        this.emitTerminal(turnId, 'done');
+      } catch (error) {
+        if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          this.emitTerminal(turnId, 'canceled');
+          return;
+        }
+        this.emitError(turnId, ERROR_MESSAGES.connection);
+        this.emitTerminal(turnId, 'error', ERROR_MESSAGES.connection);
+      }
+    }).catch((error) => {
+      const message = error instanceof TurnQueueFullError
+        ? 'Zu viele Anfragen gleichzeitig. Die Systemmeldung wurde verworfen.'
+        : ERROR_MESSAGES.connection;
+      this.emitError(turnId, message);
+      this.emitTerminal(turnId, 'error', message);
+    });
   }
 
   async handleChatMessage(text: string, mode: TurnMode = 'chat'): Promise<void> {
@@ -184,6 +213,18 @@ export class RouterService implements SarahService {
   }
 
   async handleTurnRequest(request: TurnRequest): Promise<void> {
+    if (!this.context.bus.isTurnKnown(request.turnId)) {
+      const accepted = this.context.bus.emit(this.id, 'turn:accepted', {
+        turnId: request.turnId,
+        source: request.source,
+        mode: request.mode,
+      });
+      if (!accepted) return;
+    }
+    if (this.context.bus.isTurnTerminal(request.turnId)) {
+      console.warn('[Router] Terminal turn refused:', request.turnId);
+      return;
+    }
     if (this.terminalTurns.has(request.turnId) || this.coordinator.hasTurn(request.turnId)) {
       console.warn('[Router] Duplicate turn refused:', request.turnId);
       return;
@@ -387,14 +428,19 @@ export class RouterService implements SarahService {
    * The single exit for assistant text (Spec §3): llm:chunk + llm:done,
    * history.push and persistence via persistMessage — never a raw insert.
    */
-  private emitAssistantResponse(turnId: TurnId, text: string, signal?: AbortSignal): Promise<void> {
+  private emitAssistantResponse(
+    turnId: TurnId,
+    text: string,
+    signal?: AbortSignal,
+    recordInHistory = true,
+  ): Promise<void> {
     const outputId = randomUUID();
     return this.enqueueOutput(async () => {
       if (!this.isTurnOperational(turnId, signal)) return;
       this.context.bus.emit(this.id, 'llm:chunk', { turnId, outputId, sequence: 0, text });
       this.context.bus.emit(this.id, 'llm:done', { turnId, outputId, sequence: 1, fullText: text });
       this.recordAssistantOutput(turnId, text);
-      if (!this.turnDrafts.has(turnId)) {
+      if (!this.turnDrafts.has(turnId) && recordInHistory) {
         this.history.push({ role: 'assistant', content: text });
         await this.persistMessage('assistant', text);
       }
@@ -409,6 +455,11 @@ export class RouterService implements SarahService {
     signal: AbortSignal,
   ): Promise<void> {
     const requestId = randomUUID();
+    if (action === 'web_search') {
+      // A new search owns the visible-result pointer. If it fails or is
+      // canceled, a later "erstes Ergebnis" must not reopen stale results.
+      this.lastSearchSessionId = null;
+    }
     const resultPromise = new Promise<BusEvents['action:result']>((resolve) => {
       this.pendingActions.set(requestId, { turnId: envelope.turnId, action, resolve });
     });
@@ -417,6 +468,9 @@ export class RouterService implements SarahService {
       requestId,
       action,
       param,
+      ...(action === 'show_browser' && this.lastSearchSessionId
+        ? { sourceRequestId: this.lastSearchSessionId }
+        : {}),
     });
     await this.emitAssistantResponse(envelope.turnId, acknowledgement, signal);
     try {
@@ -426,6 +480,8 @@ export class RouterService implements SarahService {
         'Action timed out',
         signal,
       );
+      throwIfAborted(signal);
+      if (action === 'web_search' && result.ok) this.lastSearchSessionId = requestId;
       if (result.speak) await this.emitAssistantResponse(envelope.turnId, result.speak, signal);
     } catch (error) {
       this.context.bus.emit(this.id, 'action:cancel', {
@@ -506,12 +562,14 @@ export class RouterService implements SarahService {
 
   private isTurnOperational(turnId: TurnId, signal?: AbortSignal): boolean {
     if (signal?.aborted) return false;
+    if (this.context.bus.isTurnTerminal(turnId)) return false;
     if (turnId === this.coordinator.activeTurnId) return this.coordinator.isCurrent(turnId);
     return this.isOperational() && !this.terminalTurns.has(turnId);
   }
 
   private emitError(turnId: TurnId, message: string): void {
-    if (this.terminalTurns.has(turnId)) return;
+    if (this.terminalTurns.has(turnId) || this.errorTurns.has(turnId)) return;
+    this.errorTurns.add(turnId);
     this.context.bus.emit(this.id, 'llm:error', { turnId, message });
   }
 
@@ -521,21 +579,12 @@ export class RouterService implements SarahService {
     this.terminalTurnOrder.push(turnId);
     if (this.terminalTurnOrder.length > 2_000) {
       const expired = this.terminalTurnOrder.shift();
-      if (expired) this.terminalTurns.delete(expired);
+      if (expired) {
+        this.terminalTurns.delete(expired);
+        this.errorTurns.delete(expired);
+      }
     }
     this.context.bus.emit(this.id, 'turn:terminal', { turnId, status, ...(message ? { message } : {}) });
-    for (const resolve of this.terminalWaiters.get(turnId) ?? []) resolve();
-    this.terminalWaiters.delete(turnId);
-  }
-
-  private afterTerminal(turnId: TurnId, callback: () => void): void {
-    if (this.terminalTurns.has(turnId)) {
-      callback();
-      return;
-    }
-    const waiters = this.terminalWaiters.get(turnId) ?? [];
-    waiters.push(callback);
-    this.terminalWaiters.set(turnId, waiters);
   }
 
   private isWorkerUnavailable(): boolean {

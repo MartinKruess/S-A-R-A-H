@@ -1,10 +1,10 @@
 import { abortError } from './abort-utils.js';
-import type { TurnEnvelope, TurnId } from './turn-contract.js';
+import type { TurnId } from './turn-contract.js';
 
 export const DEFAULT_MAX_QUEUED_TURNS = 8;
 
 interface QueuedTurn {
-  envelope: TurnEnvelope;
+  envelope: { turnId: TurnId };
   execute: (signal: AbortSignal) => Promise<void>;
   resolve: () => void;
   reject: (error: Error) => void;
@@ -53,7 +53,7 @@ export class TurnCoordinator {
   }
 
   enqueue(
-    envelope: TurnEnvelope,
+    envelope: { turnId: TurnId },
     execute: (signal: AbortSignal) => Promise<void>,
   ): Promise<void> {
     if (this.destroyed) return Promise.reject(abortError('Turn coordinator stopped'));

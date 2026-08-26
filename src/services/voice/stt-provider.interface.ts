@@ -1,5 +1,10 @@
 // src/services/voice/stt-provider.interface.ts
 
+export interface SttAvailability {
+  available: boolean;
+  message?: string;
+}
+
 export interface SttProvider {
   /** Unique provider ID, e.g. 'whisper' */
   readonly id: string;
@@ -14,6 +19,9 @@ export interface SttProvider {
     language?: string,
     signal?: AbortSignal,
   ): Promise<string>;
+
+  /** Subscribe to provider crashes and successful runtime recovery. */
+  onAvailabilityChange?(listener: (state: SttAvailability) => void): () => void;
 
   /** Clean up resources */
   destroy(signal?: AbortSignal): Promise<void>;

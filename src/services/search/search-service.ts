@@ -7,7 +7,7 @@ import { buildSummaryPrompt, type SummarizeFn } from './summarize-results.js';
 import { linkAbortSignals, throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
 
-/** Single-slot result session (Mi4): show_browser never looks up by requestId. */
+/** Successfully summarized search result set, addressed by its source request. */
 interface ResultSession {
   turnId: string;
   requestId: string;
@@ -20,7 +20,6 @@ export class SearchService implements SarahService {
   status: ServiceStatus = 'pending';
 
   private sessions = new Map<string, ResultSession>();
-  private latestSessionId: string | null = null;
   private searching = false;
   private abort: AbortController | null = null;
   private activeSearch: Promise<string> | null = null;
@@ -42,7 +41,6 @@ export class SearchService implements SarahService {
     this.abort = null;
     this.searching = false;
     this.sessions.clear();
-    this.latestSessionId = null;
     this.status = 'stopped';
   }
 
@@ -88,14 +86,15 @@ export class SearchService implements SarahService {
       throwIfAborted(signal);
       const results = await this.provider.search(query, signal);
       throwIfAborted(signal);
+      const summary = await this.summarize(buildSummaryPrompt(results), signal);
+      throwIfAborted(signal);
       this.sessions.set(correlation.requestId, { ...correlation, results });
-      this.latestSessionId = correlation.requestId;
       while (this.sessions.size > 8) {
         const oldest = this.sessions.keys().next().value as string | undefined;
         if (oldest) this.sessions.delete(oldest);
         else break;
       }
-      return await this.summarize(buildSummaryPrompt(results), signal);
+      return summary;
     } finally {
       this.searching = false;
       if (this.abort === controller) this.abort = null;
@@ -104,13 +103,16 @@ export class SearchService implements SarahService {
 
   async showResult(
     param: string,
-    correlationOrSignal?: { turnId: string; requestId: string } | AbortSignal,
+    correlationOrSignal?: { turnId: string; requestId: string; sourceRequestId?: string } | AbortSignal,
     signal?: AbortSignal,
   ): Promise<LaunchResult> {
     const callerSignal = correlationOrSignal instanceof AbortSignal ? correlationOrSignal : signal;
     throwIfAborted(callerSignal);
     if (this.searching) return { ok: false, speak: 'Moment, ich suche gerade noch.' };
-    const session = this.latestSessionId ? this.sessions.get(this.latestSessionId) : undefined;
+    const sourceRequestId = correlationOrSignal instanceof AbortSignal
+      ? undefined
+      : correlationOrSignal?.sourceRequestId;
+    const session = sourceRequestId ? this.sessions.get(sourceRequestId) : undefined;
     if (!session || session.results.length === 0) {
       return { ok: false, speak: 'Ich habe gerade keine Suchergebnisse offen.' };
     }
