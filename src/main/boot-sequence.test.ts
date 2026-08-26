@@ -217,6 +217,13 @@ describe('main boot sequence splash speech ownership', () => {
       expect.objectContaining({ step: 'router-terminal', severity: 'error' }),
     );
 
+    await vi.advanceTimersByTimeAsync(8_000);
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledWith(
+      'boot-status',
+      expect.objectContaining({ step: 'piper-unavailable', severity: 'warning' }),
+    );
+
     cleanup();
   });
 

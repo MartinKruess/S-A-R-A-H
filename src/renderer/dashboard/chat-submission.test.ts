@@ -1,12 +1,56 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  beginChatProcessing,
+  CHAT_PROCESSING_MESSAGE,
   CHAT_REJECTED_MESSAGE,
   handleRejectedChatSubmission,
   isChatMessageWithinLimit,
+  removeChatProcessing,
   shouldRemoveIncompleteAssistantOutput,
+  takeChatProcessing,
 } from './chat-submission.js';
 
 describe('chat submission rejection', () => {
+  it('creates a visible processing bubble synchronously for the submitted turn', () => {
+    const bubble = {
+      textContent: '',
+      classList: { add: vi.fn(), remove: vi.fn() },
+      remove: vi.fn(),
+    };
+    const pending = new Map<string, typeof bubble>();
+    const createBubble = vi.fn(() => bubble);
+
+    beginChatProcessing('turn-1', pending, createBubble);
+
+    expect(createBubble).toHaveBeenCalledWith(CHAT_PROCESSING_MESSAGE);
+    expect(bubble.classList.add).toHaveBeenCalledWith('processing');
+    expect(pending.get('turn-1')).toBe(bubble);
+  });
+
+  it('reuses the processing bubble for output and removes it on terminal failure', () => {
+    const first = {
+      textContent: CHAT_PROCESSING_MESSAGE,
+      classList: { add: vi.fn(), remove: vi.fn() },
+      remove: vi.fn(),
+    };
+    const pending = new Map([['turn-1', first]]);
+
+    expect(takeChatProcessing('turn-1', pending)).toBe(first);
+    expect(first.classList.remove).toHaveBeenCalledWith('processing');
+    expect(first.textContent).toBe('');
+    expect(pending.has('turn-1')).toBe(false);
+
+    const second = {
+      textContent: CHAT_PROCESSING_MESSAGE,
+      classList: { add: vi.fn(), remove: vi.fn() },
+      remove: vi.fn(),
+    };
+    pending.set('turn-2', second);
+    removeChatProcessing('turn-2', pending);
+    expect(second.remove).toHaveBeenCalledOnce();
+    expect(pending.has('turn-2')).toBe(false);
+  });
+
   it('rejects programmatically assigned messages beyond the IPC limit', () => {
     expect(isChatMessageWithinLimit('x'.repeat(4_000))).toBe(true);
     expect(isChatMessageWithinLimit('x'.repeat(4_001))).toBe(false);

@@ -196,7 +196,11 @@ let pendingTtsPlayTimer: ReturnType<typeof setTimeout> | null = null;
 let bootDoneTimer: ReturnType<typeof setTimeout> | null = null;
 let activeTtsPlayback: BootAudioPlayback | null = null;
 
-const PIPER_TERMINAL_WAIT_MS = 8_000;
+// Main owns a bounded 330-second service lifecycle because a cold Whisper
+// startup may take up to five minutes. Keep the renderer waiting for Piper's
+// authoritative ready/unavailable result beyond that boundary, while retaining
+// a final watchdog in case the terminal boot event is lost entirely.
+const PIPER_TERMINAL_WAIT_MS = 340_000;
 const SPLASH_TTS_REQUEST_WAIT_MS = 8_000;
 const SPLASH_PLAYBACK_WATCHDOG_MS = 15_000;
 

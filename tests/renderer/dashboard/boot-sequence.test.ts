@@ -102,7 +102,7 @@ describe('dashboard boot sequence', () => {
     expect(element.textContent).toContain('Konfiguration konnte nicht geladen werden');
   });
 
-  it('keeps boot ownership until splash playback has actually ended', async () => {
+  it('waits beyond the former eight-second cutoff for cold-start Piper readiness', async () => {
     vi.useFakeTimers();
     const element = createElement();
     let frame: FrameRequestCallback | null = null;
@@ -155,13 +155,19 @@ describe('dashboard boot sequence', () => {
     await Promise.resolve();
     await Promise.resolve();
     statusListener?.({ step: 'router-ready' });
-    statusListener?.({ step: 'piper-ready' });
 
     frame?.(performance.now());
     await vi.advanceTimersByTimeAsync(5_000);
     frame?.(performance.now());
     await vi.advanceTimersByTimeAsync(4_100);
     frame?.(performance.now());
+    await vi.advanceTimersByTimeAsync(8_100);
+    frame?.(performance.now());
+
+    expect(bootDone).not.toHaveBeenCalled();
+    expect(splashTts).not.toHaveBeenCalled();
+
+    statusListener?.({ step: 'piper-ready' });
     frame?.(performance.now());
     await Promise.resolve();
     frame?.(performance.now());
@@ -183,7 +189,7 @@ describe('dashboard boot sequence', () => {
     expect(source.stop).not.toHaveBeenCalled();
   });
 
-  it('degrades boot without starting a splash request when Piper becomes ready after its deadline', async () => {
+  it('degrades promptly when delayed Piper readiness resolves as unavailable', async () => {
     vi.useFakeTimers();
     const element = createElement();
     let frame: FrameRequestCallback | null = null;
@@ -226,6 +232,62 @@ describe('dashboard boot sequence', () => {
     await vi.advanceTimersByTimeAsync(4_100);
     frame?.(performance.now());
     await vi.advanceTimersByTimeAsync(8_100);
+    frame?.(performance.now());
+
+    expect(bootDone).not.toHaveBeenCalled();
+    statusListener?.({ step: 'piper-unavailable', severity: 'warning' });
+    frame?.(performance.now());
+    frame?.(performance.now());
+    await boot;
+
+    expect(splashTts).not.toHaveBeenCalled();
+    expect(orb.triggerBreak).not.toHaveBeenCalled();
+    expect(bootDone).toHaveBeenCalledOnce();
+  });
+
+  it('degrades boot when Piper never publishes a terminal capability result', async () => {
+    vi.useFakeTimers();
+    const element = createElement();
+    let frame: FrameRequestCallback | null = null;
+    let statusListener: ((status: BootStatus) => void) | null = null;
+    const bootDone = vi.fn();
+    const splashTts = vi.fn();
+    vi.stubGlobal('document', { getElementById: vi.fn(() => element) });
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
+    }));
+    vi.stubGlobal('sarah', {
+      getConfig: vi.fn().mockResolvedValue({ onboarding: { firstStart: false } }),
+      bootReady: vi.fn(),
+      bootDone,
+      revealDone: vi.fn(),
+      splashTts,
+      onTransitionStart: vi.fn(),
+      onBootStatus: vi.fn((listener: (status: BootStatus) => void) => {
+        statusListener = listener;
+        return vi.fn();
+      }),
+    });
+    const orb = {
+      setLightIntensity: vi.fn(),
+      setOrbScale: vi.fn(),
+      setOrbOffset: vi.fn(),
+      setLightColor: vi.fn(),
+      triggerBreak: vi.fn(),
+    };
+    const { startBootSequence } = await import('../../../src/renderer/dashboard/boot-sequence.js');
+    const boot = startBootSequence(orb as never);
+    await Promise.resolve();
+    await Promise.resolve();
+    statusListener?.({ step: 'router-ready' });
+
+    frame?.(performance.now());
+    await vi.advanceTimersByTimeAsync(5_000);
+    frame?.(performance.now());
+    await vi.advanceTimersByTimeAsync(4_100);
+    frame?.(performance.now());
+    await vi.advanceTimersByTimeAsync(340_100);
     statusListener?.({ step: 'piper-ready' });
     frame?.(performance.now());
     frame?.(performance.now());

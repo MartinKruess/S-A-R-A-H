@@ -603,11 +603,13 @@ export class VoiceService implements SarahService {
           );
         }
         const shouldSpeak = this.turnSpeechDecisions.get(msg.data.turnId) ?? false;
+        const ownsPttBargeIn = this.voiceMode === 'push-to-talk';
+        if (!shouldSpeak && !ownsPttBargeIn) return;
+        this.processingTurnIds.add(msg.data.turnId);
+        if (!this.activePlaybackTurnId) this.setState('processing');
         if (!shouldSpeak) return;
         this.interactionMode = 'chatspeak';
         this.voiceRelevantTurns.set(msg.data.turnId, 'chatspeak');
-        this.processingTurnIds.add(msg.data.turnId);
-        if (!this.activePlaybackTurnId) this.setState('processing');
       }
       return;
     }

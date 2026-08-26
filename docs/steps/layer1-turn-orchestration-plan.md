@@ -464,3 +464,24 @@ Audit 11 prüfte erneut nur Layer 1 bis Layer 0 und konzentrierte sich auf die s
 Alle fünf Befunde wurden umgesetzt und regressionsgetestet. Fehlerhafte Teilstreams verlieren aktive, vorgepufferte, wartende und während PTT zurückgestellte TTS-Arbeit, bevor ausschließlich die Fehleransage ausgegeben wird. Renderer-Präsenz und Mikrofon-Readiness sind getrennte Zustände; Renderer-Verlust stoppt die gesamte nicht mehr zustellbare Audioarbeit, während ein vorhandener Renderer auch bei deaktiviertem Mikrofon weiter TTS abspielen kann. Der native Hotkey behält den physischen Held-Latch über Renderer-Recovery, ohne den normalen Key-up bei einem bloßen Capture-Flap zu verlieren. Fehlgeschlagene Worker-Unloads degradieren nun auch den unerreichbaren Router und planen Recovery; die Bootsequenz gleicht ihren Abschluss gegen den aktuellen Lifecycle-Snapshot ab.
 
 Die abschließende Vollprüfung bestand 89 Testdateien mit 963 Tests, Main- und Renderer-Typecheck, den vollständigen Produktionsbuild und `git diff --check`. Gemäß der vereinbarten Schwelle endet die automatische Audit-Schleife hier: Genau fünf Befunde wurden vollständig umgesetzt, daher folgt kein zwölftes Audit. Eine praktische Windows-Matrix bleibt eine separate Abnahme und wurde in dieser Code-Audit-Schleife nicht ausgeführt.
+
+## Praktische Windows-Abnahme – Sitzung 1
+
+Die praktische Abnahme begann am 27.08.2026 auf dem aktuellen PR-Branch. Der erste Kaltstart, ein normaler Fensterschluss und der erste reale Chatturn ergaben vier neue Laufzeitbefunde:
+
+| Nr. | Priorität | Befund |
+|---:|:---:|---|
+| 146 | P1 | Der Renderer gab das Warten auf Pipers terminalen Bootzustand nach acht Sekunden auf, obwohl Main bei einem kalten Whisper-Start begrenzt bis zu 330 Sekunden auf den Service-Lifecycle wartet. Dadurch entfielen Orb-Break und Bereitschaftsansage trotz später erfolgreicher Voice-Readiness. |
+| 147 | P0 | Der produktive Router-Call besaß weder einen eigenen `num_predict`-Deckel noch eine harte Gesamtdauer. Der reale Phi-4-Mini-Request erzeugte mehr als 12.000 Tokens und blockierte den Worker-Fallback rund fünf Minuten. |
+| 148 | P1 | Ein gesendeter Chatturn zeigte bis zum ersten Worker-Chunk keine turnbezogene Processing-Bubble und wirkte während Routing und Modellwechsel wie nicht gestartet. |
+| 149 | P1 | Reine Textchat-Turns wurden im PTT-Modus nicht als unterbrechbarer Processing-Besitz geführt. F9 eröffnete deshalb parallele leere Voice-Turns, statt den hängenden Chatturn abzubrechen. |
+
+### Umsetzung und Abnahmestand
+
+- Befund 146 wurde behoben: Der Renderer wartet innerhalb einer eigenen 340-Sekunden-Sicherheitsgrenze auf das autoritative `piper-ready` beziehungsweise `piper-unavailable`. Der wiederholte reale Kaltstart bestand Orb-Break und Bereitschaftsansage. Elf gezielte Boottests und beide Typechecks waren grün.
+- Der normale Fensterschluss wurde praktisch bestanden: Electron und Whisper endeten vollständig, Whisper bestätigte `/shutdown`, es blieben keine Sarah-eigenen Python-/Electron-Prozesse und kein geladenes Ollama-Modell zurück.
+- Befund 147 wurde mit einem produktiven Routerdeckel von 64 Tokens, Temperatur 0 und einer harten 15-Sekunden-Gesamtdeadline behoben.
+- Befund 148 wurde durch eine sofortige turnbezogene `Wird verarbeitet …`-Bubble behoben, die beim ersten Chunk übernommen und auf Reject-, Error- oder Terminalpfaden entfernt wird.
+- Befund 149 wurde behoben: Im PTT-Modus besitzt VoiceService auch aktive reine Textturns für Barge-in; F9 cancelt und terminalisiert den bisherigen Turn, bevor ein neuer Capture-Turn beginnt.
+- Der integrierte Zwischenstand bestand sieben gezielte Testdateien mit 152 Tests, Main- und Renderer-Typecheck sowie `git diff --check`.
+- Die praktische Wiederholung der Befunde 147 bis 149, der Chat-/Speak-A/B-Test und die vollständige Suite samt Produktionsbuild sind für die nächste Abnahmesitzung vorgesehen. Bis dahin bleibt Layer 1 offen und PR #31 ungemergt.

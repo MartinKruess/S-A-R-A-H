@@ -1529,6 +1529,38 @@ describe('VoiceService', () => {
     await flush();
     expect(tts.speak).not.toHaveBeenCalled();
   });
+
+  it('cancels an active text-only chat turn before F9 opens the replacement voice turn', async () => {
+    await service.init();
+    const canceled: string[] = [];
+    bus.on('turn:cancel', (message) => canceled.push(message.data.turnId));
+    const chatTurnId = '80808080-8080-4080-8080-808080808080';
+    const request = {
+      turnId: chatTurnId,
+      source: 'chat' as const,
+      mode: 'chat' as const,
+      originalText: 'Erkläre mir, warum der Himmel blau ist.',
+      createdAt: new Date().toISOString(),
+    };
+    bus.emit('renderer', 'chat:message', request);
+    service.onMessage({
+      source: 'renderer',
+      topic: 'chat:message',
+      data: request,
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(service.voiceState).toBe('processing');
+    const onDown = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0][1] as () => void;
+    onDown();
+
+    const replacementTurnId = service.voiceStateSnapshot.turnId;
+    expect(canceled).toEqual([chatTurnId]);
+    expect(bus.isTurnTerminal(chatTurnId)).toBe(true);
+    expect(service.voiceState).toBe('listening');
+    expect(replacementTurnId).toBeTruthy();
+    expect(replacementTurnId).not.toBe(chatTurnId);
+  });
 });
 
 describe('VoiceService partial failure (voice:capability)', () => {
@@ -2104,7 +2136,7 @@ describe('TTS deferral while listening (F9)', () => {
     expect(tts.stop).toHaveBeenCalled();
   });
 
-  it('keeps an independent pure text-chat output open when F9 interrupts voice playback', async () => {
+  it('cancels an independent pure text-chat output when F9 takes turn ownership', async () => {
     const bus = new MessageBus();
     const tts = createMockTts();
     const hotkey = createMockHotkey();
@@ -2164,9 +2196,9 @@ describe('TTS deferral while listening (F9)', () => {
     const outputs = service as unknown as {
       outputs: Map<string, { turnId: string }>;
     };
-    expect(canceledTurns).toEqual([voiceTurnId]);
-    expect(bus.isTurnOpen(textTurnId)).toBe(true);
-    expect([...outputs.outputs.values()].map((output) => output.turnId)).toContain(textTurnId);
+    expect(new Set(canceledTurns)).toEqual(new Set([voiceTurnId, textTurnId]));
+    expect(bus.isTurnTerminal(textTurnId)).toBe(true);
+    expect([...outputs.outputs.values()].map((output) => output.turnId)).not.toContain(textTurnId);
     expect(service.voiceState).toBe('listening');
     await service.destroy();
   });

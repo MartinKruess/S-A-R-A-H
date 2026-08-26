@@ -5,9 +5,12 @@ import { startBootSequence } from './boot-sequence.js';
 import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
 import {
+  beginChatProcessing,
   handleRejectedChatSubmission,
   isChatMessageWithinLimit,
+  removeChatProcessing,
   shouldRemoveIncompleteAssistantOutput,
+  takeChatProcessing,
 } from './chat-submission.js';
 import { synchronizeRuntimeStatus } from './runtime-status-sync.js';
 
@@ -118,6 +121,7 @@ const outputBubbles = new Map<string, {
   bubble: HTMLElement;
   nextSequence: number;
 }>();
+const pendingTurnBubbles = new Map<string, HTMLElement>();
 const terminalTurns = new Set<string>();
 
 function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElement {
@@ -151,14 +155,17 @@ chatInput.addEventListener('keydown', (e) => {
 
     const userBubble = addBubble('user', text);
     const turnId = crypto.randomUUID();
+    beginChatProcessing(turnId, pendingTurnBubbles, (message) => addBubble('assistant', message));
     void sarah.chat(text, turnId, chatMode ? 'chat' : 'voice').then((result) => {
       if (!result.accepted) {
+        removeChatProcessing(turnId, pendingTurnBubbles);
         handleRejectedChatSubmission(turnId, terminalTurns, userBubble, (message) => {
           addBubble('error', message);
         });
       }
     }).catch((error) => {
       terminalTurns.add(turnId);
+      removeChatProcessing(turnId, pendingTurnBubbles);
       console.warn('[Dashboard] Chat submission failed:', error);
       addBubble('error', 'Die Nachricht konnte nicht gesendet werden.');
     });
@@ -171,7 +178,9 @@ sarah.onChatChunk((data) => {
   if (terminalTurns.has(data.turnId)) return;
   let output = outputBubbles.get(data.outputId);
   if (!output) {
-    output = { turnId: data.turnId, bubble: addBubble('assistant', ''), nextSequence: 0 };
+    const bubble = takeChatProcessing(data.turnId, pendingTurnBubbles)
+      ?? addBubble('assistant', '');
+    output = { turnId: data.turnId, bubble, nextSequence: 0 };
     outputBubbles.set(data.outputId, output);
   }
   if (data.sequence !== output.nextSequence) {
@@ -190,7 +199,13 @@ sarah.onChatDone((data) => {
   if (terminalTurns.has(data.turnId)) return;
   const output = outputBubbles.get(data.outputId);
   if (!output) {
-    if (data.fullText) addBubble('assistant', data.fullText);
+    const bubble = takeChatProcessing(data.turnId, pendingTurnBubbles);
+    if (data.fullText) {
+      const completedBubble = bubble ?? addBubble('assistant', '');
+      completedBubble.textContent = data.fullText;
+    } else {
+      bubble?.remove();
+    }
     return;
   }
   if (output.turnId !== data.turnId) {
@@ -207,11 +222,13 @@ sarah.onChatDone((data) => {
 // Error
 sarah.onChatError((data) => {
   if (terminalTurns.has(data.turnId)) return;
+  removeChatProcessing(data.turnId, pendingTurnBubbles);
   addBubble('error', data.message);
 });
 
 sarah.onTurnTerminal((data) => {
   terminalTurns.add(data.turnId);
+  removeChatProcessing(data.turnId, pendingTurnBubbles);
   for (const [outputId, output] of outputBubbles) {
     if (output.turnId !== data.turnId) continue;
     if (shouldRemoveIncompleteAssistantOutput(data.status)) output.bubble.remove();

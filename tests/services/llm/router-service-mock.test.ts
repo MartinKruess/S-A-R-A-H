@@ -6,6 +6,7 @@ import type { AppContext } from '../../../src/core/bootstrap';
 import { MessageBus } from '../../../src/core/message-bus';
 import { feedbackTexts } from '../../../src/services/llm/filler-phrases';
 import type { ModelRuntimePort } from '../../../src/services/llm/model-runtime';
+import { ROUTER_DEADLINE_MS } from '../../../src/services/llm/routing-service';
 
 function createMockProvider(id: string, chatResponse: string): LlmProvider {
   return {
@@ -395,6 +396,41 @@ describe('RouterService', () => {
   });
 
   describe('error handling', () => {
+    it('surfaces the hard router deadline as the existing timeout terminal', async () => {
+      await service.init();
+      vi.useFakeTimers();
+      try {
+        (routerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+          async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+            new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener(
+                'abort',
+                () => reject(options.signal?.reason),
+                { once: true },
+              );
+            })
+          ),
+        );
+        const errors: string[] = [];
+        const terminals: Array<{ status: string; message?: string }> = [];
+        bus.on('llm:error', (message) => errors.push(message.data.message));
+        bus.on('turn:terminal', (message) => terminals.push(message.data));
+        const turn = service.handleChatMessage('Erkläre mir den Himmel.', 'chat');
+
+        await vi.advanceTimersByTimeAsync(ROUTER_DEADLINE_MS);
+        await turn;
+
+        expect(errors).toEqual(['Sarah hat den Faden verloren... Versuch es nochmal.']);
+        expect(terminals).toEqual([{
+          status: 'error',
+          message: 'Sarah hat den Faden verloren... Versuch es nochmal.',
+          turnId: expect.any(String),
+        }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('cancels active and queued turns when lifecycle enters stopping', async () => {
       let lifecycleListener: ((snapshot: { state: string }) => void) | null = null;
       context.lifecycle = {

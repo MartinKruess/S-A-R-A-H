@@ -2,6 +2,10 @@ import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import { buildRoutingPrompt } from './routing-prompt.js';
 import { parseRouteTag, type ParsedRoute } from './route-parser.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
+import { runWithTimeout } from '../../core/abort-utils.js';
+
+export const ROUTER_NUM_PREDICT = 64;
+export const ROUTER_DEADLINE_MS = 15_000;
 
 export interface RoutingResult {
   parsed: ParsedRoute;
@@ -18,7 +22,17 @@ export class RoutingService {
       { role: 'user', content: text },
     ];
     const start = performance.now();
-    const response = await chatWithTimeout(this.provider, messages, () => {}, { keep_alive: -1, signal });
+    const response = await runWithTimeout(
+      (deadlineSignal) => chatWithTimeout(this.provider, messages, () => {}, {
+        keep_alive: -1,
+        num_predict: ROUTER_NUM_PREDICT,
+        temperature: 0,
+        signal: deadlineSignal,
+      }),
+      ROUTER_DEADLINE_MS,
+      'Router classification timed out',
+      signal,
+    );
     const tookMs = Math.round(performance.now() - start);
     const parsed = parseRouteTag(response);
     const hadTag = /^\s*\[(?:ROUTE:\w+|ACTION:[a-z_]+(?::[^\]]*)?)]\s*$/.test(response);
