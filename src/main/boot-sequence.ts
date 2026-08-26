@@ -1,4 +1,5 @@
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
@@ -6,7 +7,7 @@ import type { OllamaContainerManager } from '../services/llm/ollama-container-ma
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
-import { isValidChatMessage } from './ipc-validation.js';
+import { isValidChatInput, isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
 import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../core/chat-availability.js';
@@ -184,7 +185,11 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       const audio = await piperProvider.speak(text);
       const mainWindow = getMainWindow();
       if (mainWindow && !mainWindow.isDestroyed()) {
+        const turnId = randomUUID();
         mainWindow.webContents.send('voice:play-audio', {
+          turnId,
+          outputId: randomUUID(),
+          playbackId: randomUUID(),
           audio: Array.from(audio),
           sampleRate: 22050,
         });
@@ -226,23 +231,37 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   };
   ipcMain.on('wizard-done', onWizardDone);
 
-  ipcMain.handle('chat-message', async (_event, text: string) => {
-    if (!isValidChatMessage(text)) {
+  ipcMain.handle('chat-message', async (_event, input: unknown) => {
+    if (!isValidChatInput(input)) {
       console.warn('[IPC] invalid payload for chat-message');
-      return;
+      return { accepted: false, turnId: randomUUID() };
     }
+    const { turnId, message } = input;
     const ctx = getAppContext();
     if (!isChatAvailable(ctx.lifecycle.snapshot)) {
       ctx.bus.emit('runtime', 'llm:error', {
+        turnId,
         message: CHAT_UNAVAILABLE_MESSAGE,
       });
-      return;
+      ctx.bus.emit('runtime', 'turn:terminal', {
+        turnId,
+        status: 'error',
+        message: CHAT_UNAVAILABLE_MESSAGE,
+      });
+      return { accepted: false, turnId };
     }
     const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
       voiceService.setChatSpeak();
     }
-    ctx.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
+    ctx.bus.emit('renderer', 'chat:message', {
+      turnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: message,
+      createdAt: new Date().toISOString(),
+    });
+    return { accepted: true, turnId };
   });
   ipcMain.handle('get-runtime-status', () => getAppContext().lifecycle.snapshot);
 
@@ -251,6 +270,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     forwardToRenderers(bus, 'llm:chunk'),
     forwardToRenderers(bus, 'llm:done'),
     forwardToRenderers(bus, 'llm:error'),
+    forwardToRenderers(bus, 'turn:terminal'),
     forwardToRenderers(bus, 'storage:degraded'),
   ];
 
@@ -259,29 +279,32 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     if (win && !win.isDestroyed()) win.webContents.send('runtime-status', snapshot);
   });
 
-  let perfStart = 0;
-  let perfData: Record<string, unknown> = {};
+  const perfByTurn = new Map<string, { startedAt: number; data: Record<string, unknown> }>();
   unsubscribers.push(bus.on('perf:timing', (msg) => {
-    const { label, ms, meta } = msg.data;
-    if (!perfStart) perfStart = Date.now();
-    perfData[`${label}Ms`] = ms;
-    if (meta) Object.assign(perfData, meta);
-    if (label === 'router') perfData.usedWorker = false;
-    if (label === 'worker') perfData.usedWorker = true;
+    const { turnId, label, ms, meta } = msg.data;
+    if (!turnId) return;
+    const current = perfByTurn.get(turnId) ?? { startedAt: Date.now(), data: {} };
+    current.data[`${label}Ms`] = ms;
+    if (meta) Object.assign(current.data, meta);
+    if (label === 'router') current.data.usedWorker = false;
+    if (label === 'worker') current.data.usedWorker = true;
+    perfByTurn.set(turnId, current);
   }));
 
-  const logPerf = (): void => {
-    if (!perfStart) return;
-    const msKeys = Object.keys(perfData).filter((key) => key.endsWith('Ms'));
-    const totalMs = msKeys.reduce((sum, key) => sum + (perfData[key] as number), 0);
-    console.log('\n[Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
-    perfStart = 0;
-    perfData = {};
+  const logPerf = (turnId: string): void => {
+    const current = perfByTurn.get(turnId);
+    if (!current) return;
+    const msKeys = Object.keys(current.data).filter((key) => key.endsWith('Ms'));
+    const totalMs = msKeys.reduce((sum, key) => sum + (current.data[key] as number), 0);
+    console.log('\n[Performance]', JSON.stringify({
+      turnId,
+      wallMs: Date.now() - current.startedAt,
+      totalMs,
+      ...current.data,
+    }, null, 2));
+    perfByTurn.delete(turnId);
   };
-  unsubscribers.push(bus.on('voice:done', logPerf));
-  unsubscribers.push(bus.on('llm:done', () => {
-    if (!perfData.whisperMs) logPerf();
-  }));
+  unsubscribers.push(bus.on('turn:terminal', (msg) => logPerf(msg.data.turnId)));
 
   const onBootDone = (): void => {
     const mainWindow = getMainWindow();

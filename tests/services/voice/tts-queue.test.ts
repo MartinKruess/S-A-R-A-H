@@ -5,6 +5,11 @@ import { TtsQueue } from '../../../src/services/voice/tts-queue.js';
 import type { TtsProvider } from '../../../src/services/voice/tts-provider.interface.js';
 
 const SAMPLE_AUDIO = new Float32Array([0.1, 0.2]);
+const TURN_ID = 'turn-1';
+
+function item(text: string, outputId = `output-${text}`) {
+  return { turnId: TURN_ID, outputId, text };
+}
 
 function makeMockTts(overrides: Partial<TtsProvider> = {}): TtsProvider {
   return {
@@ -33,19 +38,32 @@ describe('TtsQueue', () => {
     queue = new TtsQueue(mockTts, onAudioReady, onQueueEmpty, onError);
   });
 
+  function playbackDone(callIndex = onAudioReady.mock.calls.length - 1): void {
+    const [queuedItem, playbackId] = onAudioReady.mock.calls[callIndex] as [
+      { turnId: string },
+      string,
+    ];
+    queue.playbackDone(queuedItem.turnId, playbackId);
+  }
+
   // ── Single sentence ──────────────────────────────────────────────────────────
 
   it('single sentence: enqueue → onAudioReady fires → playbackDone → onQueueEmpty', async () => {
-    queue.enqueue('Hello world.');
+    queue.enqueue(item('Hello world.'));
 
     // Let speak() resolve
     await vi.waitUntil(() => onAudioReady.mock.calls.length > 0);
 
     expect(onAudioReady).toHaveBeenCalledOnce();
-    expect(onAudioReady).toHaveBeenCalledWith(SAMPLE_AUDIO, 22_050);
+    expect(onAudioReady).toHaveBeenCalledWith(
+      item('Hello world.'),
+      expect.any(String),
+      SAMPLE_AUDIO,
+      22_050,
+    );
     expect(onQueueEmpty).not.toHaveBeenCalled();
 
-    queue.playbackDone();
+    playbackDone();
 
     expect(onQueueEmpty).toHaveBeenCalledOnce();
   });
@@ -63,24 +81,24 @@ describe('TtsQueue', () => {
       .mockImplementationOnce(async () => { callCount++; return audio2; })
       .mockImplementationOnce(async () => { callCount++; return audio3; });
 
-    queue.enqueue('One.');
-    queue.enqueue('Two.');
-    queue.enqueue('Three.');
+    queue.enqueue(item('One.'));
+    queue.enqueue(item('Two.'));
+    queue.enqueue(item('Three.'));
 
     // First audio ready
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 1);
-    expect(onAudioReady).toHaveBeenNthCalledWith(1, audio1, 22_050);
+    expect(onAudioReady).toHaveBeenNthCalledWith(1, item('One.'), expect.any(String), audio1, 22_050);
 
     // Signal playback done → second audio plays (may already be pre-buffered)
-    queue.playbackDone();
+    playbackDone(0);
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 2);
-    expect(onAudioReady).toHaveBeenNthCalledWith(2, audio2, 22_050);
+    expect(onAudioReady).toHaveBeenNthCalledWith(2, item('Two.'), expect.any(String), audio2, 22_050);
 
-    queue.playbackDone();
+    playbackDone(1);
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 3);
-    expect(onAudioReady).toHaveBeenNthCalledWith(3, audio3, 22_050);
+    expect(onAudioReady).toHaveBeenNthCalledWith(3, item('Three.'), expect.any(String), audio3, 22_050);
 
-    queue.playbackDone();
+    playbackDone(2);
     expect(onQueueEmpty).toHaveBeenCalledOnce();
 
     // All three speak calls happened
@@ -99,8 +117,8 @@ describe('TtsQueue', () => {
       .mockResolvedValueOnce(new Float32Array([1]))
       .mockReturnValueOnce(secondDone);
 
-    queue.enqueue('First.');
-    queue.enqueue('Second.');
+    queue.enqueue(item('First.'));
+    queue.enqueue(item('Second.'));
 
     // Wait for first onAudioReady (first sentence synthesized)
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 1);
@@ -110,21 +128,21 @@ describe('TtsQueue', () => {
 
     // Resolve the second speak and signal playback done
     resolveSecond(new Float32Array([2]));
-    queue.playbackDone();
+    playbackDone(0);
 
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 2);
     expect(onAudioReady).toHaveBeenCalledTimes(2);
 
-    queue.playbackDone();
+    playbackDone(1);
     expect(onQueueEmpty).toHaveBeenCalledOnce();
   });
 
   // ── stop() ───────────────────────────────────────────────────────────────────
 
   it('stop() clears queue and resets state', async () => {
-    queue.enqueue('One.');
-    queue.enqueue('Two.');
-    queue.enqueue('Three.');
+    queue.enqueue(item('One.'));
+    queue.enqueue(item('Two.'));
+    queue.enqueue(item('Three.'));
 
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 1);
 
@@ -137,7 +155,7 @@ describe('TtsQueue', () => {
   });
 
   it('stop() calls tts.stop()', () => {
-    queue.enqueue('Hello.');
+    queue.enqueue(item('Hello.'));
     queue.stop();
     expect(mockTts.stop).toHaveBeenCalledOnce();
   });
@@ -148,7 +166,7 @@ describe('TtsQueue', () => {
     const boom = new Error('TTS failure');
     vi.mocked(mockTts.speak).mockRejectedValueOnce(boom);
 
-    queue.enqueue('Bad sentence.');
+    queue.enqueue(item('Bad sentence.'));
 
     await vi.waitUntil(() => onError.mock.calls.length > 0);
 
@@ -160,7 +178,7 @@ describe('TtsQueue', () => {
   it('error in tts.speak() still triggers onQueueEmpty when queue is exhausted', async () => {
     vi.mocked(mockTts.speak).mockRejectedValueOnce(new Error('oops'));
 
-    queue.enqueue('Bad.');
+    queue.enqueue(item('Bad.'));
 
     await vi.waitUntil(() => onQueueEmpty.mock.calls.length > 0);
     expect(onQueueEmpty).toHaveBeenCalledOnce();
@@ -169,7 +187,7 @@ describe('TtsQueue', () => {
   // ── playbackDone() guard ─────────────────────────────────────────────────────
 
   it('playbackDone() when not playing is ignored (no crash)', () => {
-    expect(() => queue.playbackDone()).not.toThrow();
+    expect(() => queue.playbackDone(TURN_ID, 'missing')).not.toThrow();
     expect(onQueueEmpty).not.toHaveBeenCalled();
     expect(onError).not.toHaveBeenCalled();
   });
@@ -180,8 +198,8 @@ describe('TtsQueue', () => {
     expect(queue.isActive).toBe(false);
     expect(queue.pendingCount).toBe(0);
 
-    queue.enqueue('First.');
-    queue.enqueue('Second.');
+    queue.enqueue(item('First.'));
+    queue.enqueue(item('Second.'));
 
     // Immediately after enqueue: first is being synthesized, second is pending
     expect(queue.isActive).toBe(true);
@@ -192,10 +210,10 @@ describe('TtsQueue', () => {
     // First is playing, second may have been taken for pre-buffer
     expect(queue.isActive).toBe(true);
 
-    queue.playbackDone();
+    playbackDone(0);
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 2);
 
-    queue.playbackDone();
+    playbackDone(1);
     expect(queue.isActive).toBe(false);
     expect(queue.pendingCount).toBe(0);
   });
@@ -203,19 +221,39 @@ describe('TtsQueue', () => {
   // ── Reuse after stop ─────────────────────────────────────────────────────────
 
   it('enqueue after stop works correctly (queue is reusable)', async () => {
-    queue.enqueue('Before stop.');
+    queue.enqueue(item('Before stop.'));
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 1);
     queue.stop();
 
     vi.clearAllMocks();
 
     // Re-use the same queue instance
-    queue.enqueue('After stop.');
+    queue.enqueue(item('After stop.'));
 
     await vi.waitUntil(() => onAudioReady.mock.calls.length >= 1);
     expect(onAudioReady).toHaveBeenCalledOnce();
 
-    queue.playbackDone();
+    playbackDone();
     expect(onQueueEmpty).toHaveBeenCalledOnce();
+  });
+
+  it('discards synthesis that resolves after stop and never injects it into the next turn', async () => {
+    let resolveOld = (_audio: Float32Array): void => {};
+    vi.mocked(mockTts.speak)
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValueOnce(new Float32Array([2]));
+
+    queue.enqueue(item('Old turn.', 'old-output'));
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledOnce());
+    queue.stop();
+    queue.enqueue({ turnId: 'turn-2', outputId: 'new-output', text: 'New turn.' });
+    resolveOld(new Float32Array([1]));
+
+    await vi.waitUntil(() => onAudioReady.mock.calls.length === 1);
+    expect(onAudioReady.mock.calls[0][0]).toMatchObject({
+      turnId: 'turn-2',
+      outputId: 'new-output',
+    });
+    expect(onAudioReady.mock.calls[0][2]).toEqual(new Float32Array([2]));
   });
 });

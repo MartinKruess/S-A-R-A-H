@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { TtsProvider } from '../tts-provider.interface.js';
+import { abortError, throwIfAborted } from '../../../core/abort-utils.js';
 
 export class PiperProvider implements TtsProvider {
   readonly id = 'piper';
@@ -37,7 +38,8 @@ export class PiperProvider implements TtsProvider {
     }
   }
 
-  async speak(text: string): Promise<Float32Array> {
+  async speak(text: string, signal?: AbortSignal): Promise<Float32Array> {
+    throwIfAborted(signal);
     return new Promise<Float32Array>((resolve, reject) => {
       const args = [
         '--model', this.voicePath,
@@ -47,6 +49,17 @@ export class PiperProvider implements TtsProvider {
       this.activeProcess = spawn(this.binaryPath, args);
       const chunks: Buffer[] = [];
       let rejected = false;
+      const rejectOnce = (error: Error): void => {
+        if (rejected) return;
+        rejected = true;
+        reject(error);
+      };
+      const onAbort = (): void => {
+        this.activeProcess?.kill();
+        this.activeProcess = null;
+        rejectOnce(abortError('Piper speech generation aborted'));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
 
       this.activeProcess.stdout?.on('data', (data: Buffer) => {
         chunks.push(data);
@@ -58,6 +71,7 @@ export class PiperProvider implements TtsProvider {
 
       this.activeProcess.on('close', (code) => {
         this.activeProcess = null;
+        signal?.removeEventListener('abort', onAbort);
         if (rejected) return;
 
         if (code === 0 || code === null) {
@@ -80,8 +94,8 @@ export class PiperProvider implements TtsProvider {
 
       this.activeProcess.on('error', (err) => {
         this.activeProcess = null;
-        rejected = true;
-        reject(new Error(`Failed to start piper: ${err.message}`));
+        signal?.removeEventListener('abort', onAbort);
+        rejectOnce(new Error(`Failed to start piper: ${err.message}`));
       });
 
       // Send text to piper via stdin
@@ -90,9 +104,8 @@ export class PiperProvider implements TtsProvider {
 
       // Timeout after 30 seconds
       const timeout = setTimeout(() => {
-        rejected = true;
         this.stop();
-        reject(new Error('Piper speech generation timed out'));
+        rejectOnce(new Error('Piper speech generation timed out'));
       }, 30_000);
 
       this.activeProcess.on('close', () => clearTimeout(timeout));

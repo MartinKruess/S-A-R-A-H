@@ -1,6 +1,7 @@
 import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { BusEvents } from './bus-events.js';
-import type { SystemIpcInfo, SystemMetrics, VoiceLevel } from './ipc-contract.js';
+import type { IpcCommands, IpcEvents, SystemIpcInfo, SystemMetrics, VoiceLevel } from './ipc-contract.js';
+import type { PlaybackId, TurnId, VoiceCaptureId } from './turn-contract.js';
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
 import type { SaveConfigResult } from './config-apply.js';
@@ -28,14 +29,14 @@ export type BootStatus = {
 /** Voice sub-API exposed to renderers */
 export interface SarahVoiceApi {
   getState(): Promise<VoiceState>;
-  onStateChange(cb: (data: BusEvents['voice:state']) => void): () => void;
+  onStateChange(cb: (data: IpcEvents['voice:state']) => void): () => void;
   onTranscript(cb: (data: BusEvents['voice:transcript']) => void): () => void;
   onPlayAudio(cb: (data: BusEvents['voice:play-audio']) => void): () => void;
-  playbackDone(): Promise<void>;
+  playbackDone(turnId: TurnId, playbackId: PlaybackId): Promise<void>;
   onError(cb: (data: BusEvents['voice:error']) => void): () => void;
   onCapability(cb: (data: BusEvents['voice:capability']) => void): () => void;
   setInteractionMode(mode: 'chat' | 'voice'): Promise<void>;
-  sendAudioChunk(chunk: number[]): Promise<void>;
+  sendAudioChunk(captureId: VoiceCaptureId, chunk: number[]): Promise<void>;
   configChanged(): Promise<void>;
 }
 
@@ -71,10 +72,11 @@ export interface SarahApi {
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;
   openDialog(view: string): Promise<void>;
   openExternalUrl(url: string): Promise<void>;
-  chat(message: string): Promise<void>;
+  chat(message: string, turnId: TurnId): Promise<IpcCommands['chat-message']['output']>;
   onChatChunk(cb: (data: BusEvents['llm:chunk']) => void): () => void;
   onChatDone(cb: (data: BusEvents['llm:done']) => void): () => void;
   onChatError(cb: (data: BusEvents['llm:error']) => void): () => void;
+  onTurnTerminal(cb: (data: BusEvents['turn:terminal']) => void): () => void;
   onStorageDegraded(cb: (data: BusEvents['storage:degraded']) => void): () => void;
   voice: SarahVoiceApi;
   connections: SarahConnectionsApi;

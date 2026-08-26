@@ -108,7 +108,12 @@ void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
 sarah.onRuntimeStatus(applyRuntimeStatus);
 
 let chatMode = false;
-let currentBubble: HTMLElement | null = null;
+const outputBubbles = new Map<string, {
+  turnId: string;
+  bubble: HTMLElement;
+  nextSequence: number;
+}>();
+const terminalTurns = new Set<string>();
 
 function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElement {
   const bubble = document.createElement('div');
@@ -136,33 +141,63 @@ chatInput.addEventListener('keydown', (e) => {
     chatInput.value = '';
 
     addBubble('user', text);
-    currentBubble = addBubble('assistant', '');
-    sarah.chat(text);
+    const turnId = crypto.randomUUID();
+    void sarah.chat(text, turnId).then((result) => {
+      if (!result.accepted) terminalTurns.add(turnId);
+    }).catch((error) => {
+      terminalTurns.add(turnId);
+      console.warn('[Dashboard] Chat submission failed:', error);
+      addBubble('error', 'Die Nachricht konnte nicht gesendet werden.');
+    });
   }
 });
 
 // Streaming chunks. A chunk without an open bubble is a late assistant output
 // (search summary, action error, timer notify) – it gets its own bubble (F2).
 sarah.onChatChunk((data) => {
-  if (!currentBubble) {
-    currentBubble = addBubble('assistant', '');
+  if (terminalTurns.has(data.turnId)) return;
+  let output = outputBubbles.get(data.outputId);
+  if (!output) {
+    output = { turnId: data.turnId, bubble: addBubble('assistant', ''), nextSequence: 0 };
+    outputBubbles.set(data.outputId, output);
   }
-  currentBubble.textContent += data.text;
+  if (data.sequence !== output.nextSequence) {
+    if (data.sequence > output.nextSequence) {
+      console.warn('[Dashboard] Out-of-order assistant chunk discarded', data);
+    }
+    return;
+  }
+  output.bubble.textContent += data.text;
+  output.nextSequence += 1;
   chatMessages.scrollTop = chatMessages.scrollHeight;
 });
 
 // Done
-sarah.onChatDone(() => {
-  currentBubble = null;
+sarah.onChatDone((data) => {
+  const output = outputBubbles.get(data.outputId);
+  if (output && data.sequence !== output.nextSequence) {
+    console.warn('[Dashboard] Assistant completion sequence mismatch', data);
+  }
+  outputBubbles.delete(data.outputId);
 });
 
 // Error
 sarah.onChatError((data) => {
-  if (currentBubble) {
-    currentBubble.remove();
-    currentBubble = null;
-  }
+  if (terminalTurns.has(data.turnId)) return;
   addBubble('error', data.message);
+});
+
+sarah.onTurnTerminal((data) => {
+  terminalTurns.add(data.turnId);
+  for (const [outputId, output] of outputBubbles) {
+    if (output.turnId !== data.turnId) continue;
+    if (data.status === 'canceled') output.bubble.remove();
+    outputBubbles.delete(outputId);
+  }
+  if (terminalTurns.size > 500) {
+    const oldest = terminalTurns.values().next().value as string | undefined;
+    if (oldest) terminalTurns.delete(oldest);
+  }
 });
 
 // One-time persistence warning (storage degraded — Sarah keeps talking, RAM only)
@@ -173,7 +208,6 @@ sarah.onStorageDegraded((data) => {
 // ── Voice Transcript → Chat Bubble ──
 sarah.voice.onTranscript((data) => {
   addBubble('user', data.text);
-  currentBubble = addBubble('assistant', '');
 });
 
 sarah.voice.onError((data) => {

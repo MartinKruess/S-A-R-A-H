@@ -32,11 +32,23 @@ export class MessageBus {
     } as TypedBusMessage<T>;
 
     const topicListeners = this.listeners.get(topic as string);
-    topicListeners?.forEach((h) => (h as MessageHandler<T>)(msg));
+    topicListeners?.forEach((handler) => {
+      try {
+        (handler as MessageHandler<T>)(msg);
+      } catch (error) {
+        console.error(`[MessageBus] listener failed for ${String(topic)}:`, error);
+      }
+    });
 
     if ((topic as string) !== '*') {
       const wildcardListeners = this.listeners.get('*');
-      wildcardListeners?.forEach((h) => (h as MessageHandler<T>)(msg));
+      wildcardListeners?.forEach((handler) => {
+        try {
+          (handler as MessageHandler<T>)(msg);
+        } catch (error) {
+          console.error(`[MessageBus] wildcard listener failed for ${String(topic)}:`, error);
+        }
+      });
     }
   }
 }

@@ -2,19 +2,35 @@ import { describe, it, expectTypeOf } from 'vitest';
 import type { BusEvents } from './bus-events.js';
 
 describe('BusEvents type map', () => {
-  it('maps chat:message to { text: string; mode: chat | voice }', () => {
-    expectTypeOf<BusEvents['chat:message']>().toEqualTypeOf<{ text: string; mode: 'chat' | 'voice' }>();
+  it('maps chat:message to the correlated turn request', () => {
+    expectTypeOf<BusEvents['chat:message']>().toMatchTypeOf<{
+      turnId: string;
+      source: 'chat' | 'voice';
+      mode: 'chat' | 'voice';
+      originalText: string;
+    }>();
   });
 
   it('maps llm:done to { fullText: string }', () => {
-    expectTypeOf<BusEvents['llm:done']>().toEqualTypeOf<{ fullText: string }>();
+    expectTypeOf<BusEvents['llm:done']>().toEqualTypeOf<{
+      turnId: string;
+      outputId: string;
+      sequence: number;
+      fullText: string;
+    }>();
   });
 
   it('maps voice:play-audio to { audio: number[]; sampleRate: number }', () => {
-    expectTypeOf<BusEvents['voice:play-audio']>().toEqualTypeOf<{ audio: number[]; sampleRate: number }>();
+    expectTypeOf<BusEvents['voice:play-audio']>().toMatchTypeOf<{
+      turnId: string;
+      outputId: string;
+      playbackId: string;
+      audio: number[];
+      sampleRate: number;
+    }>();
   });
 
-  it('maps voice:done to empty payload', () => {
-    expectTypeOf<BusEvents['voice:done']>().toEqualTypeOf<Record<string, never>>();
+  it('maps voice:done to a correlated payload', () => {
+    expectTypeOf<BusEvents['voice:done']>().toEqualTypeOf<{ turnId: string }>();
   });
 });

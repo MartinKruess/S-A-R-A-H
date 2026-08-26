@@ -117,7 +117,13 @@ export class FasterWhisperProvider implements SttProvider {
     }
   }
 
-  async transcribe(audio: Float32Array, sampleRate: number, language = 'de'): Promise<string> {
+  async transcribe(
+    audio: Float32Array,
+    sampleRate: number,
+    language = 'de',
+    signal?: AbortSignal,
+  ): Promise<string> {
+    throwIfAborted(signal);
     // Normalize the utterance level before Whisper — the capture path applies no
     // AGC, so this is what stops "only works when I shout" quiet/clipped input.
     const wavBuffer = this.encodeWav(normalizeUtterance(audio), sampleRate);
@@ -128,6 +134,7 @@ export class FasterWhisperProvider implements SttProvider {
     try {
       const res = await fetch(`${SERVER_URL}/transcribe?language=${language}&file=${encodeURIComponent(tmpPath)}`, {
         method: 'POST',
+        signal,
       });
 
       if (!res.ok) {

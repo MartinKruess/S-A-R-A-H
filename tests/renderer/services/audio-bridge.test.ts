@@ -351,7 +351,10 @@ describe('AudioBridge', () => {
     // leading samples aren't lost.
     stateChangeCb({ state: 'listening' });
     expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledTimes(1);
-    expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledWith([0.5, 0.25]);
+    expect(sarahVoiceMock.sendAudioChunk).toHaveBeenCalledWith(
+      expect.any(String),
+      [0.5, 0.25],
+    );
   });
 
   it('closes AudioContext instances on destroy', async () => {

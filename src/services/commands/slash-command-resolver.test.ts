@@ -15,6 +15,7 @@ describe('resolveSlashCommand', () => {
     expect(resolveSlashCommand(' /SpOtIfY ', commands)).toEqual({
       kind: 'custom',
       command: '/spotify',
+      arguments: '',
       expandedText: 'Öffne Spotify',
     });
   });
@@ -23,6 +24,7 @@ describe('resolveSlashCommand', () => {
     expect(resolveSlashCommand('/projekt Phase 1', commands)).toEqual({
       kind: 'custom',
       command: '/projekt',
+      arguments: 'Phase 1',
       expandedText: 'Fasse den Projektstatus zusammen.\nZusätzliche Argumente des Nutzers: Phase 1',
     });
   });
@@ -33,6 +35,7 @@ describe('resolveSlashCommand', () => {
       expect(resolveSlashCommand(command, [{ command, prompt: 'Ignorieren' }])).toEqual({
         kind: 'builtin_unavailable',
         command,
+        arguments: '',
       });
     },
   );
@@ -41,6 +44,7 @@ describe('resolveSlashCommand', () => {
     expect(resolveSlashCommand('/gibt-es-nicht', commands)).toEqual({
       kind: 'unknown',
       command: '/gibt-es-nicht',
+      arguments: '',
     });
   });
 });

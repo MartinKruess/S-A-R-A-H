@@ -7,9 +7,9 @@ const MAX_ARGUMENT_LENGTH = 500;
 
 export type SlashCommandResolution =
   | { kind: 'none' }
-  | { kind: 'custom'; command: string; expandedText: string }
-  | { kind: 'builtin_unavailable'; command: string }
-  | { kind: 'unknown'; command: string };
+  | { kind: 'custom'; command: string; arguments: string; expandedText: string }
+  | { kind: 'builtin_unavailable'; command: string; arguments: string }
+  | { kind: 'unknown'; command: string; arguments: string };
 
 /**
  * @param text - Unveränderte Nutzereingabe.
@@ -31,21 +31,28 @@ export function resolveSlashCommand(
   if (!trimmed.startsWith('/')) return { kind: 'none' };
 
   const match = trimmed.match(COMMAND_PATTERN);
-  if (!match) return { kind: 'unknown', command: trimmed.split(/\s/, 1)[0].slice(0, 100) };
+  if (!match) {
+    return {
+      kind: 'unknown',
+      command: trimmed.split(/\s/, 1)[0].slice(0, 100),
+      arguments: '',
+    };
+  }
 
   const command = match[1].toLowerCase();
   const args = (match[2] ?? '').trim().slice(0, MAX_ARGUMENT_LENGTH);
-  if (BUILTIN_COMMANDS.has(command)) return { kind: 'builtin_unavailable', command };
+  if (BUILTIN_COMMANDS.has(command)) return { kind: 'builtin_unavailable', command, arguments: args };
 
   const configured = customCommands.find((entry) => entry.command.trim().toLowerCase() === command);
-  if (!configured) return { kind: 'unknown', command };
+  if (!configured) return { kind: 'unknown', command, arguments: args };
 
   const prompt = configured.prompt.trim().slice(0, MAX_PROMPT_LENGTH);
-  if (!prompt) return { kind: 'unknown', command };
+  if (!prompt) return { kind: 'unknown', command, arguments: args };
 
   return {
     kind: 'custom',
     command,
+    arguments: args,
     expandedText: args ? `${prompt}\nZusätzliche Argumente des Nutzers: ${args}` : prompt,
   };
 }

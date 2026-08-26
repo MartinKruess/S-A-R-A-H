@@ -2,6 +2,7 @@
 
 import type { AudioConfig } from '../../core/config-schema.js';
 import type { SarahApi } from '../../core/sarah-api.js';
+import type { PlaybackId, TurnId, VoiceCaptureId } from '../../core/turn-contract.js';
 import {
   computeEffectiveGain,
   decideCaptureReset,
@@ -73,6 +74,7 @@ export class AudioBridge {
   /** True only while an utterance is actively streamed to main. Decoupled from
    *  `capturing` (mic graph warm) so the mic can stay hot between utterances. */
   private recording = false;
+  private currentCaptureId: VoiceCaptureId | null = null;
   /** Ring buffer of the most-recent capture chunks, kept even while not
    *  recording. Flushed at the start of an utterance so the leading samples
    *  captured during the warm→record handoff reach STT (fixes clipped starts). */
@@ -156,12 +158,12 @@ export class AudioBridge {
       console.warn('[AudioBridge] initial config fetch failed:', err);
     }
 
-    this.unsubState = sarah.voice.onStateChange(({ state }) => {
-      this.handleStateChange(state);
+    this.unsubState = sarah.voice.onStateChange(({ state, captureId }) => {
+      this.handleStateChange(state, captureId);
     });
 
-    this.unsubPlayAudio = sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
-      this.playAudio(audio, sampleRate);
+    this.unsubPlayAudio = sarah.voice.onPlayAudio(({ turnId, playbackId, audio, sampleRate }) => {
+      this.playAudio(turnId, playbackId, audio, sampleRate);
     });
 
     this.unsubAudioConfig = sarah.onAudioConfigChanged((audio) => {
@@ -209,8 +211,9 @@ export class AudioBridge {
     }
   }
 
-  private handleStateChange(state: string): void {
+  private handleStateChange(state: string, captureId?: VoiceCaptureId): void {
     if (state === 'listening') {
+      this.currentCaptureId = captureId ?? crypto.randomUUID();
       this.stopPlayback();
       this.recording = true;
       // Ensure the mic graph is warm (it usually already is from start() or a
@@ -225,6 +228,7 @@ export class AudioBridge {
       // warm. Capture is torn down only by destroy() and the device-change reset
       // path in applyAudioConfig.
       this.recording = false;
+      this.currentCaptureId = null;
     }
   }
 
@@ -383,7 +387,9 @@ export class AudioBridge {
         // short-circuits IPC (Lücke #13): the GainNode produces zeros, but we
         // skip the send to avoid flooding STT with silence.
         if (!this.recording || this.muted) return;
-        sarah.voice.sendAudioChunk(Array.from(samples));
+        if (this.currentCaptureId) {
+          sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(samples));
+        }
       };
 
       this.sourceNode.connect(this.captureGain);
@@ -434,7 +440,9 @@ export class AudioBridge {
   private flushPreRoll(): void {
     if (!this.muted) {
       for (const chunk of this.preRoll) {
-        sarah.voice.sendAudioChunk(Array.from(chunk));
+        if (this.currentCaptureId) {
+          sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(chunk));
+        }
       }
     }
     this.preRoll = [];
@@ -646,7 +654,12 @@ export class AudioBridge {
     this.outputTimeBuffer = null;
   }
 
-  private async playAudio(audio: number[], sampleRate: number): Promise<void> {
+  private async playAudio(
+    turnId: TurnId,
+    playbackId: PlaybackId,
+    audio: number[],
+    sampleRate: number,
+  ): Promise<void> {
     try {
       await this.ensurePlaybackGraph(sampleRate);
       const ctx = this.playbackCtx;
@@ -654,7 +667,7 @@ export class AudioBridge {
       if (!ctx || !analyser) {
         // ensurePlaybackGraph should always set these up; if it didn't,
         // the error branch below already called playbackDone().
-        sarah.voice.playbackDone();
+        await sarah.voice.playbackDone(turnId, playbackId);
         return;
       }
 
@@ -676,14 +689,14 @@ export class AudioBridge {
         if (this.outputPlaybackEndedAt === null) {
           this.outputPlaybackEndedAt = performance.now();
         }
-        sarah.voice.playbackDone();
+        void sarah.voice.playbackDone(turnId, playbackId);
       };
 
       source.start();
       this.startOutputLevelLoop();
     } catch (err) {
       console.error('[AudioBridge] Playback failed:', err);
-      sarah.voice.playbackDone();
+      await sarah.voice.playbackDone(turnId, playbackId);
     }
   }
 

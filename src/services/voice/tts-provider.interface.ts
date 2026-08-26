@@ -8,7 +8,7 @@ export interface TtsProvider {
   init(signal?: AbortSignal): Promise<void>;
 
   /** Convert text to PCM audio. Returns raw PCM Float32Array at 22050 Hz. */
-  speak(text: string): Promise<Float32Array>;
+  speak(text: string, signal?: AbortSignal): Promise<Float32Array>;
 
   /** Stop any in-progress speech generation and playback */
   stop(): void;

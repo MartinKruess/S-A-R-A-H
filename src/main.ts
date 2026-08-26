@@ -254,10 +254,11 @@ app.whenReady().then(async () => {
     stopVoiceLevel = null;
   }, 'before_services');
 
-  registerVoiceHandlers(ipcMain, {
+  const stopVoiceHandlers = registerVoiceHandlers(ipcMain, {
     getAppContext,
     onChunk: voiceLevel.onChunk,
   });
+  appContext.lifecycle.registerCleanup('voice-ipc-handlers', stopVoiceHandlers, 'before_services');
 
   const stopBootHandlers = registerBootHandlers({
     getMainWindow,

@@ -151,7 +151,13 @@ describe('VoiceService', () => {
   it('has correct id, initial status, and subscriptions', () => {
     expect(service.id).toBe('voice');
     expect(service.status).toBe('pending');
-    expect(service.subscriptions).toEqual(['llm:chunk', 'llm:done', 'llm:error', 'llm:filler']);
+    expect(service.subscriptions).toEqual([
+      'llm:chunk',
+      'llm:done',
+      'llm:error',
+      'llm:filler',
+      'turn:terminal',
+    ]);
     expect(service.voiceState).toBe('idle');
   });
 
@@ -268,11 +274,16 @@ describe('VoiceService', () => {
     await flush();
 
     expect(audio.stopRecording).toHaveBeenCalled();
-    expect(stt.transcribe).toHaveBeenCalledWith(expect.any(Float32Array), 16_000, 'de');
+    expect(stt.transcribe).toHaveBeenCalledWith(
+      expect.any(Float32Array),
+      16_000,
+      'de',
+      expect.any(AbortSignal),
+    );
     expect(transcriptListener).toHaveBeenCalledOnce();
     expect(transcriptListener.mock.calls[0][0].data.text).toBe('Hallo Sarah');
     expect(chatListener).toHaveBeenCalledOnce();
-    expect(chatListener.mock.calls[0][0].data.text).toBe('Hallo Sarah');
+    expect(chatListener.mock.calls[0][0].data.originalText).toBe('Hallo Sarah');
   });
 
   // --- 8. Detects abort phrase -> does not emit chat:message ---
@@ -335,8 +346,8 @@ describe('VoiceService', () => {
     await flush();
 
     // TTS should have been called for both sentences
-    expect(tts.speak).toHaveBeenCalledWith('Hallo!');
-    expect(tts.speak).toHaveBeenCalledWith('Wie kann ich helfen?');
+    expect(tts.speak).toHaveBeenCalledWith('Hallo!', expect.any(AbortSignal));
+    expect(tts.speak).toHaveBeenCalledWith('Wie kann ich helfen?', expect.any(AbortSignal));
     expect(doneListener).toHaveBeenCalledOnce();
   });
 
@@ -378,7 +389,7 @@ describe('VoiceService', () => {
     await flush();
     await flush();
 
-    expect(tts.speak).toHaveBeenCalledWith('Hallo!');
+    expect(tts.speak).toHaveBeenCalledWith('Hallo!', expect.any(AbortSignal));
   });
 
   it('does not speak when voice mode is off', async () => {
@@ -415,7 +426,7 @@ describe('VoiceService', () => {
     service.onMessage(makeMsg('llm:filler', { text: 'Einen Moment.' }));
     await flush();
 
-    expect(tts.speak).toHaveBeenCalledWith('Einen Moment.');
+    expect(tts.speak).toHaveBeenCalledWith('Einen Moment.', expect.any(AbortSignal));
     // The filler is a spoken bridge, not turn content: no state transition.
     expect(service.voiceState).toBe(stateBefore);
     expect(stateListener).not.toHaveBeenCalled();
@@ -624,11 +635,10 @@ describe('VoiceService', () => {
 
   // --- 14. State transition guard ---
 
-  it('ignores onPttDown during active transition', async () => {
+  it('interrupts processing and starts a fresh recording on a second PTT down', async () => {
     // Make STT slow so the transition stays active
-    let resolveTranscribe: (value: string) => void;
     (stt.transcribe as ReturnType<typeof vi.fn>).mockImplementation(
-      () => new Promise<string>((resolve) => { resolveTranscribe = resolve; }),
+      () => new Promise<string>(() => {}),
     );
 
     await service.init();
@@ -640,18 +650,16 @@ describe('VoiceService', () => {
     // PTT down -> listening, PTT up -> starts async stopListeningAndProcess (transition active)
     onDown();
     onUp();
+    await flush();
 
     // Reset the startRecording call count after the initial onDown
     (audio.startRecording as ReturnType<typeof vi.fn>).mockClear();
 
-    // PTT down again while transition is still active (STT hasn't resolved)
+    // PTT down again while STT is still active: Layer 1 treats this as barge-in.
     onDown();
 
-    // startListening should NOT have been called again
-    expect(audio.startRecording).not.toHaveBeenCalled();
+    expect(audio.startRecording).toHaveBeenCalledOnce();
 
-    // Resolve the pending transcription to clean up
-    resolveTranscribe!('test');
     await flush();
   });
 
@@ -743,9 +751,9 @@ describe('VoiceService', () => {
     await flush();
 
     // TTS should have been called for all 3 segments
-    expect(tts.speak).toHaveBeenCalledWith('Erste Antwort.');
-    expect(tts.speak).toHaveBeenCalledWith('Zweite Antwort.');
-    expect(tts.speak).toHaveBeenCalledWith('Rest');
+    expect(tts.speak).toHaveBeenCalledWith('Erste Antwort.', expect.any(AbortSignal));
+    expect(tts.speak).toHaveBeenCalledWith('Zweite Antwort.', expect.any(AbortSignal));
+    expect(tts.speak).toHaveBeenCalledWith('Rest', expect.any(AbortSignal));
   });
 
   // --- 17. llm:error during streaming flushes and lets queue finish ---
@@ -825,7 +833,7 @@ describe('VoiceService partial failure (voice:capability)', () => {
     expect(stt.transcribe).not.toHaveBeenCalled();
     expect(voiceError).toHaveBeenCalledOnce();
     expect(voiceError.mock.calls[0][0].data.message).toBe(STT_UNAVAILABLE_MESSAGE);
-    expect(tts.speak).toHaveBeenCalledWith(STT_UNAVAILABLE_MESSAGE);
+    expect(tts.speak).toHaveBeenCalledWith(STT_UNAVAILABLE_MESSAGE, expect.any(AbortSignal));
     await service.destroy();
   });
 
@@ -865,7 +873,10 @@ describe('TTS deferral while listening (F9)', () => {
 
     (service as unknown as { setState: (s: string) => void }).setState('processing');
     await new Promise((r) => setTimeout(r, 10));
-    expect(tts.speak).toHaveBeenCalledWith('Dein Timer ist abgelaufen.'); // danach: gesprochen
+    expect(tts.speak).toHaveBeenCalledWith(
+      'Dein Timer ist abgelaufen.',
+      expect.any(AbortSignal),
+    ); // danach: gesprochen
   });
 
   it('does not defer when idle', async () => {
@@ -941,7 +952,7 @@ describe('TTS deferral while listening (F9)', () => {
     await flush();
 
     // Turn 1's deferred sentence is flushed into the TTS queue and spoken.
-    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn eins.');
+    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn eins.', expect.any(AbortSignal));
 
     // Let the flushed audio fully play out (voice:play-audio -> voice:playback-done).
     await flush();
@@ -964,7 +975,7 @@ describe('TTS deferral while listening (F9)', () => {
     await flush();
     await flush();
 
-    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn zwei.');
+    expect(tts.speak).toHaveBeenCalledWith('Antwort auf Turn zwei.', expect.any(AbortSignal));
     expect(doneListener).toHaveBeenCalledOnce();
     expect(service.voiceState).toBe('idle');
   });

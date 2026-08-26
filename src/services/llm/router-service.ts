@@ -1,6 +1,7 @@
 // src/services/llm/router-service.ts
 import type { SarahService } from '../../core/service.interface.js';
 import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
+import type { BusEvents } from '../../core/bus-events.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import { buildSystemPrompt } from './prompt-builder.js';
@@ -15,8 +16,17 @@ import { MediaContext } from './media-context.js';
 import type { MediaAction } from '../actions/media-controller.js';
 import { getActionAcknowledgement } from '../actions/action-feedback.js';
 import { resolveProfileResponse } from './profile-response.js';
-import { resolveSlashCommand } from '../commands/slash-command-resolver.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
+import {
+  prepareTurnEnvelope,
+  type TurnEnvelope,
+  type TurnId,
+  type TurnMode,
+  type TurnRequest,
+  type TurnTerminalStatus,
+} from '../../core/turn-contract.js';
+import { TurnCoordinator, TurnQueueFullError } from '../../core/turn-coordinator.js';
+import { runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -26,7 +36,7 @@ const ERROR_MESSAGES: Record<string, string> = {
 
 export class RouterService implements SarahService {
   readonly id = 'router';
-  readonly subscriptions = ['chat:message', 'action:result', 'action:notify'] as const;
+  readonly subscriptions = ['chat:message', 'turn:cancel', 'action:result', 'action:notify'] as const;
   status: ServiceStatus = 'pending';
 
   private history: ChatMessage[] = [];
@@ -36,8 +46,20 @@ export class RouterService implements SarahService {
   private startContext: ChatMessage[] = [];
   private persistenceWarned = false;
   private outputQueue: Promise<void> = Promise.resolve();
-  private pendingActions = new Map<string, { action: string }>();
-  private turnInFlight: Promise<void> | null = null;
+  private readonly coordinator = new TurnCoordinator();
+  private readonly terminalTurns = new Set<TurnId>();
+  private readonly terminalTurnOrder: TurnId[] = [];
+  private readonly terminalWaiters = new Map<TurnId, Array<() => void>>();
+  private readonly turnDrafts = new Map<TurnId, {
+    historyUser: string;
+    persistedUser: string;
+    assistants: string[];
+  }>();
+  private pendingActions = new Map<string, {
+    turnId: TurnId;
+    action: string;
+    resolve: (result: BusEvents['action:result']) => void;
+  }>();
 
   constructor(
     private context: AppContext,
@@ -103,7 +125,9 @@ export class RouterService implements SarahService {
   }
 
   async destroy(signal?: AbortSignal): Promise<void> {
+    this.coordinator.destroy();
     this.pendingActions.clear();
+    this.turnDrafts.clear();
     this.history = [];
     try {
       await this.modelRuntime.destroy(signal);
@@ -114,21 +138,20 @@ export class RouterService implements SarahService {
 
   onMessage(msg: TypedBusMessage): void {
     if (msg.topic === 'chat:message') {
-      const { text, mode } = msg.data;
-      this.handleChatMessage(text, mode).catch(() => {
-        this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES.connection });
-      });
+      void this.handleTurnRequest(msg.data);
+    } else if (msg.topic === 'turn:cancel') {
+      this.coordinator.cancel(msg.data.turnId, msg.data.reason);
     } else if (msg.topic === 'action:result') {
-      const { requestId, action, speak } = msg.data;
+      const { requestId, turnId, action } = msg.data;
       const pending = this.pendingActions.get(requestId);
-      if (!pending || pending.action !== action) {
-        console.warn('[Router] Dropping unknown/stale action:result', requestId, action);
+      if (!pending || pending.action !== action || pending.turnId !== turnId) {
+        console.warn('[Router] Dropping unknown/stale action:result', turnId, requestId, action);
         return;
       }
       this.pendingActions.delete(requestId);
-      if (speak) this.speakAfterCurrentTurn(speak);
+      pending.resolve(msg.data);
     } else if (msg.topic === 'action:notify') {
-      this.speakAfterCurrentTurn(msg.data.speak);
+      this.emitSystemNotification(msg.data.notificationId, msg.data.speak);
     }
   }
 
@@ -139,59 +162,98 @@ export class RouterService implements SarahService {
    * notification can never speak ahead of the turn's own response (no
    * interleaved output, Spec §3). Once no turn is in flight, speak right away.
    */
-  private speakAfterCurrentTurn(text: string): void {
-    const turn = this.turnInFlight;
-    if (turn) {
-      void turn.finally(() => this.emitAssistantResponse(text));
-    } else {
-      void this.emitAssistantResponse(text);
-    }
+  private emitSystemNotification(turnId: TurnId, text: string): void {
+    const emit = (): void => { void this.emitAssistantResponse(turnId, text).then(
+      () => this.emitTerminal(turnId, 'done'),
+      () => this.emitTerminal(turnId, 'error', ERROR_MESSAGES.connection),
+    ); };
+    const activeTurnId = this.coordinator.activeTurnId;
+    if (activeTurnId) this.afterTerminal(activeTurnId, emit);
+    else emit();
   }
 
-  async handleChatMessage(text: string, mode: 'chat' | 'voice' = 'chat'): Promise<void> {
+  async handleChatMessage(text: string, mode: TurnMode = 'chat'): Promise<void> {
+    const turnId = randomUUID();
+    return this.handleTurnRequest({
+      turnId,
+      source: mode === 'voice' ? 'voice' : 'chat',
+      mode,
+      originalText: text,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async handleTurnRequest(request: TurnRequest): Promise<void> {
+    if (this.terminalTurns.has(request.turnId) || this.coordinator.hasTurn(request.turnId)) {
+      console.warn('[Router] Duplicate turn refused:', request.turnId);
+      return;
+    }
     if (this.status !== 'running') {
-      this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES.unavailable });
+      this.emitError(request.turnId, ERROR_MESSAGES.unavailable);
+      this.emitTerminal(request.turnId, 'error', ERROR_MESSAGES.unavailable);
       return;
     }
 
-    const command = resolveSlashCommand(
-      text,
+    const envelope = prepareTurnEnvelope(
+      request,
       this.context.parsedConfig.controls?.customCommands ?? [],
     );
-    const effectiveText = command.kind === 'custom' ? command.expandedText : text;
-    const immediateResponse = command.kind === 'builtin_unavailable'
-      ? `Der Slash-Command ${command.command} ist noch nicht verfügbar.`
-      : command.kind === 'unknown'
-        ? `Diesen Slash-Command kenne ich nicht: ${command.command}.`
-        : null;
-
-    this.history.push({ role: 'user', content: effectiveText });
-
-    // Claim this turn's slot synchronously (before any await) so a
-    // concurrently racing action:result/action:notify (see
-    // speakAfterCurrentTurn) waits for this turn instead of jumping ahead.
-    const thisTurn = immediateResponse
-      ? this.runDeterministicTurn(effectiveText, immediateResponse)
-      : this.runTurn(effectiveText, mode);
-    this.turnInFlight = thisTurn;
     try {
-      await thisTurn;
-    } finally {
-      if (this.turnInFlight === thisTurn) this.turnInFlight = null;
+      await this.coordinator.enqueue(envelope, (signal) => this.executeTurn(envelope, signal));
+    } catch (error) {
+      if (error instanceof TurnQueueFullError) {
+        const message = 'Zu viele Anfragen gleichzeitig. Bitte warte kurz.';
+        this.emitError(request.turnId, message);
+        this.emitTerminal(request.turnId, 'error', message);
+      } else if (error instanceof Error && error.name === 'AbortError') {
+        this.emitTerminal(request.turnId, 'canceled');
+      }
     }
   }
 
-  private async runDeterministicTurn(text: string, response: string): Promise<void> {
-    await this.persistMessage('user', text);
-    await this.emitAssistantResponse(response);
+  private async executeTurn(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    this.turnDrafts.set(envelope.turnId, {
+      historyUser: envelope.effectiveText,
+      persistedUser: envelope.originalText,
+      assistants: [],
+    });
+    try {
+      throwIfAborted(signal);
+      const immediateResponse = envelope.command.kind === 'builtin_unavailable'
+        ? `Der Slash-Command ${envelope.command.command} ist noch nicht verfügbar.`
+        : envelope.command.kind === 'unknown'
+          ? `Diesen Slash-Command kenne ich nicht: ${envelope.command.command}.`
+          : null;
+
+      if (immediateResponse) {
+        await this.emitAssistantResponse(envelope.turnId, immediateResponse, signal);
+      } else {
+        await this.runTurn(envelope, signal);
+      }
+      throwIfAborted(signal);
+      await this.commitTurn(envelope.turnId);
+      this.emitTerminal(envelope.turnId, 'done');
+    } catch (error) {
+      this.turnDrafts.delete(envelope.turnId);
+      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        this.emitTerminal(envelope.turnId, 'canceled');
+        return;
+      }
+      const message = error instanceof Error && error.name === 'TimeoutError'
+        ? ERROR_MESSAGES.timeout
+        : ERROR_MESSAGES.connection;
+      this.emitError(envelope.turnId, message);
+      this.emitTerminal(envelope.turnId, 'error', message);
+    }
   }
 
-  private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
-    await this.persistMessage('user', text);
+  private async runTurn(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    const { effectiveText: text, mode, turnId } = envelope;
+    throwIfAborted(signal);
 
     const profileResponse = resolveProfileResponse(text, this.context.parsedConfig.profile);
     if (profileResponse) {
-      await this.emitAssistantResponse(profileResponse);
+      await this.emitAssistantResponse(turnId, profileResponse, signal);
       return;
     }
 
@@ -199,11 +261,8 @@ export class RouterService implements SarahService {
     // fires in the warm-9B window, where terse words bypass the gate.
     const hit = this.mediaContext.resolve(text, Date.now());
     if (hit) {
-      const requestId = randomUUID();
-      this.pendingActions.set(requestId, { action: hit.action });
-      this.context.bus.emit(this.id, 'action:request', { requestId, action: hit.action, param: '' });
       this.mediaContext.record(hit.action, Date.now());
-      await this.emitAssistantResponse(hit.speak);
+      await this.dispatchAction(envelope, hit.action, '', hit.speak, signal);
       return;
     }
 
@@ -214,29 +273,30 @@ export class RouterService implements SarahService {
           // routing target isn't known yet at swap start, so use a short/neutral
           // phrase; the real action announcement follows over the normal path.
           if (mode === 'voice') {
-            this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('switchingBack') });
+            this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('switchingBack') });
           }
-          await this.routeAndRespond(text, mode);
+          await this.routeAndRespond(envelope, signal);
         } else {
-          await this.runWorker(mode);
+          await this.runWorker(envelope, signal);
         }
       } else {
-        await this.routeAndRespond(text, mode);
+        await this.routeAndRespond(envelope, signal);
       }
     } catch (err) {
+      throwIfAborted(signal);
       if (this.isWorkerUnavailable()) {
-        await this.emitAssistantResponse(WORKER_UNAVAILABLE_MESSAGE);
+        await this.emitAssistantResponse(turnId, WORKER_UNAVAILABLE_MESSAGE, signal);
         return;
       }
-      const errorKey = err instanceof Error && err.message === 'timeout' ? 'timeout' : 'connection';
-      this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES[errorKey] });
+      throw err;
     }
   }
 
-  private async routeAndRespond(text: string, mode: 'chat' | 'voice'): Promise<void> {
-    const result = await this.modelRuntime.route(text);
-    if (!this.isOperational()) return;
-    this.context.bus.emit(this.id, 'perf:timing', { label: 'router', ms: result.tookMs });
+  private async routeAndRespond(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    const { effectiveText: text, mode, turnId } = envelope;
+    const result = await this.modelRuntime.route(text, signal);
+    if (!this.isTurnOperational(turnId, signal)) return;
+    this.context.bus.emit(this.id, 'perf:timing', { turnId, label: 'router', ms: result.tookMs });
 
     if (!result.hadTag) {
       console.warn('[Router] No route tag in 2B response, falling back to self');
@@ -246,14 +306,17 @@ export class RouterService implements SarahService {
       const { action, param } = result.parsed;
       if (!isActionName(action)) {
         console.warn('[Router] Unknown action name, refusing:', action, 'raw param:', param);
-        await this.emitAssistantResponse('Das kann ich noch nicht.');
+        await this.emitAssistantResponse(turnId, 'Das kann ich noch nicht.', signal);
         return;
       }
-      const requestId = randomUUID();
-      this.pendingActions.set(requestId, { action });
-      this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
       if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
-      await this.emitAssistantResponse(getActionAcknowledgement(action, param));
+      await this.dispatchAction(
+        envelope,
+        action,
+        param,
+        getActionAcknowledgement(action, param),
+        signal,
+      );
       return;
     }
 
@@ -262,6 +325,7 @@ export class RouterService implements SarahService {
       ? result.parsed.route
       : 'local_worker' as const;
     this.context.bus.emit(this.id, 'llm:routing', {
+      turnId,
       from: 'router',
       to: busTarget,
     });
@@ -270,34 +334,43 @@ export class RouterService implements SarahService {
     // before awaiting the swap so TTS synthesis fills the load time. The real
     // worker answer follows over the normal path.
     if (mode === 'voice') {
-      this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('frontendThinking') });
+      this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('frontendThinking') });
     }
     this.context.bus.emit(this.id, 'llm:model-swap', {
+      turnId,
       loading: this.context.parsedConfig.llm.workerModel,
       unloading: this.context.parsedConfig.llm.routerModel,
     });
 
-    await this.runWorker(mode);
+    await this.runWorker(envelope, signal);
   }
 
-  private async runWorker(mode: 'chat' | 'voice'): Promise<void> {
+  private async runWorker(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    const { turnId, mode } = envelope;
     const systemPrompt = buildSystemPrompt(this.context.parsedConfig, mode);
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
-    const messages = this.buildMessages(systemPrompt, responseStyle);
+    const messages = this.buildMessages(systemPrompt, responseStyle, envelope.effectiveText);
+    const outputId = randomUUID();
+    let sequence = 0;
 
     // The whole stream is ONE queue job: late action results wait, chunks never interleave.
     await this.enqueueOutput(async () => {
-      if (this.status !== 'running') return;
+      if (!this.isTurnOperational(turnId, signal)) return;
       const { fullText, tookMs } = await this.modelRuntime.streamWorker(messages, responseStyle, (chunk) => {
-        if (this.isOperational()) {
-          this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
+        if (this.isTurnOperational(turnId, signal)) {
+          this.context.bus.emit(this.id, 'llm:chunk', {
+            turnId,
+            outputId,
+            sequence: sequence++,
+            text: chunk,
+          });
         }
-      });
-      if (!this.isOperational()) return;
-      this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
-      this.history.push({ role: 'assistant', content: fullText });
-      await this.persistMessage('assistant', fullText);
-      this.context.bus.emit(this.id, 'llm:done', { fullText });
+      }, signal);
+      if (!this.isTurnOperational(turnId, signal)) return;
+      this.context.bus.emit(this.id, 'perf:timing', { turnId, label: 'worker', ms: tookMs });
+      this.recordAssistantOutput(turnId, fullText);
+      if (!this.isTurnOperational(turnId, signal)) return;
+      this.context.bus.emit(this.id, 'llm:done', { turnId, outputId, sequence, fullText });
     });
   }
 
@@ -314,21 +387,63 @@ export class RouterService implements SarahService {
    * The single exit for assistant text (Spec §3): llm:chunk + llm:done,
    * history.push and persistence via persistMessage — never a raw insert.
    */
-  private emitAssistantResponse(text: string): Promise<void> {
+  private emitAssistantResponse(turnId: TurnId, text: string, signal?: AbortSignal): Promise<void> {
+    const outputId = randomUUID();
     return this.enqueueOutput(async () => {
-      if (this.status !== 'running') return; // shutdown guard
-      this.context.bus.emit(this.id, 'llm:chunk', { text });
-      this.context.bus.emit(this.id, 'llm:done', { fullText: text });
-      this.history.push({ role: 'assistant', content: text });
-      await this.persistMessage('assistant', text);
+      if (!this.isTurnOperational(turnId, signal)) return;
+      this.context.bus.emit(this.id, 'llm:chunk', { turnId, outputId, sequence: 0, text });
+      this.context.bus.emit(this.id, 'llm:done', { turnId, outputId, sequence: 1, fullText: text });
+      this.recordAssistantOutput(turnId, text);
+      if (!this.turnDrafts.has(turnId)) {
+        this.history.push({ role: 'assistant', content: text });
+        await this.persistMessage('assistant', text);
+      }
     });
   }
 
-  private buildMessages(systemPrompt: string, responseStyle: string): ChatMessage[] {
+  private async dispatchAction(
+    envelope: TurnEnvelope,
+    action: string,
+    param: string,
+    acknowledgement: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const requestId = randomUUID();
+    const resultPromise = new Promise<BusEvents['action:result']>((resolve) => {
+      this.pendingActions.set(requestId, { turnId: envelope.turnId, action, resolve });
+    });
+    this.context.bus.emit(this.id, 'action:request', {
+      turnId: envelope.turnId,
+      requestId,
+      action,
+      param,
+    });
+    await this.emitAssistantResponse(envelope.turnId, acknowledgement, signal);
+    try {
+      const result = await runWithTimeout(
+        () => resultPromise,
+        120_000,
+        'Action timed out',
+        signal,
+      );
+      if (result.speak) await this.emitAssistantResponse(envelope.turnId, result.speak, signal);
+    } catch (error) {
+      this.context.bus.emit(this.id, 'action:cancel', {
+        turnId: envelope.turnId,
+        requestId,
+        reason: error instanceof Error ? error.message : 'Action canceled',
+      });
+      throw error;
+    } finally {
+      this.pendingActions.delete(requestId);
+    }
+  }
+
+  private buildMessages(systemPrompt: string, responseStyle: string, currentUser: string): ChatMessage[] {
     return buildContextWindow({
       systemPrompt,
       startContext: this.startContext,
-      history: this.history,
+      history: [...this.history, { role: 'user', content: currentUser }],
       numCtx: this.context.parsedConfig.llm.workerOptions.num_ctx,
       numPredict: NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel,
     });
@@ -364,11 +479,63 @@ export class RouterService implements SarahService {
     });
   }
 
+  private recordAssistantOutput(turnId: TurnId, text: string): void {
+    this.turnDrafts.get(turnId)?.assistants.push(text);
+  }
+
+  private async commitTurn(turnId: TurnId): Promise<void> {
+    const draft = this.turnDrafts.get(turnId);
+    if (!draft) return;
+    this.turnDrafts.delete(turnId);
+    this.history.push({ role: 'user', content: draft.historyUser });
+    for (const content of draft.assistants) {
+      this.history.push({ role: 'assistant', content });
+    }
+    await this.persistMessage('user', draft.persistedUser);
+    for (const content of draft.assistants) {
+      await this.persistMessage('assistant', content);
+    }
+  }
+
   private isOperational(): boolean {
     const lifecycleState = this.context.lifecycle?.snapshot.state;
     return this.status === 'running'
       && lifecycleState !== 'stopping'
       && lifecycleState !== 'stopped';
+  }
+
+  private isTurnOperational(turnId: TurnId, signal?: AbortSignal): boolean {
+    if (signal?.aborted) return false;
+    if (turnId === this.coordinator.activeTurnId) return this.coordinator.isCurrent(turnId);
+    return this.isOperational() && !this.terminalTurns.has(turnId);
+  }
+
+  private emitError(turnId: TurnId, message: string): void {
+    if (this.terminalTurns.has(turnId)) return;
+    this.context.bus.emit(this.id, 'llm:error', { turnId, message });
+  }
+
+  private emitTerminal(turnId: TurnId, status: TurnTerminalStatus, message?: string): void {
+    if (this.terminalTurns.has(turnId)) return;
+    this.terminalTurns.add(turnId);
+    this.terminalTurnOrder.push(turnId);
+    if (this.terminalTurnOrder.length > 2_000) {
+      const expired = this.terminalTurnOrder.shift();
+      if (expired) this.terminalTurns.delete(expired);
+    }
+    this.context.bus.emit(this.id, 'turn:terminal', { turnId, status, ...(message ? { message } : {}) });
+    for (const resolve of this.terminalWaiters.get(turnId) ?? []) resolve();
+    this.terminalWaiters.delete(turnId);
+  }
+
+  private afterTerminal(turnId: TurnId, callback: () => void): void {
+    if (this.terminalTurns.has(turnId)) {
+      callback();
+      return;
+    }
+    const waiters = this.terminalWaiters.get(turnId) ?? [];
+    waiters.push(callback);
+    this.terminalWaiters.set(turnId, waiters);
   }
 
   private isWorkerUnavailable(): boolean {

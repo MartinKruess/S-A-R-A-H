@@ -8,6 +8,8 @@ import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
 
+const TURN_ID = 'turn-1';
+
 function makeSearch(over: {
   runSearch?: ReturnType<typeof vi.fn<SearchLike['runSearch']>>;
   showResult?: ReturnType<typeof vi.fn<SearchLike['showResult']>>;
@@ -59,11 +61,13 @@ function makeService(over: {
   // before init()) — ActionService itself deliberately never self-subscribes, so tests
   // replicate that wiring here, same as router-service.test.ts does for its subscriptions.
   bus.on('action:request', (msg) => service.onMessage(msg));
+  bus.on('action:cancel', (msg) => service.onMessage(msg));
+  bus.on('turn:cancel', (msg) => service.onMessage(msg));
   return { bus, results, service, spotify, media };
 }
 
 async function request(bus: MessageBus, action: string, param: string): Promise<void> {
-  bus.emit('test', 'action:request', { requestId: 'rid-1', action, param });
+  bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'rid-1', action, param });
   await new Promise((r) => setTimeout(r, 10));
 }
 
@@ -72,7 +76,7 @@ describe('ActionService', () => {
     const { bus, results, service } = makeService();
     await service.init();
     await request(bus, 'open_program', 'spotify');
-    expect(results).toEqual([{ requestId: 'rid-1', action: 'open_program', ok: true }]);
+    expect(results).toEqual([{ turnId: TURN_ID, requestId: 'rid-1', action: 'open_program', ok: true }]);
   });
 
   it('zod failure → honest refusal, dispatch never runs', async () => {
@@ -80,7 +84,7 @@ describe('ActionService', () => {
     const { bus, results, service } = makeService({ launcher: { launch } });
     await service.init();
     await request(bus, 'set_volume', '150');
-    expect(results[0]).toEqual({ requestId: 'rid-1', action: 'set_volume', ok: false, speak: 'Das kann ich noch nicht.' });
+    expect(results[0]).toEqual({ turnId: TURN_ID, requestId: 'rid-1', action: 'set_volume', ok: false, speak: 'Das kann ich noch nicht.' });
     expect(launch).not.toHaveBeenCalled();
   });
 
@@ -96,7 +100,7 @@ describe('ActionService', () => {
     const { bus, results, service } = makeService({ search: { runSearch: vi.fn<SearchLike['runSearch']>().mockRejectedValue(new Error('captcha')) } });
     await service.init();
     await request(bus, 'web_search', 'hotels kiel');
-    expect(results[0]).toEqual({ requestId: 'rid-1', action: 'web_search', ok: false, speak: 'Meine Suche klemmt gerade.' });
+    expect(results[0]).toEqual({ turnId: TURN_ID, requestId: 'rid-1', action: 'web_search', ok: false, speak: 'Meine Suche klemmt gerade.' });
   });
 
   it('dispatches spotify_volume to SpotifyActions.setVolume with the parsed number', async () => {
@@ -127,9 +131,9 @@ describe('ActionService', () => {
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();
-    bus.emit('test', 'action:request', { requestId: 'r', action: 'set_timer', param: '1' });
+    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'r', action: 'set_timer', param: '1' });
     await vi.advanceTimersByTimeAsync(60_000 + 50);
-    expect(notifies).toEqual([{ speak: 'Dein 1-Minuten-Timer ist abgelaufen.' }]);
+    expect(notifies).toEqual([expect.objectContaining({ speak: 'Dein 1-Minuten-Timer ist abgelaufen.' })]);
     vi.useRealTimers();
   });
 
@@ -139,7 +143,7 @@ describe('ActionService', () => {
     await service.init();
     await request(bus, 'media_next', '');
     expect(media.next).toHaveBeenCalledWith('', expect.any(AbortSignal));
-    expect(results[0]).toEqual({ requestId: 'rid-1', action: 'media_next', ok: true });
+    expect(results[0]).toEqual({ turnId: TURN_ID, requestId: 'rid-1', action: 'media_next', ok: true });
   });
 
   it('media_pause passes a named target through to the controller', async () => {
@@ -161,11 +165,11 @@ describe('ActionService', () => {
     });
     const { bus, results, service } = makeService({ media });
     await service.init();
-    bus.emit('test', 'action:request', { requestId: 'before', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'before', action: 'media_next', param: '' });
     await vi.waitFor(() => expect(actionSignal).toBeDefined());
 
     await service.destroy();
-    bus.emit('test', 'action:request', { requestId: 'after', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'after', action: 'media_next', param: '' });
     await Promise.resolve();
 
     expect(actionSignal?.aborted).toBe(true);
@@ -178,12 +182,86 @@ describe('ActionService', () => {
     media.next = vi.fn(async () => new Promise<MediaResult>(() => {}));
     const { bus, results, service } = makeService({ media, drainTimeoutMs: 5 });
     await service.init();
-    bus.emit('test', 'action:request', { requestId: 'blocked', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'blocked', action: 'media_next', param: '' });
     await vi.waitFor(() => expect(media.next).toHaveBeenCalledOnce());
 
     await service.destroy();
 
     expect(service.status).toBe('stopped');
+    expect(results).toEqual([]);
+  });
+
+  it('deduplicates a repeated requestId before a side effect can run twice', async () => {
+    const media = makeMedia();
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    const payload = {
+      turnId: TURN_ID,
+      requestId: 'duplicate',
+      action: 'media_next',
+      param: '',
+    };
+
+    bus.emit('test', 'action:request', payload);
+    bus.emit('test', 'action:request', payload);
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+
+    expect(media.next).toHaveBeenCalledOnce();
+    expect(results).toHaveLength(1);
+  });
+
+  it('aborts only actions belonging to the canceled turn and suppresses their result', async () => {
+    let actionSignal: AbortSignal | undefined;
+    const media = makeMedia();
+    media.next = vi.fn((_target: string, signal?: AbortSignal) => {
+      actionSignal = signal;
+      return new Promise<MediaResult>((resolve) => {
+        signal?.addEventListener('abort', () => resolve({ ok: false }), { once: true });
+      });
+    });
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'cancel-me',
+      action: 'media_next',
+      param: '',
+    });
+    await vi.waitFor(() => expect(actionSignal).toBeDefined());
+
+    bus.emit('test', 'turn:cancel', { turnId: TURN_ID, reason: 'barge-in' });
+    await vi.waitFor(() => expect(actionSignal?.aborted).toBe(true));
+    await Promise.resolve();
+
+    expect(results).toEqual([]);
+  });
+
+  it('aborts only the matching request when an action deadline expires', async () => {
+    const signals = new Map<string, AbortSignal>();
+    const media = makeMedia();
+    media.next = vi.fn((_target: string, signal?: AbortSignal) => {
+      if (signal) signals.set(`request-${signals.size + 1}`, signal);
+      return new Promise<MediaResult>((resolve) => {
+        signal?.addEventListener('abort', () => resolve({ ok: false }), { once: true });
+      });
+    });
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'deadline',
+      action: 'media_next',
+      param: '',
+    });
+    await vi.waitFor(() => expect(signals.size).toBe(1));
+
+    bus.emit('test', 'action:cancel', {
+      turnId: TURN_ID,
+      requestId: 'deadline',
+      reason: 'deadline',
+    });
+    await vi.waitFor(() => expect(signals.get('request-1')?.aborted).toBe(true));
+
     expect(results).toEqual([]);
   });
 });

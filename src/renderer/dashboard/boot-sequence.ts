@@ -10,8 +10,13 @@ declare var sarah: {
   onBootStatus(cb: (data: BootStatus) => void): () => void;
   onTransitionStart(cb: () => void): () => void;
   voice: {
-    onPlayAudio(cb: (data: { audio: number[]; sampleRate: number }) => void): () => void;
-    playbackDone(): Promise<void>;
+    onPlayAudio(cb: (data: {
+      turnId: string;
+      playbackId: string;
+      audio: number[];
+      sampleRate: number;
+    }) => void): () => void;
+    playbackDone(turnId: string, playbackId: string): Promise<void>;
   };
 };
 
@@ -87,7 +92,12 @@ function hideBubble(): void {
 // ============================================================
 let audioContext: AudioContext | null = null;
 
-function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
+function playTtsAudio(
+  turnId: string,
+  playbackId: string,
+  audioData: number[],
+  sampleRate: number,
+): Promise<void> {
   return new Promise((resolve) => {
     if (!audioContext) audioContext = new AudioContext({ sampleRate });
     const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
@@ -99,7 +109,7 @@ function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
     source.buffer = buffer;
     source.connect(audioContext.destination);
     source.onended = () => {
-      sarah.voice.playbackDone();
+      void sarah.voice.playbackDone(turnId, playbackId);
       resolve();
     };
     source.start();
@@ -390,10 +400,10 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
     });
 
     // Buffer TTS audio
-    sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
+    sarah.voice.onPlayAudio(({ turnId, playbackId, audio, sampleRate }) => {
       ttsAudioReady = true;
       pendingTtsPlay = () => {
-        playTtsAudio(audio, sampleRate).then(() => {
+        playTtsAudio(turnId, playbackId, audio, sampleRate).then(() => {
           if (ttsAudioResolve) {
             ttsAudioResolve();
             ttsAudioResolve = null;

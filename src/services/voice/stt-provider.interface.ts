@@ -8,7 +8,12 @@ export interface SttProvider {
   init(signal?: AbortSignal): Promise<void>;
 
   /** Transcribe PCM audio to text. Language is a BCP-47 code like 'de' or 'en'. */
-  transcribe(audio: Float32Array, sampleRate: number, language?: string): Promise<string>;
+  transcribe(
+    audio: Float32Array,
+    sampleRate: number,
+    language?: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
 
   /** Clean up resources */
   destroy(signal?: AbortSignal): Promise<void>;

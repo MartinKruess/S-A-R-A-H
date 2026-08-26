@@ -155,7 +155,7 @@ describe('RouterService', () => {
 
       // Routing event emitted
       expect(routings.length).toBe(1);
-      expect(routings[0]).toEqual({
+      expect(routings[0]).toMatchObject({
         from: 'router',
         to: 'local_worker',
       });
@@ -274,6 +274,15 @@ describe('RouterService', () => {
 
       const fillers: string[] = [];
       bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+      bus.on('action:result', (msg) => service.onMessage(msg));
+      bus.on('action:request', (msg) => {
+        bus.emit('test', 'action:result', {
+          turnId: msg.data.turnId,
+          requestId: msg.data.requestId,
+          action: msg.data.action,
+          ok: true,
+        });
+      });
 
       await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
 
@@ -295,6 +304,15 @@ describe('RouterService', () => {
 
       const fillers: string[] = [];
       bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+      bus.on('action:result', (msg) => service.onMessage(msg));
+      bus.on('action:request', (msg) => {
+        bus.emit('test', 'action:result', {
+          turnId: msg.data.turnId,
+          requestId: msg.data.requestId,
+          action: msg.data.action,
+          ok: true,
+        });
+      });
 
       // A device-command-looking message while 9B is active triggers the gate swap.
       await service.handleChatMessage('Öffne Spotify', 'voice');
