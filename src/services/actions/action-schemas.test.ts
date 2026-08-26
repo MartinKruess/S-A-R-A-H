@@ -9,6 +9,8 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.set_volume.safeParse('-1').success).toBe(false);
     expect(ACTION_SCHEMAS.set_volume.safeParse('50.5').success).toBe(false);
     expect(ACTION_SCHEMAS.set_volume.safeParse('laut').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_volume.safeParse('').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_volume.safeParse('   ').success).toBe(false);
   });
 
   it('spotify_volume accepts 0..100, rejects outside', () => {
@@ -17,6 +19,8 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.spotify_volume.safeParse('101').success).toBe(false);
     expect(ACTION_SCHEMAS.spotify_volume.safeParse('-1').success).toBe(false);
     expect(ACTION_SCHEMAS.spotify_volume.safeParse('50.5').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume.safeParse('   ').success).toBe(false);
   });
 
   it('spotify_volume_adjust accepts signed -100..100', () => {
@@ -26,6 +30,7 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('0').success).toBe(true);
     expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('-101').success).toBe(false);
     expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('101').success).toBe(false);
+    expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('').success).toBe(false);
   });
 
   it('set_timer accepts 1..1440 minutes', () => {

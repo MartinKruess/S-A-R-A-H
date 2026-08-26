@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resolveSlashCommand } from './slash-command-resolver.js';
+import { BUILTIN_COMMANDS, RESERVED_BUILTIN_COMMANDS } from './builtin-commands.js';
 
 const commands = [
   { command: '/spotify', prompt: 'Öffne Spotify' },
@@ -7,6 +8,10 @@ const commands = [
 ];
 
 describe('resolveSlashCommand', () => {
+  it('keeps /confirm visible and reserved in the shared settings command list', () => {
+    expect(BUILTIN_COMMANDS.some((entry) => entry.command === '/confirm' && entry.available)).toBe(true);
+    expect(RESERVED_BUILTIN_COMMANDS.has('/confirm')).toBe(true);
+  });
   it('leaves ordinary messages untouched', () => {
     expect(resolveSlashCommand('Öffne Spotify', commands)).toEqual({ kind: 'none' });
   });

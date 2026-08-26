@@ -10,6 +10,7 @@ import { SarahConfigSchema } from './config-schema.js';
 import type { SarahConfig } from './config-schema.js';
 import { AppLifecycleController } from './app-lifecycle-controller.js';
 import { ActionConfirmationGate } from './action-confirmation.js';
+import { removeReservedCustomCommandCollisions } from '../services/commands/builtin-commands.js';
 
 export interface AppContext {
   bus: MessageBus;
@@ -59,6 +60,26 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
     let configErrors: string[] | null = null;
     if (parseResult.success) {
       parsedConfig = parseResult.data;
+      const customCommands = removeReservedCustomCommandCollisions(
+        parsedConfig.controls.customCommands,
+      );
+      if (customCommands.length !== parsedConfig.controls.customCommands.length) {
+        parsedConfig = {
+          ...parsedConfig,
+          controls: { ...parsedConfig.controls, customCommands },
+        };
+        const rawControls = raw.controls && typeof raw.controls === 'object'
+          ? raw.controls as Record<string, unknown>
+          : {};
+        try {
+          await config.set('root', {
+            ...raw,
+            controls: { ...rawControls, customCommands },
+          });
+        } catch (error) {
+          console.warn('[Bootstrap] Reserved custom-command cleanup could not be persisted:', error);
+        }
+      }
     } else {
       configErrors = parseResult.error.issues.map(
         (i) => `${i.path.join('.')}: ${i.message}`,

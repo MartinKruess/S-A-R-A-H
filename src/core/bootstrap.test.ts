@@ -51,6 +51,30 @@ describe('bootstrap', () => {
     await expect(ctx.shutdown()).resolves.not.toThrow();
   });
 
+  it('persistently removes reserved custom-command collisions from an existing config', async () => {
+    await ctx.config.set('root', {
+      controls: {
+        customCommands: [
+          { command: ' /CONFIRM ', prompt: 'Kollision' },
+          { command: '/meincommand', prompt: 'Bleibt erhalten' },
+        ],
+      },
+    });
+    await ctx.shutdown();
+
+    ctx = await bootstrap(tmpDir);
+
+    expect(ctx.parsedConfig.controls.customCommands).toEqual([
+      { command: '/meincommand', prompt: 'Bleibt erhalten' },
+    ]);
+    const persisted = await ctx.config.get<{
+      controls: { customCommands: Array<{ command: string; prompt: string }> };
+    }>('root');
+    expect(persisted?.controls.customCommands).toEqual([
+      { command: '/meincommand', prompt: 'Bleibt erhalten' },
+    ]);
+  });
+
   it('persists validated defaults after an invalid config is accepted', async () => {
     await ctx.config.set('root', { controls: { voiceMode: 'invalid' } });
     await ctx.shutdown();

@@ -9,6 +9,7 @@ import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 import { isValidOptionalTitle } from './ipc-validation.js';
 import { getLlmRestartReasons, type SaveConfigResult } from '../core/config-apply.js';
+import { removeReservedCustomCommandCollisions } from '../services/commands/builtin-commands.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -19,6 +20,9 @@ export interface ConfigHandlerDeps {
 export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps): void {
   const { getAppContext, getMainWindow, dialogWindows } = deps;
   let saveQueue: Promise<void> = Promise.resolve();
+  // ModelRuntime is immutable for the lifetime of this process. Keep that
+  // boot contract separate from the mutable persisted config snapshot.
+  const bootLlm = structuredClone(getAppContext().parsedConfig.llm);
 
   ipcMain.handle('get-system-info', async () => {
     const cpus = os.cpus();
@@ -56,7 +60,6 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
         const previousAudio = ctx.parsedConfig.audio;
         const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
-        const previousLlm = ctx.parsedConfig.llm;
         const merged = {
           ...existing,
           ...config,
@@ -68,9 +71,22 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         };
 
         const { SarahConfigSchema } = await import('../core/config-schema.js');
-        const parsed = SarahConfigSchema.parse(merged);
+        let parsed = SarahConfigSchema.parse(merged);
+        const customCommands = removeReservedCustomCommandCollisions(parsed.controls.customCommands);
+        if (customCommands.length !== parsed.controls.customCommands.length) {
+          parsed = {
+            ...parsed,
+            controls: { ...parsed.controls, customCommands },
+          };
+        }
 
-        await ctx.config.set('root', merged);
+        const mergedControls = merged.controls && typeof merged.controls === 'object'
+          ? merged.controls as Record<string, unknown>
+          : {};
+        await ctx.config.set('root', {
+          ...merged,
+          controls: { ...mergedControls, customCommands },
+        });
         ctx.parsedConfig = parsed;
 
         const inputDeviceChanged = previousAudio.inputDeviceId !== parsed.audio.inputDeviceId;
@@ -101,13 +117,21 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         }
 
         if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
-          const win = getMainWindow();
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('audio-config-changed', parsed.audio);
+          const recipients = new Set<BrowserWindow>();
+          const mainWindow = getMainWindow();
+          if (mainWindow) recipients.add(mainWindow);
+          for (const dialogWindow of dialogWindows.values()) recipients.add(dialogWindow);
+          for (const win of recipients) {
+            if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+            try {
+              win.webContents.send('audio-config-changed', parsed.audio);
+            } catch (error) {
+              console.warn('[IPC] audio-config-changed delivery failed:', error);
+            }
           }
         }
 
-        const restartReasons = getLlmRestartReasons(previousLlm, parsed.llm);
+        const restartReasons = getLlmRestartReasons(bootLlm, parsed.llm);
         return {
           config: ctx.parsedConfig,
           restartRequired: restartReasons.length > 0,

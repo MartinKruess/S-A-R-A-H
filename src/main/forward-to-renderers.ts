@@ -9,17 +9,23 @@ import type { MessageBus } from '../core/message-bus.js';
 export function forwardToRenderers(bus: MessageBus, topic: BusTopic): () => void {
   return bus.on(topic, (msg) => {
     for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) {
-        win.webContents.send(topic, msg.data);
-        const turnId = 'turnId' in Object(msg.data)
-          ? (msg.data as { turnId?: string }).turnId
-          : undefined;
-        win.webContents.send('bus:diagnostic', {
-          topic: msg.topic,
-          source: msg.source,
-          timestamp: msg.timestamp,
-          ...(turnId ? { turnId } : {}),
-        });
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        try {
+          win.webContents.send(topic, msg.data);
+          const turnId = 'turnId' in Object(msg.data)
+            ? (msg.data as { turnId?: string }).turnId
+            : undefined;
+          win.webContents.send('bus:diagnostic', {
+            topic: msg.topic,
+            source: msg.source,
+            timestamp: msg.timestamp,
+            ...(turnId ? { turnId } : {}),
+          });
+        } catch (error) {
+          // A renderer can be destroyed between the guards and send(). Keep
+          // fan-out isolated so one closing window cannot starve later ones.
+          console.warn(`[RendererForwarder] ${topic} could not be sent to one window:`, error);
+        }
       }
     }
   });

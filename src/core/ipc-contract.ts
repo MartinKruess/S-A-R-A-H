@@ -34,6 +34,7 @@ export interface IpcCommands {
   };
   'voice-set-capture-ready':    { input: boolean; output: void };
   'voice-audio-chunk':          { input: { captureId: VoiceCaptureId; chunk: number[] }; output: void };
+  'voice-capture-flushed':      { input: { captureId: VoiceCaptureId }; output: void };
   'voice-set-interaction-mode': { input: 'chat' | 'voice'; output: void };
   'voice-config-changed':       { input: void; output: void };
   'splash-tts':                 {
@@ -54,6 +55,7 @@ export interface IpcEvents {
   'turn:terminal':     BusEvents['turn:terminal'];
   'storage:degraded':  BusEvents['storage:degraded'];
   'voice:state':       BusEvents['voice:state'];
+  'voice:capture-flush-request': BusEvents['voice:capture-flush-request'];
   'voice:transcript':  BusEvents['voice:transcript'];
   'voice:play-audio':  BusEvents['voice:play-audio'];
   'voice:stop-playback': BusEvents['voice:stop-playback'];
@@ -95,6 +97,7 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'voice-playback-failed': true,
   'voice-set-capture-ready': true,
   'voice-audio-chunk': true,
+  'voice-capture-flushed': true,
   'voice-set-interaction-mode': true,
   'voice-config-changed': true,
   'splash-tts': true,
@@ -111,6 +114,7 @@ export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
   'turn:terminal': true,
   'storage:degraded': true,
   'voice:state': true,
+  'voice:capture-flush-request': true,
   'voice:transcript': true,
   'voice:play-audio': true,
   'voice:stop-playback': true,

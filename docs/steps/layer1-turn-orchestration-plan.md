@@ -329,3 +329,71 @@ Eine fokussierte Integrationsprüfung des Umsetzungsdiffs fand noch einen offene
 Der integrierte Stand bestand danach 81 Testdateien mit 879 Tests, Main- und Renderer-Typecheck, den vollständigen Build und `git diff --check`. Die native SQLite-Bindung wurde anschließend wieder auf Electron 41.1.1 gestellt.
 
 Gemäß der Abstimmung vom 26.08.2026 folgt jetzt kein weiteres vollständiges Layer-1-Audit. Vor einer neuen systematischen Fehlersuche oder der praktischen Windows-Matrix wird das weitere Vorgehen gemeinsam besprochen. Konkrete Lücken, die bei der direkten Arbeit an den bekannten Befunden auffallen, dürfen weiterhin im engen Zusammenhang behoben werden.
+
+## Ergebnis des achten vollständigen Audits
+
+Auf ausdrücklichen neuen Auftrag wurde Layer 1 erneut uneingeschränkt sowie über seine Runtime-, Memory-, Action-, Browser-, Voice-, Renderer- und IPC-Grenzen geprüft. Gezählt wurden nur produktiv erreichbare Fehlfunktionen, falsche Zustände, Daten-/Sicherheitsgrenzen und belastbare Folgefehler; reine Architektur-, Design- und Härtungswünsche blieben ungezählt. Nach Abgleich mit den Befunden 1 bis 99 verbleiben 20 neue beziehungsweise noch offene eigenständige Ursachen: 14 P1- und 6 P2-Befunde, keine P0-Lücke.
+
+| Nr. | Priorität | Größe | Befund |
+|---:|:---:|:---:|---|
+| 100 | P1 | S | Eine Chatnachricht mit mehr als 4.000 Zeichen wird im Dashboard bereits als User-Bubble angezeigt, an der IPC-Grenze aber abgelehnt; `accepted: false` erzeugt weder Rücknahme noch Fehlermeldung, sodass die Nachricht dauerhaft wie erfolgreich gesendet aussieht. |
+| 101 | P1 | S | Die numerischen Schemas für System- und Spotify-Lautstärke wandeln einen leeren beziehungsweise nur aus Leerzeichen bestehenden Action-Parameter in `0` um; ein unvollständiger Modell-Tag kann dadurch statt einer Ablehnung stummschalten. |
+| 102 | P1 | M–L | `/anonymous`- und durch Memory-Ausschlüsse flüchtige Turns bleiben in der Live-History. Ein normaler Folgeturn kann ihren Inhalt wiederholen und diese abgeleitete Antwort anschließend dauerhaft speichern; die Transienz wird nicht entlang des Informationsflusses fortgeführt. |
+| 103 | P1 | M | Die Quarantäne externer Suchdaten endet nach der Zusammenfassung: Die Summary wird als normale Assistant-History und in SQLite gespeichert und in späteren Turns ohne Datenprovenienz erneut eingespeist. Übernommene Web-Instruktionen können dadurch Folge-Turns und spätere Starts beeinflussen. |
+| 104 | P1 | S–M | Die technisch gebundene Bestätigung nennt weder die Action noch ihren validierten Parameter. Der Nutzer bestätigt nur eine UUID; bei `/confirm` wird der Sideeffect-Request außerdem vor der konkreten Acknowledgement-Ausgabe gestartet. |
+| 105 | P1 | M | Ein Turn wird nicht atomar persistiert. User- und Assistant-Zeilen werden einzeln autocommitted und Einzelfehler verschluckt; SQLite kann deshalb dauerhaft einen User ohne Antwort, eine Antwort ohne User oder nur einen Teil einer mehrteiligen Action-Antwort enthalten. |
+| 106 | P2 | M | Startkontext- und Tokenlimits schneiden nach einzelnen Nachrichten statt nach vollständigen Turns. Dadurch kann eine ältere User-Nachricht entfallen, während ihre Assistant-Antwort als verwaister Kontext beim Modell verbleibt. |
+| 107 | P1 | M | Suchresultate und Redirects werden nur auf `http:` beziehungsweise `https:` geprüft. Loopback-, Link-local- und private Netzadressen werden akzeptiert, sodass ein öffentliches Ergebnis das Browserfenster auf lokale Dienste oder Geräte lenken kann. |
+| 108 | P2 | S | Der neue Built-in `/confirm` fehlt in der reservierten Command-Liste der Einstellungen. Ein eigener `/confirm` lässt sich sichtbar speichern, wird vom Resolver aber immer als Built-in abgefangen und ist daher unbenutzbar. |
+| 109 | P1 | S–M | Der Memory-Ausschluss „Browser-Daten“ erkennt tatsächliche URLs nicht strukturell. Beispielsweise passiert `https://example.com/private` die neue Persistenzgrenze, weil lediglich nach Wörtern wie `url`, `browser` oder `webseite` gesucht wird. |
+| 110 | P2 | M | Die Deadline aus Befund 87 beendet nur das Warten des Aufrufers. Nicht abbrechbare Electron-Operationen wie `clearStorageData()` und `clearCache()` können nach Abbruch weiterlaufen und die gemeinsame Session einer bereits gestarteten Folgesuche nachträglich verändern. |
+| 111 | P1 | M | Die ModelRuntime-Recovery endet weiterhin in zwei realen Sackgassen: Ein initialer Docker-/Ollama-/Routerfehler zerstört den Router-Service ohne Selbstheilung, und ein beim ersten Recheck noch fehlender Worker plant keinen weiteren Versuch. Beide Zustände benötigen trotz später gesunder Runtime einen App-Neustart. |
+| 112 | P1 | M | Der SandboxBrowser besitzt keine dauerhafte Fenster- und Navigationsgrenze. Nach dem ersten Load werden Redirect-Listener entfernt und `target=_blank` beziehungsweise `window.open()` wird nicht per `setWindowOpenHandler` gesperrt; untrusted Seiten können dadurch nicht verwaltete Popup-/Phishing-Fenster erzeugen, die `close()` nicht kennt. |
+| 113 | P2 | S | Die Blockseitenerkennung wertet jedes Vorkommen des Wortes `captcha` als Challenge. Normale Suchergebnisse zur Suchanfrage „captcha“ werden deshalb bei beiden Suchprovidern als blockiert verworfen. |
+| 114 | P1 | S–M | Befund 99 ist im separaten Audio-Settingsfenster offen: Der Dialog speichert bei einer Gerätewahl einen veralteten vollständigen Audio-Snapshot, während `audio-config-changed` nur das Hauptfenster erreicht. So können aktuelle Mute-/Lautstärkewerte zurückgesetzt und Rollbacks gegen einen falschen bestätigten Zustand ausgeführt werden. |
+| 115 | P2 | M | `restartRequired` vergleicht eine neue LLM-Konfiguration mit dem zuletzt gespeicherten Snapshot statt mit der tatsächlich laufenden ModelRuntime. Nach mehreren Saves kann die UI einen weiterhin nötigen Neustart verschweigen oder beim Zurückstellen auf den Laufzeitwert fälschlich verlangen. |
+| 116 | P1 | M | PTT-Beginn und -Ende besitzen keinen Renderer-Flush-/ACK-Vertrag. Der 2.048-Sample-Workletpuffer kann bis zu etwa 128 ms Vor-Key-Audio der neuen Capture-ID zuordnen und am Key-up ebenso bis zu etwa 128 ms Wortende sowie noch fliegende IPC-Chunks aus der STT-Aufnahme verlieren. |
+| 117 | P1 | S | Nach Track- oder Geräteverlust versucht AudioBridge den Live-Capture genau einmal wiederaufzubauen. Scheitert dieser Versuch transient, wird kein Backoff-Retry geplant und F9 bleibt bis zu einem späteren Config-/Capability-Ereignis oder Neustart deaktiviert. |
+| 118 | P1 | S | Wirft `webContents.send()` bei einem schließenden oder abgestürzten Fenster, bricht `forwardToRenderers()` den gesamten Fan-out ab. Spätere Fenster – einschließlich Dashboard – verlieren dadurch Chunks, terminale Events oder Playback-Anforderungen. |
+| 119 | P2 | S | Das später geöffnete Voice-Out-Fenster liest keinen initialen TTS-Capability-Snapshot. War TTS bereits beim Boot unavailable, zeigt das Fenster den Offline-Zustand bis zu einer weiteren Capability-Änderung nicht an. |
+
+### Wesentliche Restpfade und Abgrenzungen
+
+- 102 und 109 sind verbleibende Folgepfade von 83: 83 schloss die direkte Persistenzgrenze, aber weder die Provenienz über Folgeturns noch die strukturelle Erkennung echter URLs.
+- 107, 110 und 112 sind von 87 getrennt: 87 begrenzte das Warten und löste den Search-Lock; offen bleiben Netzwerkziel-Validierung, nachlaufende native Session-Mutationen und die dauerhafte Fenster-/Navigations-Containment-Policy.
+- 111 ist die weiterhin unvollständige ModelRuntime-State-Machine aus 92 und nicht der Faster-Whisper-Initialpfad aus 94.
+- 114 ist der reale Cross-Window-Restpfad von 99; der direkte Home-Mute-Patch bleibt davon getrennt.
+- 116 und 117 sind offene Randpfade von 78/79 beziehungsweise 54/95: Worklet-Grenzen besitzen weiterhin keinen Flush-/ACK-Vertrag und Live-Recovery nutzt den vorhandenen Initial-Backoff nicht.
+- 118 ist nicht die frühere Listener-Isolation aus 14 oder die Diagnosemetadaten-Korrektur aus 33; der Fehler entsteht innerhalb eines einzelnen Multi-Renderer-Listeners nach dem ersten werfenden Fenster.
+
+### Audit-Verifikation
+
+- Runtime-, Boot-, Provider-, Browser- und Config-Bereich: 103 von 103 gezielten Tests grün.
+- Voice-, Renderer- und IPC-Bereich: 175 von 175 gezielten Tests grün.
+- Direkte Repros bestätigten unter anderem die Leerstring-zu-Null-Konvertierung, die fehlende URL-Erkennung im Memory-Ausschluss, den CAPTCHA-Fehlalarm, zerrissene Context-Fenster sowie die beiden Runtime-Recovery-Sackgassen.
+- Die grünen Bestandsprüfungen decken die neuen Abläufe nicht ab; für jeden Befund fehlt mindestens ein passender Regressionstest.
+- In diesem Audit wurden keine Produktcode-Fixes umgesetzt. Das bereits vorhandene ungetrackte `docs/architecture/` blieb unverändert.
+
+Layer 1 bleibt damit offen. Vor einer praktischen Windows-Matrix sollten mindestens die P1-Befunde 100 bis 105, 107, 109, 111, 112, 114 und 116 bis 118 umgesetzt und anschließend gezielt regressionsgeprüft werden. Ein weiteres vollständiges Audit ist mit diesem Ergebnis ausdrücklich nicht automatisch beauftragt.
+
+## Umsetzung der achten Befundrunde
+
+Die Befunde 100 bis 119 wurden vollständig umgesetzt und mit Regressionstests abgesichert:
+
+- Chat- und Action-Eingänge teilen eine zentrale Längengrenze beziehungsweise strikt nichtleere numerische Schemas; stille Ablehnungen werden sichtbar und reservierte Built-ins einschließlich vorhandener Alt-Kollisionen werden zentral bereinigt.
+- Flüchtige, ausgeschlossene und externe Inhalte behalten ihre Provenienz. Ein Turn, der solche Inhalte tatsächlich einbezieht, bleibt ebenfalls flüchtig; Quelle und Ableitung werden danach aus der Live-History verbraucht, sodass spätere unabhängige Turns wieder normal gespeichert werden können.
+- User- und Assistant-Nachrichten eines Turns werden über einen Storage-Batch atomar geschrieben; Start- und Live-Kontext werden nur noch als vollständige Turngruppen zugeschnitten.
+- Bestätigungen zeigen die validierte Action samt Parameter, und die konkrete Bestätigungsausgabe wird vor dem Sideeffect-Request veröffentlicht.
+- Der SandboxBrowser akzeptiert nur öffentliche HTTPS-Ziele, prüft Hostauflösung vor der Fenstererzeugung sowie erneut über den Resolver der isolierten Electron-Session, sperrt Popups dauerhaft, tokenisiert spätere Navigationen und trennt jede neue Fenstergeneration über eine eigene nicht persistente Sessionpartition.
+- ModelRuntime und Router-Service bleiben bei initialen Docker-/Ollama-/Routerfehlern recovery-fähig; Router- und Worker-Rechecks laufen weiter, bis die Capability wieder bereit ist.
+- Audio-Saves sind feldweise und werden an alle lebenden lokalen Fenster gespiegelt; `restartRequired` vergleicht gegen den unveränderlichen Laufzeit-Boot-Snapshot.
+- PTT besitzt nun einen korrelierten Worklet-Begin-/Flush-/Cancel-Vertrag, wartet auf die Capture-spezifische IPC-Kette und bestätigt Main erst nach vollständigem Restblock. Fehlende Worklets, Teardown, Gerätewechsel und Capture-Verlust enden kontrolliert statt gekürztes Audio zu transkribieren.
+- Live-Capture-Recovery verwendet Backoff und verliert auch einen zweiten Track-Ausfall während laufender Recovery nicht. Renderer-Fan-out ist pro Fenster fehlerisoliert; Voice-Out reconciliert initiale Capability- und State-Snapshots gegen neuere Events.
+
+Das gegenseitige Integrationsreview schloss zusätzlich unmittelbar zusammenhängende Folgepfade: IPv4-mapped IPv6, veraltete asynchrone Browsernavigationen, sichtbar stehenbleibende alte Browserergebnisse, falsche Flush-Erfolgs-ACKs, verlorene Recovery-Ereignisse, Gerätewechsel während aktivem F9, non-flush Worklet-/IPC-Cleanup, veraltete Voice-State-Snapshots und bereits gespeicherte `/confirm`-Kollisionen.
+
+Der integrierte Stand bestand danach 85 Testdateien mit 924 Tests, Main- und Renderer-Typecheck, den vollständigen Build und `git diff --check`. Die native SQLite-Bindung wurde anschließend wieder für Electron 41.1.1 hergestellt.
+
+Bewusst verbleibendes Restrisiko: Die doppelte öffentliche Hostprüfung nutzt unmittelbar vor der Navigation bereits den Resolver derselben Electron-Session und damit deren DNS-Cache. Eine kryptografische Bindung der geprüften IP an die nachfolgende Chromium-Verbindung ist mit `BrowserWindow.loadURL()` jedoch nicht verfügbar; vollständiges DNS-Rebinding-Pinning würde einen eigenen lokalen Proxy- beziehungsweise Netzwerkpfad erfordern. Dieses enge Restfenster wurde nicht durch eine unverhältnismäßige neue Netzwerkarchitektur ersetzt.
+
+Mit dieser Umsetzung ist kein neuntes vollständiges Audit beauftragt. Die praktische Windows-Matrix und das weitere Vorgehen werden weiterhin separat abgestimmt.

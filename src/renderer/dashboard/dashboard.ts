@@ -4,6 +4,7 @@ import { AudioBridge } from '../services/audio-bridge.js';
 import { startBootSequence } from './boot-sequence.js';
 import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
+import { handleRejectedChatSubmission, isChatMessageWithinLimit } from './chat-submission.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 import {
@@ -138,12 +139,20 @@ chatModeToggle.addEventListener('click', () => {
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && chatInput.value.trim()) {
     const text = chatInput.value.trim();
+    if (!isChatMessageWithinLimit(text)) {
+      addBubble('error', 'Die Nachricht ist zu lang. Maximal erlaubt sind 4.000 Zeichen.');
+      return;
+    }
     chatInput.value = '';
 
-    addBubble('user', text);
+    const userBubble = addBubble('user', text);
     const turnId = crypto.randomUUID();
     void sarah.chat(text, turnId, chatMode ? 'chat' : 'voice').then((result) => {
-      if (!result.accepted) terminalTurns.add(turnId);
+      if (!result.accepted) {
+        handleRejectedChatSubmission(turnId, terminalTurns, userBubble, (message) => {
+          addBubble('error', message);
+        });
+      }
     }).catch((error) => {
       terminalTurns.add(turnId);
       console.warn('[Dashboard] Chat submission failed:', error);

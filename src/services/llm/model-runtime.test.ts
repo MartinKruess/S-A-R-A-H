@@ -222,6 +222,55 @@ describe('ModelRuntime', () => {
     await runtime.destroy();
   });
 
+  it('keeps retrying after initial runtime failures until the router becomes available', async () => {
+    const router = provider('router');
+    (router.isAvailable as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: router,
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      runtimeRecheckDelayMs: 5,
+    });
+
+    await expect(runtime.init()).rejects.toThrow('Router model unavailable');
+    await vi.waitFor(() => {
+      expect(router.isAvailable).toHaveBeenCalledTimes(3);
+      expect(runtime.snapshot.roles.router.availability).toBe('available');
+      expect(runtime.snapshot.activeRole).toBe('router');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
+  it('keeps rechecking an initially missing worker without taking the router offline', async () => {
+    const worker = provider('worker');
+    (worker.isAvailable as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+      runtimeRecheckDelayMs: 5,
+    });
+
+    const initial = await runtime.init();
+    expect(initial.state).toBe('degraded');
+    expect(initial.activeRole).toBe('router');
+    await vi.waitFor(() => {
+      expect(worker.isAvailable).toHaveBeenCalledTimes(3);
+      expect(runtime.snapshot.roles.local_worker.availability).toBe('available');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
   it('degrades availability and rechecks after an eager-load connection failure', async () => {
     const worker = provider('worker');
     (worker.chat as ReturnType<typeof vi.fn>)

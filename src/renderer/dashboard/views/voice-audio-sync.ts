@@ -14,6 +14,29 @@ export interface VoiceAudioSync {
   dispose(): void;
 }
 
+export interface RevisionedSnapshotSync<T> {
+  applyEvent(value: T): void;
+  captureSnapshotRevision(): number;
+  applySnapshot(value: T, revision: number): void;
+}
+
+/** Keep an asynchronous initial read from overwriting a newer pushed event. */
+export function createRevisionedSnapshotSync<T>(
+  apply: (value: T) => void,
+): RevisionedSnapshotSync<T> {
+  let revision = 0;
+  return {
+    applyEvent: (value) => {
+      revision += 1;
+      apply(value);
+    },
+    captureSnapshotRevision: () => revision,
+    applySnapshot: (value, snapshotRevision) => {
+      if (revision === snapshotRevision) apply(value);
+    },
+  };
+}
+
 /** Persist one MUTE change and invoke the caller's current-state rollback on failure. */
 export async function persistMuteWithRollback(
   audioSync: VoiceAudioSync,

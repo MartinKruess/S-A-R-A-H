@@ -30,6 +30,7 @@ export type BusEvents = {
   'llm:filler':          { turnId: TurnId; text: string };
   'voice:state':         { state: VoiceState; turnId?: TurnId; captureId?: VoiceCaptureId };
   'voice:listening':     { turnId: TurnId; captureId: VoiceCaptureId };
+  'voice:capture-flush-request': { captureId: VoiceCaptureId };
   'voice:transcript':    { turnId: TurnId; captureId: VoiceCaptureId; text: string };
   'voice:speaking':      { turnId: TurnId; outputId: OutputId; text: string };
   'voice:play-audio':    { turnId: TurnId; outputId: OutputId; playbackId: PlaybackId; audio: number[]; sampleRate: number };

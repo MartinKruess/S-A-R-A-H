@@ -177,6 +177,7 @@ export class AudioBridge {
   private outputBarsBuffer: Float32Array<ArrayBuffer> = new Float32Array(OUTPUT_BAR_COUNT);
 
   private unsubState: (() => void) | null = null;
+  private unsubCaptureFlush: (() => void) | null = null;
   private unsubPlayAudio: (() => void) | null = null;
   private unsubStopPlayback: (() => void) | null = null;
   private unsubAudioConfig: (() => void) | null = null;
@@ -211,6 +212,7 @@ export class AudioBridge {
   private readonly captureStartPromises = new Set<Promise<boolean>>();
   private captureSetupAbort: AbortController | null = null;
   private captureRecoveryPromise: Promise<void> | null = null;
+  private captureRecoveryPending = false;
   private captureRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private captureRetryAttempt = 0;
   private captureLifecyclePromise: Promise<void> = Promise.resolve();
@@ -219,6 +221,7 @@ export class AudioBridge {
   private capabilityRevision = 0;
   private voiceStateRevision = 0;
   private pendingVoiceState: { state: string; captureId?: VoiceCaptureId } | null = null;
+  private readonly captureIpcTails = new Map<VoiceCaptureId, Promise<void>>();
   private readonly deviceChangeHandler = (): void => {
     void this.handleMediaDevicesChanged();
   };
@@ -236,6 +239,9 @@ export class AudioBridge {
         return;
       }
       this.handleStateChange(state, captureId);
+    });
+    this.unsubCaptureFlush = sarah.voice.onCaptureFlushRequest(({ captureId }) => {
+      this.handleCaptureFlushRequest(captureId);
     });
 
     this.unsubPlayAudio = sarah.voice.onPlayAudio(({ turnId, playbackId, audio, sampleRate }) => {
@@ -335,6 +341,10 @@ export class AudioBridge {
     // a new stream or worklet that we'd leak past teardown.
     this.destroyed = true;
     this.resetCaptureRetry();
+    if (this.currentCaptureId) this.cancelRendererCapture(this.currentCaptureId);
+    this.captureIpcTails.clear();
+    this.recording = false;
+    this.currentCaptureId = null;
     this.stopCapture();
     await this.reportCaptureReady(false);
     for (const pending of this.playbackStartControllers.values()) pending.controller.abort();
@@ -360,12 +370,14 @@ export class AudioBridge {
     this.stopOutputLevelLoop();
     this.teardownPlaybackGraph();
     this.unsubState?.();
+    this.unsubCaptureFlush?.();
     this.unsubPlayAudio?.();
     this.unsubStopPlayback?.();
     this.unsubAudioConfig?.();
     this.unsubVoiceInputConfig?.();
     this.unsubCapability?.();
     this.unsubState = null;
+    this.unsubCaptureFlush = null;
     this.unsubPlayAudio = null;
     this.unsubStopPlayback = null;
     this.unsubAudioConfig = null;
@@ -398,20 +410,26 @@ export class AudioBridge {
       }
       if (this.isCaptureReady()) {
         this.recording = true;
+        this.workletNode?.port.postMessage({ type: 'begin', captureId });
       } else {
         // Normally unreachable because main keeps PTT disabled until the warm
         // graph is acknowledged. Keep a safe recovery path for a mid-start
         // state snapshot without ever forwarding audio from before key-down.
         void this.startCapture().then((ready) => {
-          if (ready && this.currentCaptureId === captureId) this.recording = true;
+          if (ready && this.currentCaptureId === captureId) {
+            this.recording = true;
+            this.workletNode?.port.postMessage({ type: 'begin', captureId });
+          }
         });
       }
     } else {
       // Any non-listening state: stop streaming this utterance but keep the mic
       // warm. Capture is torn down only by destroy() and the device-change reset
       // path in applyAudioConfig.
+      const previousCaptureId = this.currentCaptureId;
       this.recording = false;
       this.currentCaptureId = null;
+      if (previousCaptureId) this.cancelRendererCapture(previousCaptureId);
       if (state === 'idle' || state === 'processing') this.stopPlayback();
       if (this.preferredInputRecoveryPending) {
         this.preferredInputRecoveryPending = false;
@@ -425,10 +443,13 @@ export class AudioBridge {
   }
 
   private isCaptureReady(): boolean {
+    const tracks = this.stream?.getTracks() ?? [];
     return this.capturing
       && this.captureStartPromise === null
       && this.stream !== null
-      && this.workletNode !== null;
+      && this.workletNode !== null
+      && tracks.length > 0
+      && tracks.every((track) => track.readyState === 'live');
   }
 
   private async reportCaptureReady(ready: boolean): Promise<void> {
@@ -570,6 +591,12 @@ export class AudioBridge {
     if (decision === 'reset') {
       // Device swapped while we were capturing — rebuild the graph.
       await this.reportCaptureReady(false);
+      const failedCaptureId = captureWasActive ? this.currentCaptureId ?? undefined : undefined;
+      if (failedCaptureId) {
+        this.recording = false;
+        this.currentCaptureId = null;
+        this.cancelRendererCapture(failedCaptureId);
+      }
       this.stopCapture();
       this.workletLoaded = false; // critical: next AudioContext needs a fresh addModule
       if (this.captureCtx) {
@@ -577,6 +604,11 @@ export class AudioBridge {
           /* ignore */
         });
         this.captureCtx = null;
+      }
+      if (failedCaptureId) {
+        await sarah.voice.captureFailed(failedCaptureId, CAPTURE_LOST_MESSAGE).catch((error) => {
+          console.error('[AudioBridge] Device-switch capture loss could not be reported:', error);
+        });
       }
       if (this.shouldKeepCaptureWarm() || captureWasActive) {
         const ready = await this.startCapture();
@@ -705,15 +737,18 @@ export class AudioBridge {
       captureGain = captureContext.createGain();
       captureGain.gain.value = this.currentAudio ? computeEffectiveGain(this.currentAudio) : 1;
       workletNode = new AudioWorkletNode(captureContext, 'capture-processor');
-      workletNode.port.onmessage = (event: MessageEvent<{ samples: Float32Array }>) => {
+      workletNode.port.onmessage = (event: MessageEvent<
+        | { type: 'chunk'; captureId: VoiceCaptureId; samples: Float32Array }
+        | { type: 'flushed'; captureId: VoiceCaptureId }
+      >) => {
         if (isStale()) return;
-        const samples = event.data.samples;
-
-        // PTT is a hard privacy boundary: samples produced before the listening
-        // state are discarded, never attached to a later capture id.
-        if (!this.recording) return;
-        if (this.muted || !this.currentCaptureId) return;
-        void sarah.voice.sendAudioChunk(this.currentCaptureId, Array.from(samples));
+        const message = event.data;
+        if (message.type === 'chunk') {
+          if (message.captureId !== this.currentCaptureId || this.muted) return;
+          this.enqueueCaptureChunk(message.captureId, message.samples);
+          return;
+        }
+        void this.finishCaptureFlush(message.captureId);
       };
 
       sourceNode.connect(captureGain);
@@ -834,11 +869,24 @@ export class AudioBridge {
   }
 
   private scheduleCaptureRecovery(): void {
-    if (this.destroyed || this.captureRecoveryPromise) return;
+    if (this.destroyed) return;
+    if (this.captureRecoveryPromise) {
+      this.captureRecoveryPending = true;
+      return;
+    }
+    this.captureRecoveryPending = false;
     void this.reportCaptureReady(false);
     const failedCaptureId = this.recording ? this.currentCaptureId ?? undefined : undefined;
     this.captureRecoveryPromise = this.recoverCapture(failedCaptureId).finally(() => {
       this.captureRecoveryPromise = null;
+      if (this.captureRecoveryPending && !this.destroyed) {
+        this.captureRecoveryPending = false;
+        if (this.captureRetryTimer) {
+          clearTimeout(this.captureRetryTimer);
+          this.captureRetryTimer = null;
+        }
+        this.scheduleCaptureRecovery();
+      }
     });
   }
 
@@ -852,9 +900,78 @@ export class AudioBridge {
       });
     }
     if (!this.destroyed && this.shouldKeepCaptureWarm()) {
-      const ready = await this.startCapture();
+      const started = await this.startCapture();
+      const ready = started && this.isCaptureReady();
       await this.reportCaptureReady(ready);
+      if (ready) this.resetCaptureRetry();
+      else this.scheduleCaptureRetry();
     }
+  }
+
+  private enqueueCaptureChunk(captureId: VoiceCaptureId, samples: Float32Array): void {
+    const previous = this.captureIpcTails.get(captureId) ?? Promise.resolve();
+    const next = previous.then(() => (
+      sarah.voice.sendAudioChunk(captureId, Array.from(samples))
+    ));
+    this.captureIpcTails.set(captureId, next);
+    void next.catch(() => {
+      // The correlated flush path reports this failure to main after observing
+      // the same rejected tail. Attach a handler now to avoid an unhandled
+      // rejection while the user is still holding PTT.
+    });
+  }
+
+  private cancelRendererCapture(captureId: VoiceCaptureId): void {
+    try {
+      this.workletNode?.port.postMessage({ type: 'cancel', captureId });
+    } catch (error) {
+      console.warn('[AudioBridge] Worklet capture could not be canceled:', error);
+    }
+    // Every queued tail has its own rejection handler. Removing ownership here
+    // cannot turn an in-flight invoke into an unhandled rejection.
+    this.captureIpcTails.delete(captureId);
+  }
+
+  private handleCaptureFlushRequest(captureId: VoiceCaptureId): void {
+    if (
+      this.destroyed
+      || !this.recording
+      || this.currentCaptureId !== captureId
+      || !this.workletNode
+    ) {
+      void this.reportCaptureFlushFailure(captureId);
+      return;
+    }
+    this.workletNode.port.postMessage({ type: 'flush', captureId });
+  }
+
+  private async finishCaptureFlush(captureId: VoiceCaptureId): Promise<void> {
+    try {
+      await (this.captureIpcTails.get(captureId) ?? Promise.resolve());
+      if (
+        this.destroyed
+        || !this.recording
+        || this.currentCaptureId !== captureId
+        || !this.workletNode
+      ) {
+        throw new Error('Capture changed before its flush completed');
+      }
+      await sarah.voice.captureFlushed(captureId);
+    } catch (error) {
+      console.error('[AudioBridge] Capture flush could not be completed:', error);
+      await this.reportCaptureFlushFailure(captureId);
+    } finally {
+      this.captureIpcTails.delete(captureId);
+      if (this.currentCaptureId === captureId) {
+        this.recording = false;
+      }
+    }
+  }
+
+  private async reportCaptureFlushFailure(captureId: VoiceCaptureId): Promise<void> {
+    await sarah.voice.captureFailed(captureId, CAPTURE_LOST_MESSAGE).catch((reportError) => {
+      console.error('[AudioBridge] Capture flush failure could not be reported:', reportError);
+    });
   }
 
   private stopCapture(): void {

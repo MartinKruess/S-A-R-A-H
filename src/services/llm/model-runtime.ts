@@ -204,6 +204,7 @@ export class ModelRuntime implements ModelRuntimePort {
       this.markUnavailable('router', message);
       this.markUnavailable('local_worker', message);
       this.current.state = 'error';
+      this.scheduleRuntimeRecheck();
       throw value;
     }
 
@@ -215,9 +216,11 @@ export class ModelRuntime implements ModelRuntimePort {
     else this.setAvailability('router', routerCheck.available);
     if (workerCheck.error) this.markUnavailable('local_worker', workerCheck.error);
     else this.setAvailability('local_worker', workerCheck.available);
+    if (!workerCheck.available) this.scheduleRuntimeRecheck();
 
     if (!routerCheck.available) {
       this.current.state = 'error';
+      this.scheduleRuntimeRecheck();
       throw new Error(`Router model unavailable: ${this.config.routerModel}`);
     }
 
@@ -235,6 +238,7 @@ export class ModelRuntime implements ModelRuntimePort {
       const message = errorMessage(value);
       this.current.state = 'error';
       this.onCapability?.('router', 'error', message);
+      this.scheduleRuntimeRecheck();
       throw value;
     }
     this.current.state = workerCheck.available ? 'ready' : 'degraded';
@@ -611,6 +615,9 @@ export class ModelRuntime implements ModelRuntimePort {
     this.current.state = this.current.roles.local_worker.availability === 'available'
       ? 'ready'
       : 'degraded';
+    if (this.current.roles.local_worker.availability !== 'available') {
+      this.scheduleRuntimeRecheck();
+    }
   }
 
   assumeRole(role: ModelRole): void {

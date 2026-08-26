@@ -3,7 +3,7 @@ import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudVSlider } from '../../components/index.js';
 import type { AudioOutputLevelEventDetail } from '../../services/audio-output-level.js';
 import { getSarah } from '../../shared/window-global.js';
-import { createAudioSync, near } from './voice-audio-sync.js';
+import { createAudioSync, createRevisionedSnapshotSync, near } from './voice-audio-sync.js';
 
 const BAR_COUNT = 16;
 const FLOOR = 0.05;
@@ -30,6 +30,8 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   controls.className = 'voice-panel-controls';
 
   const sarah = getSarah();
+  let ttsOffline = false;
+  let lastVoiceState: VoiceState = 'idle';
 
   const picker = hudSelect({
     kind: 'audiooutput',
@@ -98,6 +100,7 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
   };
 
   const applyState = (payload: { state: VoiceState }): void => {
+    lastVoiceState = payload.state;
     if (ttsOffline) return; // offline notice wins over transient states
     stateEl.dataset.state = payload.state;
     stateEl.textContent = labelFor(payload.state);
@@ -113,20 +116,40 @@ export function createVoiceOutBody(): { el: HTMLElement; dispose: () => void } {
 
   const audioSync = createAudioSync('VoiceOut', applyAudio);
 
-  let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
-  let ttsOffline = false;
-  let unsubCapability: (() => void) | null = sarah.voice.onCapability(({ tts }) => {
+  const applyTtsCapability = (tts: boolean): void => {
     ttsOffline = !tts;
     if (ttsOffline) {
       stateEl.dataset.state = 'error';
       stateEl.textContent = 'Stimme offline — Antworten nur als Text';
+      return;
     }
+    applyState({ state: lastVoiceState });
+  };
+  const capabilitySync = createRevisionedSnapshotSync(applyTtsCapability);
+  const stateSync = createRevisionedSnapshotSync(applyState);
+
+  let unsubState: (() => void) | null = sarah.voice.onStateChange((state) => {
+    stateSync.applyEvent(state);
   });
+  let unsubCapability: (() => void) | null = sarah.voice.onCapability(({ tts }) => {
+    capabilitySync.applyEvent(tts);
+  });
+  const initialCapabilityRevision = capabilitySync.captureSnapshotRevision();
+  const initialStateRevision = stateSync.captureSnapshotRevision();
   window.addEventListener('audio:output-level', applyLevel);
+
+  void sarah.getRuntimeStatus().then((snapshot) => {
+    capabilitySync.applySnapshot(
+      snapshot.capabilities.tts?.state === 'ready',
+      initialCapabilityRevision,
+    );
+  }).catch((err: Error) => {
+    console.warn('[VoiceOut] initial TTS capability fetch failed:', err);
+  });
 
   sarah.voice
     .getState()
-    .then(applyState)
+    .then((state) => stateSync.applySnapshot(state, initialStateRevision))
     .catch((err: Error) => {
       console.warn('[VoiceOut] initial voice state fetch failed:', err);
     });

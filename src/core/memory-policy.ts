@@ -14,6 +14,18 @@ function normalizeForComparison(value: string): string {
   return value.normalize('NFC').trim().toLocaleLowerCase('de-DE');
 }
 
+function containsWebUrl(value: string): boolean {
+  const candidates = value.match(/https?:\/\/[^\s<>"']+/giu) ?? [];
+  return candidates.some((candidate) => {
+    try {
+      const parsed = new URL(candidate.replace(/[),.;!?]+$/u, ''));
+      return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * @param contents - Sämtliche Inhalte eines abgeschlossenen Turns.
  * @param policy - Beim Turn-Start eingefrorene Memory-Freigabe und Ausschlüsse.
@@ -38,7 +50,12 @@ export function mustKeepTurnTransient(
   });
   if (exclusions.length === 0) return false;
 
+  const excludesBrowserData = policy.exclusions.some(
+    (entry) => normalizeForComparison(entry) === 'browser-daten',
+  );
+
   return contents.some((content) => {
+    if (excludesBrowserData && containsWebUrl(content)) return true;
     const normalized = normalizeForComparison(content);
     return exclusions.some((exclusion) => normalized.includes(exclusion));
   });

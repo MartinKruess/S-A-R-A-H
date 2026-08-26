@@ -20,7 +20,7 @@ describe('forwardToRenderers', () => {
     const send = vi.fn();
     electronMocks.getAllWindows.mockReturnValue([{
       isDestroyed: () => false,
-      webContents: { send },
+      webContents: { isDestroyed: () => false, send },
     }]);
     const bus = new MessageBus();
     const stop = forwardToRenderers(bus, 'llm:chunk');
@@ -47,7 +47,7 @@ describe('forwardToRenderers', () => {
     const send = vi.fn();
     electronMocks.getAllWindows.mockReturnValue([{
       isDestroyed: () => true,
-      webContents: { send },
+      webContents: { isDestroyed: () => false, send },
     }]);
     const bus = new MessageBus();
     forwardToRenderers(bus, 'storage:degraded');
@@ -55,5 +55,41 @@ describe('forwardToRenderers', () => {
     bus.emit('router', 'storage:degraded', { message: 'offline' });
 
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('does not send into destroyed webContents', () => {
+    const send = vi.fn();
+    electronMocks.getAllWindows.mockReturnValue([{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => true, send },
+    }]);
+    const bus = new MessageBus();
+    forwardToRenderers(bus, 'storage:degraded');
+
+    bus.emit('router', 'storage:degraded', { message: 'offline' });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('continues forwarding after a closing renderer throws during send', () => {
+    const firstSend = vi.fn(() => { throw new Error('renderer gone'); });
+    const secondSend = vi.fn();
+    electronMocks.getAllWindows.mockReturnValue([
+      {
+        isDestroyed: () => false,
+        webContents: { isDestroyed: () => false, send: firstSend },
+      },
+      {
+        isDestroyed: () => false,
+        webContents: { isDestroyed: () => false, send: secondSend },
+      },
+    ]);
+    const bus = new MessageBus();
+    forwardToRenderers(bus, 'storage:degraded');
+
+    bus.emit('router', 'storage:degraded', { message: 'offline' });
+
+    expect(secondSend).toHaveBeenNthCalledWith(1, 'storage:degraded', { message: 'offline' });
+    expect(secondSend).toHaveBeenCalledTimes(2);
   });
 });

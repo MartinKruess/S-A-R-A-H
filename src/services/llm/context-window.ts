@@ -29,6 +29,33 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
+function groupCompleteTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
+  const turns: ChatMessage[][] = [];
+  let current: ChatMessage[] | null = null;
+  for (const message of messages) {
+    if (message.role === 'user') {
+      if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+      current = [message];
+    } else if (message.role === 'assistant' && current) {
+      current.push(message);
+    }
+  }
+  if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+  return turns;
+}
+
+function keepNewestCompleteTurns(turns: readonly ChatMessage[][], budget: number): ChatMessage[] {
+  const kept: ChatMessage[][] = [];
+  let remaining = budget;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const tokens = turns[index].reduce((sum, message) => sum + estimateTokens(message.content), 0);
+    if (tokens > remaining) break;
+    remaining -= tokens;
+    kept.unshift(turns[index]);
+  }
+  return kept.flat();
+}
+
 /**
  * Builds the prompt within the real model context window:
  * [system, header?, ...startContext, ...olderHistory, currentUserMessage].
@@ -44,7 +71,7 @@ export function buildContextWindow(input: ContextWindowInput): ChatMessage[] {
 
   const current = history[history.length - 1];
   if (!current) return [system];
-  const older = history.slice(0, -1);
+  const olderTurns = groupCompleteTurns(history.slice(0, -1));
 
   const currentTokens = estimateTokens(current.content);
   if (currentTokens > budget) {
@@ -65,24 +92,14 @@ export function buildContextWindow(input: ContextWindowInput): ChatMessage[] {
 
   // Live history has priority over start context: fill newest-first, stop at the
   // first message that does not fit (whole messages only — no holes).
-  const keptHistory: ChatMessage[] = [];
-  for (let i = older.length - 1; i >= 0; i--) {
-    const tokens = estimateTokens(older[i].content);
-    if (tokens > budget) break;
-    budget -= tokens;
-    keptHistory.unshift(older[i]);
-  }
+  const keptHistory = keepNewestCompleteTurns(olderTurns, budget);
+  budget -= keptHistory.reduce((sum, message) => sum + estimateTokens(message.content), 0);
 
   // Whatever remains goes to the start context (trimmed oldest-first), header included.
   const keptStart: ChatMessage[] = [];
   if (startContext.length > 0) {
     let startBudget = budget - estimateTokens(START_CONTEXT_HEADER);
-    for (let i = startContext.length - 1; i >= 0; i--) {
-      const tokens = estimateTokens(startContext[i].content);
-      if (tokens > startBudget) break;
-      startBudget -= tokens;
-      keptStart.unshift(startContext[i]);
-    }
+    keptStart.push(...keepNewestCompleteTurns(groupCompleteTurns(startContext), startBudget));
   }
 
   const startBlock: ChatMessage[] =

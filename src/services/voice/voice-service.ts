@@ -34,6 +34,7 @@ const SILENCE_RMS_THRESHOLD = 0.01;
 /** Default sample rate for STT */
 const SAMPLE_RATE = 16_000;
 const STT_TIMEOUT_MS = 60_000;
+const CAPTURE_FLUSH_TIMEOUT_MS = 2_000;
 
 type VoiceTurnMode = 'voice' | 'chatspeak';
 
@@ -88,6 +89,11 @@ export class VoiceService implements SarahService {
   private activePlaybackTurnId: TurnId | null = null;
   private activePlaybackId: PlaybackId | null = null;
   private activeCaptureId: VoiceCaptureId | null = null;
+  private readonly captureFlushWaiters = new Map<VoiceCaptureId, {
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+  }>();
   private sttAbort: AbortController | null = null;
   private readonly spokenTurns = new Set<TurnId>();
   private readonly voiceDoneTurns = new Set<TurnId>();
@@ -144,6 +150,8 @@ export class VoiceService implements SarahService {
     }
     if (captureId !== this.activeCaptureId || this._voiceState !== 'listening') return;
 
+    this.rejectCaptureFlush(captureId, new Error(message));
+
     const turnId = this.activeInputTurnId;
     this.voiceGeneration += 1;
     this.transitionGeneration = null;
@@ -157,6 +165,9 @@ export class VoiceService implements SarahService {
       message,
     });
     if (turnId) {
+      this.processingTurnIds.delete(turnId);
+      this.voiceRelevantTurns.delete(turnId);
+      this.turnSpeechDecisions.delete(turnId);
       this.context.bus.emit(this.id, 'turn:terminal', {
         turnId,
         status: 'error',
@@ -164,6 +175,38 @@ export class VoiceService implements SarahService {
       });
     }
     this.setState('idle');
+  }
+
+  /** Completes the exact renderer capture whose worklet and IPC tail were flushed. */
+  handleCaptureFlushed(captureId: VoiceCaptureId): void {
+    const waiter = this.captureFlushWaiters.get(captureId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.captureFlushWaiters.delete(captureId);
+    waiter.resolve();
+  }
+
+  private rejectCaptureFlush(captureId: VoiceCaptureId, error: Error): void {
+    const waiter = this.captureFlushWaiters.get(captureId);
+    if (!waiter) return;
+    clearTimeout(waiter.timeout);
+    this.captureFlushWaiters.delete(captureId);
+    waiter.reject(error);
+  }
+
+  private requestCaptureFlush(captureId: VoiceCaptureId): Promise<void> {
+    const existing = this.captureFlushWaiters.get(captureId);
+    if (existing) {
+      return Promise.reject(new Error(`Capture ${captureId} is already being flushed`));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.captureFlushWaiters.delete(captureId);
+        reject(new Error('Renderer capture flush timed out'));
+      }, CAPTURE_FLUSH_TIMEOUT_MS);
+      this.captureFlushWaiters.set(captureId, { resolve, reject, timeout });
+      this.context.bus.emit(this.id, 'voice:capture-flush-request', { captureId });
+    });
   }
 
   setInteractionMode(mode: InteractionMode): void {
@@ -378,6 +421,9 @@ export class VoiceService implements SarahService {
     this.activePlaybackTurnId = null;
     this.activePlaybackId = null;
     this.activeCaptureId = null;
+    for (const [captureId] of this.captureFlushWaiters) {
+      this.rejectCaptureFlush(captureId, new Error('Voice service stopped'));
+    }
     this.spokenTurns.clear();
     this.voiceDoneTurns.clear();
     this.routerErrorTurns.clear();
@@ -922,9 +968,20 @@ export class VoiceService implements SarahService {
       this.setState('idle');
       return;
     }
-    const audioData = this.audio.stopRecording(captureId);
     this.processingTurnIds.add(turnId);
+    try {
+      await this.requestCaptureFlush(captureId);
+    } catch (error) {
+      if (this.activeCaptureId === captureId) {
+        this.audio.stopRecording(captureId);
+        this.activeInputTurnId = null;
+        this.activeCaptureId = null;
+      }
+      throw error;
+    }
+    const audioData = this.audio.stopRecording(captureId);
     this.activeInputTurnId = null;
+    this.activeCaptureId = null;
     if (audioData.length === 0) {
       this.processingTurnIds.delete(turnId);
       this.voiceRelevantTurns.delete(turnId);
@@ -1079,6 +1136,9 @@ export class VoiceService implements SarahService {
     this.activePlaybackTurnId = null;
     this.activePlaybackId = null;
     this.activeInputTurnId = null;
+    if (this.activeCaptureId) {
+      this.rejectCaptureFlush(this.activeCaptureId, new Error(reason));
+    }
     this.activeCaptureId = null;
     this.deferredSentences = this.deferredSentences.filter(
       (item) => !ownedTurnIds.has(item.turnId),

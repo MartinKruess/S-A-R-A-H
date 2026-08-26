@@ -75,7 +75,9 @@ export class ConversationStore {
     try {
       const rows = await this.db.queryMessagesPage({
         excludeConversationId: conversationId,
-        limit: START_CONTEXT_LIMIT,
+        // Read enough headroom to recover the user half when the 20-message
+        // boundary lands in the middle of a multi-message turn.
+        limit: 100,
       });
       const excludedConversationIds = new Set(
         rows
@@ -85,9 +87,29 @@ export class ConversationStore {
           }))
           .map((row) => row.conversation_id),
       );
-      return rows
+      const chronological = rows
         .filter((row) => !excludedConversationIds.has(row.conversation_id))
         .reverse(); // DESC (newest first) → chronological
+      const turns: MessageRow[][] = [];
+      let current: MessageRow[] | null = null;
+      for (const row of chronological) {
+        if (row.role === 'user') {
+          if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+          current = [row];
+        } else if (row.role === 'assistant' && current && row.conversation_id === current[0].conversation_id) {
+          current.push(row);
+        }
+      }
+      if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+
+      const kept: MessageRow[][] = [];
+      let count = 0;
+      for (let index = turns.length - 1; index >= 0; index -= 1) {
+        if (count + turns[index].length > START_CONTEXT_LIMIT) break;
+        kept.unshift(turns[index]);
+        count += turns[index].length;
+      }
+      return kept.flat();
     } catch (err) {
       console.warn('[ConversationStore] Start-context load failed — starting empty:', err);
       return [];

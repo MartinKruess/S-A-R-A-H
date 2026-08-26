@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite } from './storage.interface.js';
 
 /**
  * JSON file-based storage for config/settings.
@@ -69,6 +69,10 @@ export class JsonStorage implements StorageProvider {
 
   async insert(_table: string, _data: Record<string, unknown>): Promise<number> {
     throw new Error('JsonStorage does not support table operations. Use SqliteStorage.');
+  }
+
+  async insertTurnMessages(_conversationId: number, _messages: readonly TurnMessageWrite[]): Promise<void> {
+    throw new Error('JsonStorage does not support message operations. Use SqliteStorage.');
   }
 
   async update(_table: string, _filter: Filter, _data: Record<string, unknown>): Promise<number> {

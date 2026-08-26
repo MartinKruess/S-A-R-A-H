@@ -1,7 +1,12 @@
 import type { CustomCommand } from '../../core/config-schema.js';
+import { BUILTIN_COMMANDS } from './builtin-commands.js';
 
-const AVAILABLE_BUILTIN_COMMANDS = new Set(['/anonymous', '/confirm']);
-const UNAVAILABLE_BUILTIN_COMMANDS = new Set(['/showcontext', '/quietmode']);
+const AVAILABLE_BUILTIN_COMMANDS: ReadonlySet<string> = new Set(
+  BUILTIN_COMMANDS.filter((entry) => entry.available).map((entry) => entry.command),
+);
+const UNAVAILABLE_BUILTIN_COMMANDS: ReadonlySet<string> = new Set(
+  BUILTIN_COMMANDS.filter((entry) => !entry.available).map((entry) => entry.command),
+);
 const COMMAND_PATTERN = /^(\/[a-z0-9_-]+)(?:\s+([\s\S]*))?$/i;
 const MAX_PROMPT_LENGTH = 2_000;
 const MAX_ARGUMENT_LENGTH = 500;

@@ -107,6 +107,14 @@ const api: SarahApi = {
       ipcRenderer.on('voice:state', handler);
       return () => ipcRenderer.removeListener('voice:state', handler);
     },
+    onCaptureFlushRequest: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: IpcEvents['voice:capture-flush-request'],
+      ) => callback(data);
+      ipcRenderer.on('voice:capture-flush-request', handler);
+      return () => ipcRenderer.removeListener('voice:capture-flush-request', handler);
+    },
     onTranscript: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['voice:transcript']) => callback(data);
       ipcRenderer.on('voice:transcript', handler);
@@ -140,6 +148,7 @@ const api: SarahApi = {
     },
     setInteractionMode: (mode) => ipcRenderer.invoke('voice-set-interaction-mode', mode),
     sendAudioChunk: (captureId, chunk) => ipcRenderer.invoke('voice-audio-chunk', { captureId, chunk }),
+    captureFlushed: (captureId) => ipcRenderer.invoke('voice-capture-flushed', { captureId }),
     configChanged: () => ipcRenderer.invoke('voice-config-changed'),
   },
 

@@ -1,7 +1,9 @@
+import { MAX_CHAT_MESSAGE_LENGTH } from '../core/chat-limits.js';
+export { MAX_CHAT_MESSAGE_LENGTH } from '../core/chat-limits.js';
+
 // Guards for untrusted renderer payloads. Convention (spec A, A3):
 // invalid payload → console.warn('[IPC] invalid payload for <channel>')
 // + return undefined (void channels) / null (value channels).
-export const MAX_CHAT_MESSAGE_LENGTH = 4000;
 export const MAX_AUDIO_CHUNK_SAMPLES = 65536;
 export const MAX_TITLE_LENGTH = 200;
 export const MAX_VOICE_ERROR_LENGTH = 500;

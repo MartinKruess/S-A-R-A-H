@@ -5,6 +5,7 @@ import type { LlmProvider, ChatMessage, ChatOptions } from '../../../src/service
 import type { AppContext } from '../../../src/core/bootstrap';
 import { MessageBus } from '../../../src/core/message-bus';
 import { feedbackTexts } from '../../../src/services/llm/filler-phrases';
+import type { ModelRuntimePort } from '../../../src/services/llm/model-runtime';
 
 function createMockProvider(id: string, chatResponse: string): LlmProvider {
   return {
@@ -52,6 +53,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
         set: vi.fn(),
         query: vi.fn().mockResolvedValue([]),
         insert: vi.fn().mockResolvedValue(1),
+        insertTurnMessages: vi.fn().mockResolvedValue(undefined),
         update: vi.fn(),
         delete: vi.fn(),
         queryMessagesPage: vi.fn().mockResolvedValue([]),
@@ -74,6 +76,10 @@ describe('RouterService', () => {
   let workerProvider: LlmProvider;
   let context: AppContext;
   let bus: MessageBus;
+
+  function runtime(): ModelRuntimePort {
+    return (service as unknown as { modelRuntime: ModelRuntimePort }).modelRuntime;
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,16 +111,31 @@ describe('RouterService', () => {
     expect(options).toMatchObject({ num_predict: 1, keep_alive: -1 });
   });
 
-  it('does not claim readiness when router warmup fails', async () => {
+  it('keeps the recovery service running while the runtime reports a warmup error', async () => {
     (routerProvider.chat as any).mockRejectedValueOnce(new Error('ollama unreachable'));
     await service.init();
-    expect(service.status).toBe('error');
+    expect(service.status).toBe('running');
+    expect(runtime().snapshot.state).toBe('error');
   });
 
-  it('status is error after init when router provider not available', async () => {
-    (routerProvider.isAvailable as any).mockResolvedValue(false);
-    await service.init();
-    expect(service.status).toBe('error');
+  it('keeps unavailable capability observable and recovers it without rebuilding the service', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(routerProvider.isAvailable)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      await service.init();
+      expect(service.status).toBe('running');
+      expect(runtime().snapshot.roles.router.availability).toBe('unavailable');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runtime().snapshot.roles.router.availability).toBe('available');
+      expect(runtime().snapshot.state).toBe('ready');
+      expect(service.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   describe('init idempotence (single-flight)', () => {
@@ -358,12 +379,14 @@ describe('RouterService', () => {
       await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
 
       const fillerText = fillers[0];
-      // Exactly two messages persisted (user + worker answer) — the filler adds none.
-      const insertCalls = (context.db.insert as any).mock.calls.filter(
-        (call: [string, Record<string, unknown>]) => call[0] === 'messages',
-      );
-      expect(insertCalls).toHaveLength(2);
-      expect(insertCalls.map((c: [string, { content: string }]) => c[1].content)).not.toContain(fillerText);
+      // The whole turn is persisted atomically; the transient filler adds no row.
+      expect(context.db.insertTurnMessages).toHaveBeenCalledOnce();
+      expect(context.db.insertTurnMessages).toHaveBeenCalledWith(1, [
+        { role: 'user', content: 'Erkläre mir Quantenphysik' },
+        { role: 'assistant', content: 'Ausführliche Antwort vom 9B Modell.' },
+      ]);
+      const persisted = vi.mocked(context.db.insertTurnMessages).mock.calls[0][1];
+      expect(persisted.map((message) => message.content)).not.toContain(fillerText);
 
       // The filler was not pushed to history: it never reaches the worker context.
       const workerMessages = (workerProvider.chat as any).mock.calls[0][0] as ChatMessage[];

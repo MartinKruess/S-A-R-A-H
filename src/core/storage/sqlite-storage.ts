@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite } from './storage.interface.js';
 import { MESSAGES_PAGE_MAX_LIMIT } from './storage.interface.js';
 
 const SCHEMA = `
@@ -111,6 +111,20 @@ export class SqliteStorage implements StorageProvider {
 
     const result = this.db.prepare(`INSERT INTO ${table} (${cols}) VALUES (${placeholders})`).run(...values);
     return result.lastInsertRowid as number;
+  }
+
+  async insertTurnMessages(conversationId: number, messages: readonly TurnMessageWrite[]): Promise<void> {
+    if (!Number.isInteger(conversationId) || conversationId <= 0) {
+      throw new Error(`Invalid conversationId: ${conversationId}`);
+    }
+    if (messages.length === 0) return;
+    const insert = this.db.prepare(
+      'INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)',
+    );
+    const writeTurn = this.db.transaction((rows: readonly TurnMessageWrite[]) => {
+      for (const row of rows) insert.run(conversationId, row.role, row.content);
+    });
+    writeTurn(messages);
   }
 
   async update(table: string, filter: Filter, data: Record<string, unknown>): Promise<number> {

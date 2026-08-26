@@ -66,7 +66,7 @@ describe('extractors', () => {
 
   it('detects consent/captcha block pages as distinguishable diagnoses', () => {
     expect(detectBlockPage(CONSENT_FIXTURE)).toBe('consent');
-    expect(detectBlockPage('<html>bitte lösen Sie das captcha</html>')).toBe('captcha');
+    expect(detectBlockPage('<div class="g-recaptcha" data-sitekey="x"></div>')).toBe('captcha');
     expect(detectBlockPage(DDG_FIXTURE)).toBeNull();
   });
 
@@ -106,6 +106,10 @@ describe('EmbeddedBrowserSearchProvider', () => {
       expect(err).toBeInstanceOf(SearchDiagnosisError);
       expect((err as SearchDiagnosisError).diagnosis).toBe('markup-changed');
     }
+  });
+
+  it('does not classify normal results about CAPTCHA as a challenge page', () => {
+    expect(detectBlockPage('<input value="captcha"><h2>Wie funktioniert ein CAPTCHA?</h2>')).toBeNull();
   });
 
   it('does not start the fallback engine after shutdown aborts the active load', async () => {

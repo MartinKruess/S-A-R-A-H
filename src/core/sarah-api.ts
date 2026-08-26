@@ -29,6 +29,9 @@ export type BootStatus = {
 export interface SarahVoiceApi {
   getState(): Promise<IpcEvents['voice:state']>;
   onStateChange(cb: (data: IpcEvents['voice:state']) => void): () => void;
+  onCaptureFlushRequest(
+    cb: (data: IpcEvents['voice:capture-flush-request']) => void,
+  ): () => void;
   onTranscript(cb: (data: BusEvents['voice:transcript']) => void): () => void;
   onPlayAudio(cb: (data: BusEvents['voice:play-audio']) => void): () => void;
   onStopPlayback(cb: (data: BusEvents['voice:stop-playback']) => void): () => void;
@@ -39,6 +42,7 @@ export interface SarahVoiceApi {
   onCapability(cb: (data: BusEvents['voice:capability']) => void): () => void;
   setInteractionMode(mode: 'chat' | 'voice'): Promise<void>;
   sendAudioChunk(captureId: VoiceCaptureId, chunk: number[]): Promise<void>;
+  captureFlushed(captureId: VoiceCaptureId): Promise<void>;
   captureFailed(captureId: VoiceCaptureId | undefined, message: string): Promise<void>;
   configChanged(): Promise<void>;
 }

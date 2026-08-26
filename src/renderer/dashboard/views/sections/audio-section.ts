@@ -1,7 +1,14 @@
-import { createSectionHeader, createSpacer, save, showSaved } from '../../../shared/settings-utils.js';
-import type { SarahConfig } from '../../../../core/config-schema.js';
+import { createSectionHeader, createSpacer, saveAudio, showSaved } from '../../../shared/settings-utils.js';
+import type { AudioConfig, SarahConfig } from '../../../../core/config-schema.js';
 
 type HudSelectElement = HTMLElement & { value: string };
+
+export function createAudioDevicePatch(
+  field: 'inputDeviceId' | 'outputDeviceId',
+  value: string,
+): Partial<AudioConfig> {
+  return { [field]: value || undefined };
+}
 
 export function createAudioSection(config: SarahConfig): HTMLElement {
   const section = document.createElement('div');
@@ -10,15 +17,12 @@ export function createAudioSection(config: SarahConfig): HTMLElement {
   const { header, feedback } = createSectionHeader('Audio');
   section.appendChild(header);
 
-  const audio = { ...(config.audio ?? {}) };
-
   const inputEl = document.createElement('hud-select') as HudSelectElement;
   inputEl.setAttribute('kind', 'audioinput');
-  inputEl.value = audio.inputDeviceId ?? '';
+  inputEl.value = config.audio.inputDeviceId ?? '';
   inputEl.addEventListener('change', (e) => {
     const value = (e as CustomEvent<{ value: string }>).detail.value;
-    audio.inputDeviceId = value || undefined;
-    save('audio', audio);
+    saveAudio(createAudioDevicePatch('inputDeviceId', value));
     showSaved(feedback);
   });
   section.appendChild(inputEl);
@@ -27,11 +31,10 @@ export function createAudioSection(config: SarahConfig): HTMLElement {
 
   const outputEl = document.createElement('hud-select') as HudSelectElement;
   outputEl.setAttribute('kind', 'audiooutput');
-  outputEl.value = audio.outputDeviceId ?? '';
+  outputEl.value = config.audio.outputDeviceId ?? '';
   outputEl.addEventListener('change', (e) => {
     const value = (e as CustomEvent<{ value: string }>).detail.value;
-    audio.outputDeviceId = value || undefined;
-    save('audio', audio);
+    saveAudio(createAudioDevicePatch('outputDeviceId', value));
     showSaved(feedback);
   });
   section.appendChild(outputEl);

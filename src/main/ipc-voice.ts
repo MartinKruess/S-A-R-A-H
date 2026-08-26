@@ -7,6 +7,7 @@ import { getService } from './ipc-helpers.js';
 import {
   isValidAudioInput,
   isValidCaptureFailureInput,
+  isValidCorrelationId,
   isValidInteractionMode,
   isValidPlaybackDoneInput,
   isValidPlaybackFailureInput,
@@ -73,6 +74,14 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
     if (onChunk) onChunk(samples);
   });
 
+  ipcMain.handle('voice-capture-flushed', (_event, input: { captureId: string }) => {
+    if (!input || !isValidCorrelationId(input.captureId)) {
+      console.warn('[IPC] invalid payload for voice-capture-flushed');
+      return;
+    }
+    getService<VoiceService>(getAppContext(), 'voice').handleCaptureFlushed(input.captureId);
+  });
+
   ipcMain.handle('voice-set-interaction-mode', (_event, mode: string) => {
     if (!isValidInteractionMode(mode)) {
       console.warn('[IPC] invalid payload for voice-set-interaction-mode');
@@ -89,6 +98,7 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
   const bus: MessageBus = getAppContext().bus;
   const unsubscribers = [
     forwardToRenderers(bus, 'voice:state'),
+    forwardToRenderers(bus, 'voice:capture-flush-request'),
     forwardToRenderers(bus, 'voice:transcript'),
     forwardToRenderers(bus, 'voice:error'),
     forwardToRenderers(bus, 'voice:capability'),
@@ -105,6 +115,7 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
       'voice-playback-failed',
       'voice-set-capture-ready',
       'voice-audio-chunk',
+      'voice-capture-flushed',
       'voice-set-interaction-mode',
       'voice-config-changed',
     ]) ipcMain.removeHandler(channel);

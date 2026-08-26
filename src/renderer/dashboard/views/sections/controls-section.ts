@@ -3,12 +3,7 @@ import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahButton } from '../../../components/sarah-button.js';
 import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
 import type { SarahConfig, CustomCommand } from '../../../../core/config-schema.js';
-
-const BUILTIN_COMMANDS = [
-  { command: '/anonymous', description: 'Nachricht wird nach der Session vergessen' },
-  { command: '/showcontext', description: 'Zeigt alles was Sarah über dich weiß' },
-  { command: '/quietmode', description: 'Ruhemodus ein/aus' },
-];
+import { BUILTIN_COMMANDS, RESERVED_BUILTIN_COMMANDS } from '../../../../services/commands/builtin-commands.js';
 
 function createCommandRow(cmd: { command: string; description: string }, deletable: boolean, onDelete?: () => void): HTMLElement {
   const row = document.createElement('div');
@@ -180,7 +175,7 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
       if (!cmd.startsWith('/')) cmd = '/' + cmd;
       cmd = cmd.toLowerCase();
       if (!/^\/[a-z0-9_-]{1,50}$/i.test(cmd)) return;
-      if (BUILTIN_COMMANDS.some(b => b.command.toLowerCase() === cmd)) return;
+      if (RESERVED_BUILTIN_COMMANDS.has(cmd)) return;
       if (customCmds.some(c => c.command.trim().toLowerCase() === cmd)) return;
       customCmds.push({ command: cmd, prompt });
       controls.customCommands = customCmds;

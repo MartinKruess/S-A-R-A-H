@@ -115,6 +115,12 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function acknowledgeCaptureFlushes(bus: MessageBus, service: VoiceService): void {
+  bus.on('voice:capture-flush-request', (message) => {
+    queueMicrotask(() => service.handleCaptureFlushed(message.data.captureId));
+  });
+}
+
 interface TestStreamState {
   outputId: string;
   sequence: number;
@@ -203,6 +209,7 @@ describe('VoiceService', () => {
   let hotkey: HotkeyManager;
   let context: AppContext;
   let service: VoiceService;
+  let autoFlushCapture: boolean;
 
   beforeEach(() => {
     bus = new MessageBus();
@@ -213,6 +220,12 @@ describe('VoiceService', () => {
     hotkey = createMockHotkey();
     context = createMockContext(bus);
     service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
+    autoFlushCapture = true;
+    bus.on('voice:capture-flush-request', (message) => {
+      if (autoFlushCapture) {
+        queueMicrotask(() => service.handleCaptureFlushed(message.data.captureId));
+      }
+    });
     service.setRendererCaptureReady(true);
   });
 
@@ -463,6 +476,57 @@ describe('VoiceService', () => {
     expect(transcriptListener.mock.calls[0][0].data.text).toBe('Hallo Sarah');
     expect(chatListener).toHaveBeenCalledOnce();
     expect(chatListener.mock.calls[0][0].data.originalText).toBe('Hallo Sarah');
+  });
+
+  it('does not snapshot the recording until the correlated renderer flush is acknowledged', async () => {
+    autoFlushCapture = false;
+    await service.init();
+    const flushRequest = vi.fn();
+    bus.on('voice:capture-flush-request', flushRequest);
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    onDown();
+    const captureId = service.voiceStateSnapshot.captureId;
+    onUp();
+    await Promise.resolve();
+
+    expect(flushRequest).toHaveBeenCalledWith(expect.objectContaining({
+      data: { captureId },
+    }));
+    expect(audio.stopRecording).not.toHaveBeenCalled();
+    service.handleCaptureFlushed(captureId!);
+    await flush();
+
+    expect(audio.stopRecording).toHaveBeenCalledWith(captureId);
+    expect(stt.transcribe).toHaveBeenCalledOnce();
+  });
+
+  it('terminally fails a turn instead of transcribing when its renderer flush fails', async () => {
+    autoFlushCapture = false;
+    await service.init();
+    const terminals: Array<{ turnId: string; status: string; message?: string }> = [];
+    bus.on('turn:terminal', (message) => terminals.push(message.data));
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    onDown();
+    const snapshot = service.voiceStateSnapshot;
+    onUp();
+    await Promise.resolve();
+    service.handleCaptureFailure(snapshot.captureId, 'Capture flush failed');
+    await flush();
+
+    expect(stt.transcribe).not.toHaveBeenCalled();
+    expect(audio.stopRecording).toHaveBeenCalledWith(snapshot.captureId);
+    expect(terminals).toEqual([{
+      turnId: snapshot.turnId,
+      status: 'error',
+      message: 'Capture flush failed',
+    }]);
+    expect(service.voiceState).toBe('idle');
   });
 
   // --- 8. Detects abort phrase -> does not emit chat:message ---
@@ -1625,6 +1689,7 @@ describe('TTS deferral while listening (F9)', () => {
 
     const service = new VoiceService(createMockContext(bus), stt, tts, createMockWakeWord(), createMockAudio(), hotkey);
     service.setRendererCaptureReady(true);
+    acknowledgeCaptureFlushes(bus, service);
     await service.init();
 
     const doneListener = vi.fn();
@@ -1914,6 +1979,7 @@ describe('TTS deferral while listening (F9)', () => {
       hotkey,
     );
     service.setRendererCaptureReady(true);
+    acknowledgeCaptureFlushes(bus, service);
     (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue('limit');
     (stt.transcribe as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('STT failed'));
     await service.init();
@@ -1955,6 +2021,7 @@ describe('TTS deferral while listening (F9)', () => {
         hotkey,
       );
       service.setRendererCaptureReady(true);
+      acknowledgeCaptureFlushes(bus, service);
       (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue('limit');
       (stt.transcribe as ReturnType<typeof vi.fn>).mockImplementation(
         () => new Promise<string>(() => {}),
