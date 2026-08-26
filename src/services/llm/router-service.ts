@@ -16,6 +16,7 @@ import type { MediaAction } from '../actions/media-controller.js';
 import { getActionAcknowledgement } from '../actions/action-feedback.js';
 import { resolveProfileResponse } from './profile-response.js';
 import { resolveSlashCommand } from '../commands/slash-command-resolver.js';
+import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -223,6 +224,10 @@ export class RouterService implements SarahService {
         await this.routeAndRespond(text, mode);
       }
     } catch (err) {
+      if (this.isWorkerUnavailable()) {
+        await this.emitAssistantResponse(WORKER_UNAVAILABLE_MESSAGE);
+        return;
+      }
       const errorKey = err instanceof Error && err.message === 'timeout' ? 'timeout' : 'connection';
       this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES[errorKey] });
     }
@@ -298,10 +303,11 @@ export class RouterService implements SarahService {
 
   /** Serialize every assistant output; a failed job never blocks the queue. */
   private enqueueOutput(job: () => Promise<void>): Promise<void> {
-    this.outputQueue = this.outputQueue.then(job).catch((err) => {
+    const currentJob = this.outputQueue.then(job);
+    this.outputQueue = currentJob.catch((err) => {
       console.warn('[Router] Output job failed:', err);
     });
-    return this.outputQueue;
+    return currentJob;
   }
 
   /**
@@ -363,6 +369,11 @@ export class RouterService implements SarahService {
     return this.status === 'running'
       && lifecycleState !== 'stopping'
       && lifecycleState !== 'stopped';
+  }
+
+  private isWorkerUnavailable(): boolean {
+    const worker = this.modelRuntime.snapshot.roles.local_worker;
+    return worker.availability !== 'available' || worker.residency === 'error';
   }
 
 }

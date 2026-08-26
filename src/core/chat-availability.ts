@@ -3,6 +3,9 @@ import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 export const CHAT_UNAVAILABLE_MESSAGE =
   'Sarah ist noch nicht bereit oder der Router ist nicht verfügbar.';
 
+export const WORKER_UNAVAILABLE_MESSAGE =
+  'Auf meine tieferen Gedanken kann ich gerade nicht zugreifen. Einfache Befehle funktionieren weiterhin.';
+
 /**
  * @param snapshot - Aktueller, zentral veröffentlichter Laufzeitstatus.
  *

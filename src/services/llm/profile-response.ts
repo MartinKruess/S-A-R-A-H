@@ -1,7 +1,8 @@
 import type { SarahConfig } from '../../core/config-schema.js';
 
 const NAME_QUESTION_PATTERNS: readonly RegExp[] = [
-  /\bwie (?:heiße|heisse) ich\b/i,
+  /\bwie (?:heiße|heisse|heiß|heiss) ich\b/i,
+  /\bwie ist mein name\b/i,
   /\bwas ist mein name\b/i,
   /\bkennst du meinen namen\b/i,
   /\bweißt du\b.*\b(?:meinen namen|wie ich (?:heiße|heisse))\b/i,

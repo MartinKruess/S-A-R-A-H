@@ -9,6 +9,8 @@ function profile(displayName: string) {
 describe('resolveProfileResponse', () => {
   it.each([
     'Wie heiße ich?',
+    'Wie heiß ich?',
+    'Wie ist mein Name?',
     'Was ist mein Name?',
     'Kennst du meinen Namen?',
     'Weißt du eigentlich, wie ich heiße?',

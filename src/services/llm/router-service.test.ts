@@ -240,6 +240,18 @@ class ScriptedProvider implements LlmProvider {
   }
 }
 
+class UnavailableProvider implements LlmProvider {
+  readonly id = 'unavailable';
+
+  async isAvailable(): Promise<boolean> {
+    return false;
+  }
+
+  async chat(): Promise<string> {
+    throw new Error('Unavailable provider must never be called');
+  }
+}
+
 describe('RouterService (action layer)', () => {
   let tmpDir: string;
   let ctx: AppContext;
@@ -306,6 +318,28 @@ describe('RouterService (action layer)', () => {
     expect(requests).toHaveLength(0);
     expect(done).toEqual(['Antwort vom Worker.']);
     expect(done.join(' ')).not.toContain('vielleicht');
+  });
+
+  it('reports a missing worker immediately and keeps deterministic router turns usable', async () => {
+    ctx.parsedConfig.profile.displayName = 'Martin';
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
+    router = new RouterService(ctx, routerP, new UnavailableProvider());
+    await router.init();
+
+    const done: string[] = [];
+    const errors: string[] = [];
+    ctx.bus.on('llm:done', (msg) => done.push(msg.data.fullText));
+    ctx.bus.on('llm:error', (msg) => errors.push(msg.data.message));
+
+    await router.handleChatMessage('Erkläre mir Quantenphysik');
+    await router.handleChatMessage('Wie ist mein Name?');
+
+    expect(done).toEqual([
+      'Auf meine tieferen Gedanken kann ich gerade nicht zugreifen. Einfache Befehle funktionieren weiterhin.',
+      'Du heißt Martin.',
+    ]);
+    expect(errors).toHaveLength(0);
+    expect(router.activeModel).toBe('2b');
   });
 
   it('expands a configured slash command before normal safe routing', async () => {

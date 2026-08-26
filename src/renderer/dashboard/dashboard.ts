@@ -6,7 +6,11 @@ import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
-import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../../core/chat-availability.js';
+import {
+  CHAT_UNAVAILABLE_MESSAGE,
+  WORKER_UNAVAILABLE_MESSAGE,
+  isChatAvailable,
+} from '../../core/chat-availability.js';
 
 declare const sarah: SarahApi;
 
@@ -38,6 +42,7 @@ const chatMessages = document.getElementById('chat-messages')!;
 const chatInput = document.getElementById('chat-input') as HTMLInputElement;
 const chatModeToggle = document.getElementById('chat-mode-toggle')!;
 let runtimeErrorBubble: HTMLElement | null = null;
+let workerWarningBubble: HTMLElement | null = null;
 
 function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeStatus']>>): void {
   const available = isChatAvailable(snapshot);
@@ -56,6 +61,17 @@ function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeSta
   } else if (runtimeErrorBubble) {
     runtimeErrorBubble.remove();
     runtimeErrorBubble = null;
+  }
+
+  const worker = snapshot.capabilities.local_worker;
+  const workerFailed = worker && ['degraded', 'unavailable', 'error'].includes(worker.state);
+  if (available && workerFailed) {
+    if (!workerWarningBubble) {
+      workerWarningBubble = addBubble('error', WORKER_UNAVAILABLE_MESSAGE);
+    }
+  } else if (workerWarningBubble) {
+    workerWarningBubble.remove();
+    workerWarningBubble = null;
   }
 }
 

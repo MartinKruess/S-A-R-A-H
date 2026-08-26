@@ -421,7 +421,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 72 Testdateien mit 734 Tests erfolgreich, einschließlich eines vollständigen Laufs bei ausgeschaltetem Docker.
+- 72 Testdateien mit 737 Tests erfolgreich, einschließlich eines vollständigen Laufs bei ausgeschaltetem Docker.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
 - Ein abschließender erneuter Codeaudit nach den Cleanup-Fristen, dem Late-Init-Cleanup und dem Action-Drain ergab keine weitere relevante Layer-0-Codelücke.
 
@@ -444,11 +444,13 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Das GPU-Leistungsprofil zeigte nach dem Speichern korrekt einen Neustarthinweis. Vor dem Neustart blieb die bisherige Runtime aktiv; nach dem Neustart sank die Worker-VRAM-Belegung im Profil `sparsam` von rund 5,1 GB auf rund 3,0 GB. Anschließend wurde `normal` wieder gespeichert.
 - Der reale Start ohne Docker/Ollama zeigte einen ehrlichen Degraded-Zustand: keine Bereitschaftsansage, dauerhaft sichtbarer Docker-/Router-Hinweis und deaktivierte Texteingabe. F9 startete weder Aufnahme noch Transkription und erzeugte keine Nutzer-Nachricht. Nach Wiederstart von Docker startete Sarah den Container selbst, lud nur den Router und beantwortete `Wie heiße ich?` wieder korrekt.
 - Der Ausfalltest deckte außerdem eine versteckte Docker-Abhängigkeit im Test-/Legacy-Modelladapter auf. Der nicht ladende Adapter führt nun auch keine realen VRAM-Unloads aus; der produktive Modell-Lifecycle bleibt unverändert streng geprüft.
+- Der direkte Electron-Quit über `File > Quit` wurde mit geladenem `qwen3:8b` praktisch abgenommen. Whisper bestätigte `/shutdown`; danach waren Sarah-Electron, Python, Sarah-Ports und geladene Ollama-Modelle vollständig beendet beziehungsweise entladen.
+- Ein fehlendes Worker-Modell wird beim Start als nicht blockierender Degraded-Hinweis angezeigt. Eine 8B-Anfrage erhält sofort die feste sichtbare und gesprochene Antwort, dass tiefere Gedanken nicht verfügbar sind; anschließende Router- und Profilfragen funktionieren weiter.
+- Die natürliche Profilfrage `Wie ist mein Name?` sowie die umgangssprachliche Variante `Wie heiß ich?` werden nun deterministisch beantwortet. Eine Whisper-Fehltranskription wie `Wie heißt es?` wird bewusst nicht als Namensfrage geraten.
+- Die serielle Ausgabeschlange bleibt nach einem fehlgeschlagenen Workerjob nutzbar und reicht dessen Fehler an den aktuellen Gesprächspfad zurück, statt ihn ausschließlich zu protokollieren.
 
 ### Noch praktisch abzunehmen
 
-- direkte Quit-Aktion mit anschließender Prozess-/VRAM-Prüfung; normales Schließen des sichtbaren App-Fensters ist bestanden
-- realer Start mit fehlendem Worker-Modell
 - realer STT- und TTS-Teilausfall
 
 Bis diese praktische Matrix abgeschlossen ist, bleibt Layer 0 als Ganzes **gelb** statt grün. Die implementierte technische Basis und ihre automatisierten Verträge sind abgeschlossen.
