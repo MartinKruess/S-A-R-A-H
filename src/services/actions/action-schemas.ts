@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ConfirmationLevel } from '../../core/action-confirmation.js';
 
 /**
  * Single source of truth for V1 actions: names (allowlist) + param schemas.
@@ -26,6 +27,41 @@ export const ACTION_SCHEMAS = {
 } as const;
 
 export type ActionName = keyof typeof ACTION_SCHEMAS;
+
+type ActionConfirmationRisk = 'read' | 'change' | 'critical';
+
+const ACTION_CONFIRMATION_RISK: Record<ActionName, ActionConfirmationRisk> = {
+  open_program: 'change',
+  web_search: 'read',
+  show_browser: 'read',
+  set_volume: 'change',
+  spotify_volume: 'change',
+  spotify_volume_adjust: 'change',
+  set_timer: 'change',
+  lock_screen: 'change',
+  media_play: 'change',
+  media_pause: 'change',
+  media_toggle: 'change',
+  media_next: 'change',
+  media_previous: 'change',
+};
+
+/**
+ * @param level - Aktuell konfigurierte Bestätigungsstufe.
+ * @param action - Validierter Action-Name.
+ *
+ * - Erzwingt kritische Actions auf jeder Stufe.
+ * - Erzwingt bei `maximal` zusätzlich jede zustandsverändernde Action.
+ * - Lässt reine Suche und Ergebnisanzeige ohne Bestätigung zu.
+ *
+ * @returns Ob vor der Ausführung eine korrelierte Zustimmung erforderlich ist.
+ *
+ * @category Authorization Business Logic
+ */
+export function requiresActionConfirmation(level: ConfirmationLevel, action: ActionName): boolean {
+  const risk = ACTION_CONFIRMATION_RISK[action];
+  return risk === 'critical' || (level === 'maximal' && risk === 'change');
+}
 
 const ACTION_NAME_SET: ReadonlySet<string> = new Set(Object.keys(ACTION_SCHEMAS));
 

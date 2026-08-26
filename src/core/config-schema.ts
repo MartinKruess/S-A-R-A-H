@@ -235,6 +235,9 @@ export const SarahConfigSchema = z.preprocess(
 // ── Inferred Types ──
 
 export type SarahConfig = z.infer<typeof SarahConfigSchema>;
+export type SarahConfigPatch = Omit<Partial<SarahConfig>, 'audio'> & {
+  audio?: Partial<AudioConfig>;
+};
 export type Profile = z.infer<typeof ProfileSchema>;
 export type LinkPreference = z.infer<typeof LinkPreferenceSchema>;
 export type Skills = z.infer<typeof SkillsSchema>;

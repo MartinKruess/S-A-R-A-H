@@ -9,6 +9,7 @@ import type { StorageProvider } from './storage/storage.interface.js';
 import { SarahConfigSchema } from './config-schema.js';
 import type { SarahConfig } from './config-schema.js';
 import { AppLifecycleController } from './app-lifecycle-controller.js';
+import { ActionConfirmationGate } from './action-confirmation.js';
 
 export interface AppContext {
   bus: MessageBus;
@@ -18,6 +19,8 @@ export interface AppContext {
   db: StorageProvider;
   /** Validated and defaulted config snapshot. Re-read after save-config. */
   parsedConfig: SarahConfig;
+  /** Shared one-time authorization boundary for state-changing actions. */
+  actionConfirmations: ActionConfirmationGate;
   /** Non-null if config validation failed — caller should show dialog */
   configErrors: string[] | null;
   shutdown: () => Promise<void>;
@@ -41,6 +44,7 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
     const bus = new MessageBus();
     const registry = new ServiceRegistry(bus);
     const lifecycle = new AppLifecycleController(registry);
+    const actionConfirmations = new ActionConfirmationGate();
 
     const rawConfig = new JsonStorage(path.join(userDataPath, 'config.json'));
     config = new EncryptedStorage(rawConfig, encryptionKey);
@@ -74,6 +78,7 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
       config,
       db,
       parsedConfig,
+      actionConfirmations,
       configErrors,
       shutdown: async () => { await lifecycle.shutdown(); },
     };
@@ -84,4 +89,11 @@ export async function bootstrap(userDataPath: string): Promise<AppContext> {
     ]);
     throw error;
   }
+}
+
+/** Persist the validated default snapshot after the user accepts config repair. */
+export async function repairInvalidConfig(context: AppContext): Promise<void> {
+  if (!context.configErrors) return;
+  await context.config.set('root', context.parsedConfig);
+  context.configErrors = null;
 }

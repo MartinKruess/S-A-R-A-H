@@ -18,6 +18,8 @@ export interface BootSequenceDeps {
   getAppContext: () => AppContext;
   piperProvider: PiperProvider;
   containerManager: OllamaContainerManager;
+  /** Splash completion captured before slow bootstrap/config dialogs finish. */
+  splashDone?: Promise<void>;
 }
 
 type BootSeverity = 'info' | 'warning' | 'error';
@@ -257,7 +259,13 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       void mainWindow.loadFile(path.join(__dirname, '..', '..', 'wizard.html'));
     }
   };
-  ipcMain.on('splash-done', onSplashDone);
+  if (deps.splashDone) {
+    void deps.splashDone.then(() => {
+      if (!stopped) onSplashDone();
+    });
+  } else {
+    ipcMain.on('splash-done', onSplashDone);
+  }
 
   const onWizardDone = (): void => {
     const mainWindow = getMainWindow();
@@ -450,7 +458,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     pendingDelays.clear();
     cancelSplashTts();
     ipcMain.removeListener('boot-ready', onBootReady);
-    ipcMain.removeListener('splash-done', onSplashDone);
+    if (!deps.splashDone) ipcMain.removeListener('splash-done', onSplashDone);
     ipcMain.removeListener('wizard-done', onWizardDone);
     ipcMain.removeListener('boot-done', onBootDone);
     ipcMain.removeHandler('splash-tts');

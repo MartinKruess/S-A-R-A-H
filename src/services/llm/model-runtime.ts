@@ -62,6 +62,8 @@ export interface ModelRuntimeDeps {
   idleTimeoutMs?: number;
   operationDrainTimeoutMs?: number;
   cleanupTimeoutMs?: number;
+  transitionTimeoutMs?: number;
+  runtimeRecheckDelayMs?: number;
   /** Test/legacy adapter only: let the real request perform Ollama's lazy model load. */
   eagerLoadTransitions?: boolean;
 }
@@ -69,6 +71,8 @@ export interface ModelRuntimeDeps {
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 3_000;
+const DEFAULT_TRANSITION_TIMEOUT_MS = 120_000;
+const DEFAULT_RUNTIME_RECHECK_DELAY_MS = 5_000;
 
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
@@ -106,11 +110,14 @@ export class ModelRuntime implements ModelRuntimePort {
   private readonly idleTimeoutMs: number;
   private readonly operationDrainTimeoutMs: number;
   private readonly cleanupTimeoutMs: number;
+  private readonly transitionTimeoutMs: number;
+  private readonly runtimeRecheckDelayMs: number;
   private readonly eagerLoadTransitions: boolean;
   private current: ModelRuntimeSnapshot;
   private initPromise: Promise<ModelRuntimeSnapshot> | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private runtimeRecheckTimer: ReturnType<typeof setTimeout> | null = null;
   private shuttingDown = false;
   private destroyed = false;
   private destroyPromise: Promise<void> | null = null;
@@ -144,6 +151,8 @@ export class ModelRuntime implements ModelRuntimePort {
     this.idleTimeoutMs = deps.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.operationDrainTimeoutMs = deps.operationDrainTimeoutMs ?? DEFAULT_DRAIN_TIMEOUT_MS;
     this.cleanupTimeoutMs = deps.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
+    this.transitionTimeoutMs = deps.transitionTimeoutMs ?? DEFAULT_TRANSITION_TIMEOUT_MS;
+    this.runtimeRecheckDelayMs = deps.runtimeRecheckDelayMs ?? DEFAULT_RUNTIME_RECHECK_DELAY_MS;
     this.eagerLoadTransitions = deps.eagerLoadTransitions ?? true;
     this.current = {
       state: 'registered',
@@ -215,7 +224,12 @@ export class ModelRuntime implements ModelRuntimePort {
     try {
       await this.ensureRole('router');
       if (!this.eagerLoadTransitions) {
-        await this.routing.warmup(this.runtimeAbort.signal);
+        await runWithTimeout(
+          (warmupSignal) => this.routing.warmup(warmupSignal),
+          this.transitionTimeoutMs,
+          `Router warmup timed out: ${this.config.routerModel}`,
+          this.runtimeAbort.signal,
+        );
       }
     } catch (value) {
       const message = errorMessage(value);
@@ -306,15 +320,19 @@ export class ModelRuntime implements ModelRuntimePort {
   ): Promise<T> {
     return this.enqueue(async (generation) => {
       const linked = linkAbortSignals(this.runtimeAbort.signal, callerSignal);
+      let transitionCompleted = false;
       try {
         throwIfAborted(linked.signal);
         await this.transition(role, generation, linked.signal);
+        transitionCompleted = true;
         this.assertCurrent(generation);
         const result = await operation(linked.signal);
         this.assertCurrent(generation);
         if (restoreRouter) this.scheduleRouterRestore();
         return result;
       } catch (operationError) {
+        const operationWasAborted = linked.signal.aborted
+          || (operationError instanceof Error && operationError.name === 'AbortError');
         if (
           restoreRouter
           && generation === this.generation
@@ -342,31 +360,107 @@ export class ModelRuntime implements ModelRuntimePort {
             this.current.roles.router.message = message;
             this.current.state = 'degraded';
             this.onCapability?.('router', 'error', message);
+            if (!operationWasAborted) this.markRuntimeFailure(role, operationError);
             throw new AggregateError(
               [operationError, restoreError],
               'Worker operation and router restore failed',
             );
           }
         }
+        if (
+          transitionCompleted
+          && !operationWasAborted
+          && generation === this.generation
+          && !this.shuttingDown
+          && !this.destroyed
+        ) {
+          this.markRuntimeFailure(role, operationError);
+        }
         throw operationError;
       } finally {
         linked.dispose();
       }
-    });
+    }, callerSignal);
   }
 
-  private enqueue<T>(operation: (generation: number) => Promise<T>): Promise<T> {
+  private enqueue<T>(
+    operation: (generation: number) => Promise<T>,
+    callerSignal?: AbortSignal,
+  ): Promise<T> {
     if (this.shuttingDown || this.destroyed || this.runtimeAbort.signal.aborted) {
       return Promise.reject(new Error('ModelRuntime is shutting down'));
     }
-    const generation = this.generation;
-    const runOperation = () => operation(generation);
+    if (callerSignal?.aborted) {
+      const reason = callerSignal.reason;
+      return Promise.reject(reason instanceof Error ? reason : new Error('ModelRuntime operation aborted'));
+    }
+    const runOperation = () => {
+      throwIfAborted(callerSignal);
+      const generation = ++this.generation;
+      return operation(generation);
+    };
     const run = this.operationTail.then(runOperation, runOperation);
     this.operationTail = run.then(() => undefined, () => undefined);
-    return run;
+    if (!callerSignal) return run;
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        callerSignal.removeEventListener('abort', onAbort);
+        callback();
+      };
+      const onAbort = (): void => finish(() => {
+        const reason = callerSignal.reason;
+        reject(reason instanceof Error ? reason : new Error('ModelRuntime operation aborted'));
+      });
+      callerSignal.addEventListener('abort', onAbort, { once: true });
+      run.then(
+        (value) => finish(() => resolve(value)),
+        (error: Error) => finish(() => reject(error)),
+      );
+    });
   }
 
   private async transition(role: ModelRole, generation: number, signal = this.runtimeAbort.signal): Promise<void> {
+    try {
+      await runWithTimeout(
+        (transitionSignal) => this.performTransition(role, generation, transitionSignal),
+        this.transitionTimeoutMs,
+        `Model transition timed out: ${this.modelFor(role)}`,
+        signal,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.name === 'TimeoutError'
+        && generation === this.generation
+        && !this.shuttingDown
+      ) {
+        this.generation += 1;
+        const message = error.message;
+        const activeRole = this.current.activeRole;
+        if (activeRole) {
+          this.current.roles[activeRole].residency = 'error';
+          this.current.roles[activeRole].message = message;
+          this.onCapability?.(activeRole, 'error', message);
+        }
+        this.current.roles[role].residency = 'error';
+        this.current.roles[role].message = message;
+        this.current.activeRole = null;
+        this.current.state = role === 'router' ? 'error' : 'degraded';
+        this.onCapability?.(role, 'error', message);
+        this.scheduleRuntimeRecheck();
+      }
+      throw error;
+    }
+  }
+
+  private async performTransition(
+    role: ModelRole,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
     this.assertCurrent(generation);
     throwIfAborted(signal);
     this.clearIdleTimer();
@@ -445,7 +539,7 @@ export class ModelRuntime implements ModelRuntimePort {
         target.message = cancelledCleanly ? undefined : errorMessage(value);
         this.current.activeRole = null;
         this.current.state = role === 'router' ? 'error' : 'degraded';
-        if (!cancelledCleanly) this.onCapability?.(role, 'error', target.message);
+        if (!cancelledCleanly) this.markRuntimeFailure(role, value);
       }
       throw value;
     }
@@ -460,6 +554,63 @@ export class ModelRuntime implements ModelRuntimePort {
         console.warn('[ModelRuntime] Router restore failed:', value);
       });
     }, this.idleTimeoutMs);
+  }
+
+  private markRuntimeFailure(role: ModelRole, value: unknown): void {
+    const message = errorMessage(value);
+    const currentRole = this.current.roles[role];
+    currentRole.availability = 'error';
+    if (this.current.activeRole === role) currentRole.residency = 'error';
+    currentRole.message = message;
+    if (this.current.activeRole === role) this.current.activeRole = null;
+    this.current.state = role === 'router' ? 'error' : 'degraded';
+    this.onCapability?.(role, 'error', message);
+    this.scheduleRuntimeRecheck();
+  }
+
+  private scheduleRuntimeRecheck(): void {
+    if (this.shuttingDown || this.destroyed || this.runtimeRecheckTimer) return;
+    this.runtimeRecheckTimer = setTimeout(() => {
+      this.runtimeRecheckTimer = null;
+      void this.recheckRuntime().catch((value) => {
+        if (!this.shuttingDown && !this.destroyed) {
+          console.warn('[ModelRuntime] Runtime recheck failed:', value);
+          this.scheduleRuntimeRecheck();
+        }
+      });
+    }, this.runtimeRecheckDelayMs);
+    this.runtimeRecheckTimer.unref?.();
+  }
+
+  private async recheckRuntime(): Promise<void> {
+    if (this.shuttingDown || this.destroyed) return;
+    await runWithTimeout(
+      async (signal) => {
+        await this.containerManager?.ensureRunning(signal);
+        const [routerCheck, workerCheck] = await Promise.all([
+          this.checkAvailability(this.routerProvider, signal),
+          this.checkAvailability(this.workerProvider, signal),
+        ]);
+        if (!routerCheck.available) {
+          const message = routerCheck.error ?? `Modell nicht verfügbar: ${this.config.routerModel}`;
+          this.markUnavailable('router', message);
+          throw new Error(message);
+        }
+        this.setAvailability('router', true);
+        if (workerCheck.available) this.setAvailability('local_worker', true);
+        else this.markUnavailable(
+          'local_worker',
+          workerCheck.error ?? `Modell nicht verfügbar: ${this.config.workerModel}`,
+        );
+      },
+      this.transitionTimeoutMs,
+      'Ollama runtime recheck timed out',
+      this.runtimeAbort.signal,
+    );
+    await this.ensureRole('router');
+    this.current.state = this.current.roles.local_worker.availability === 'available'
+      ? 'ready'
+      : 'degraded';
   }
 
   assumeRole(role: ModelRole): void {
@@ -482,6 +633,8 @@ export class ModelRuntime implements ModelRuntimePort {
     this.shuttingDown = true;
     this.generation += 1;
     this.clearIdleTimer();
+    if (this.runtimeRecheckTimer) clearTimeout(this.runtimeRecheckTimer);
+    this.runtimeRecheckTimer = null;
     this.initSignalCleanup?.();
     this.initSignalCleanup = null;
     this.runtimeAbort.abort();
@@ -553,7 +706,7 @@ export class ModelRuntime implements ModelRuntimePort {
 
   private assertCurrent(generation: number): void {
     if (generation !== this.generation || this.shuttingDown || this.destroyed) {
-      throw new Error('ModelRuntime operation became stale during shutdown');
+      throw new Error('ModelRuntime operation became stale');
     }
   }
 }

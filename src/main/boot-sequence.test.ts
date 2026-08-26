@@ -113,6 +113,32 @@ describe('main boot sequence splash speech ownership', () => {
     cleanup();
   });
 
+  it('consumes splash completion that was captured before boot handlers registered', async () => {
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn() },
+      loadFile: vi.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      parsedConfig: { onboarding: { setupComplete: true } },
+      bus: new MessageBus(),
+      lifecycle: { snapshot: { state: 'registered', capabilities: {} }, subscribe: vi.fn(() => vi.fn()) },
+      registry: { get: vi.fn() },
+    };
+
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn() } as never,
+      splashDone: Promise.resolve(),
+    });
+    await Promise.resolve();
+
+    expect(mainWindow.loadFile).toHaveBeenCalledWith(expect.stringMatching(/dashboard\.html$/));
+    cleanup();
+  });
+
   it('publishes terminal degraded boot steps when router capability never settles', async () => {
     const send = vi.fn();
     const mainWindow = {

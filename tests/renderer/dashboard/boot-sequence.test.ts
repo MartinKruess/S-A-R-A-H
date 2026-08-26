@@ -28,6 +28,42 @@ describe('dashboard boot sequence', () => {
     vi.restoreAllMocks();
   });
 
+  it('resumes a suspended audio context and watchdogs lost playback completion', async () => {
+    vi.useFakeTimers();
+    const element = createElement();
+    const source = {
+      buffer: null as AudioBuffer | null,
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+      onended: null as (() => void) | null,
+    };
+    const resume = vi.fn().mockResolvedValue(undefined);
+    class MockAudioContext {
+      state = 'suspended';
+      destination = {};
+      resume = resume;
+      createBuffer(): { getChannelData(): Float32Array } {
+        return { getChannelData: () => new Float32Array(4) };
+      }
+      createBufferSource(): typeof source {
+        return source;
+      }
+    }
+    vi.stubGlobal('document', { getElementById: vi.fn(() => element) });
+    vi.stubGlobal('AudioContext', MockAudioContext);
+
+    const { playTtsAudio } = await import('../../../src/renderer/dashboard/boot-sequence.js');
+    const playback = playTtsAudio([0.1, 0.2, 0.1, 0], 22_050);
+    await Promise.resolve();
+
+    expect(resume).toHaveBeenCalledOnce();
+    expect(source.start).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(15_000);
+    await expect(playback.done).resolves.toBeUndefined();
+    expect(source.stop).toHaveBeenCalledOnce();
+  });
+
   it('continues boot in degraded mode when the initial config cannot be read', async () => {
     vi.useFakeTimers();
     const element = {

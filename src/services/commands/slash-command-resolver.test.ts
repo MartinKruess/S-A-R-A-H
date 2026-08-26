@@ -29,13 +29,25 @@ describe('resolveSlashCommand', () => {
     });
   });
 
-  it.each(['/anonymous', '/showcontext', '/quietmode'])(
+  it.each(['/showcontext', '/quietmode'])(
     'gives built-ins precedence and does not fake unfinished behavior: %s',
     (command) => {
       expect(resolveSlashCommand(command, [{ command, prompt: 'Ignorieren' }])).toEqual({
         kind: 'builtin_unavailable',
         command,
         arguments: '',
+      });
+    },
+  );
+
+  it.each(['/anonymous geheim', '/confirm 1234'])(
+    'resolves implemented privacy/confirmation commands before custom macros: %s',
+    (input) => {
+      const command = input.split(' ')[0] as '/anonymous' | '/confirm';
+      expect(resolveSlashCommand(input, [{ command, prompt: 'Ignorieren' }])).toEqual({
+        kind: 'builtin',
+        command,
+        arguments: input.slice(command.length).trim(),
       });
     },
   );

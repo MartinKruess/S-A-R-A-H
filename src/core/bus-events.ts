@@ -9,6 +9,7 @@ import type {
   TurnTerminalStatus,
   VoiceCaptureId,
 } from './turn-contract.js';
+import type { ActionConfirmationReference } from './action-confirmation.js';
 
 /**
  * Central event map — every bus topic has exactly one payload type.
@@ -42,7 +43,7 @@ export type BusEvents = {
   'perf:timing':         { label: string; ms: number; turnId?: TurnId; meta?: Record<string, unknown> };
   'boot:status':         { step: string; message?: string };
   'storage:degraded':    { message: string };
-  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string };
+  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };
   'action:result':       { turnId: TurnId; requestId: string; action: string; ok: boolean; speak?: string };
   'action:notify':       { notificationId: string; speak: string };

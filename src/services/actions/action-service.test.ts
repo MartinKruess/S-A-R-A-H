@@ -7,6 +7,7 @@ import type { MediaController, MediaResult } from './media-controller.js';
 import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
+import { ActionConfirmationGate, type ConfirmationLevel } from '../../core/action-confirmation.js';
 
 const TURN_ID = 'turn-1';
 
@@ -43,6 +44,8 @@ function makeService(over: {
   spotify?: SpotifyActions;
   media?: MediaController;
   drainTimeoutMs?: number;
+  confirmationGate?: ActionConfirmationGate;
+  confirmationLevel?: ConfirmationLevel;
 } = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
@@ -54,7 +57,16 @@ function makeService(over: {
   const media = over.media ?? makeMedia();
   const service = new ActionService(
     bus,
-    { launcher, getPrograms: () => [], search, system, spotify, media },
+    {
+      launcher,
+      getPrograms: () => [],
+      search,
+      system,
+      spotify,
+      media,
+      confirmationGate: over.confirmationGate,
+      getConfirmationLevel: () => over.confirmationLevel ?? 'standard',
+    },
     { drainTimeoutMs: over.drainTimeoutMs },
   );
   // Production wiring happens in ServiceRegistry.initAll() (bus.on per subscription,
@@ -153,6 +165,91 @@ describe('ActionService', () => {
     await service.init();
     await request(bus, 'media_pause', 'spotify');
     expect(media.pause).toHaveBeenCalledWith('spotify', expect.any(AbortSignal));
+  });
+
+  it('refuses a mutating action at maximal level without exact turn/action approval', async () => {
+    const media = makeMedia();
+    const { bus, results, service } = makeService({ media, confirmationLevel: 'maximal' });
+    await service.init();
+
+    await request(bus, 'media_next', '');
+
+    expect(media.next).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      action: 'media_next',
+      ok: false,
+      speak: 'Diese Aktion wurde nicht bestätigt.',
+    });
+  });
+
+  it('consumes a matching confirmation once and rejects reuse for another request', async () => {
+    const confirmationGate = new ActionConfirmationGate();
+    const media = makeMedia();
+    const { bus, results, service } = makeService({
+      media,
+      confirmationGate,
+      confirmationLevel: 'maximal',
+    });
+    await service.init();
+    const confirmationId = confirmationGate.request('request-turn', 'media_next', '');
+    const approved = confirmationGate.approve(confirmationId, TURN_ID);
+    if (!approved) throw new Error('expected confirmation');
+    const confirmation = approved.confirmation;
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'approved',
+      action: 'media_next',
+      param: '',
+      confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'replay',
+      action: 'media_next',
+      param: '',
+      confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(2));
+
+    expect(media.next).toHaveBeenCalledOnce();
+    expect(results.map((result) => result.ok)).toEqual([true, false]);
+  });
+
+  it('does not accept a confirmation for a different turn or action', async () => {
+    const confirmationGate = new ActionConfirmationGate();
+    const media = makeMedia();
+    const { bus, results, service } = makeService({
+      media,
+      confirmationGate,
+      confirmationLevel: 'maximal',
+    });
+    await service.init();
+    const confirmationId = confirmationGate.request('request-turn', 'media_next', '');
+    const approved = confirmationGate.approve(confirmationId, 'approved-turn');
+    if (!approved) throw new Error('expected confirmation');
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'wrong-turn',
+      action: 'media_next',
+      param: '',
+      confirmation: approved.confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    bus.emit('test', 'action:request', {
+      turnId: 'approved-turn',
+      requestId: 'wrong-action',
+      action: 'media_pause',
+      param: '',
+      confirmation: approved.confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(2));
+
+    expect(media.next).not.toHaveBeenCalled();
+    expect(media.pause).not.toHaveBeenCalled();
+    expect(results.every((result) => !result.ok)).toBe(true);
   });
 
   it('aborts active actions, suppresses late results, and ignores new work during shutdown', async () => {

@@ -261,7 +261,9 @@ export class VoiceService implements SarahService {
       await this.stt.init(signal);
       this.applySttAvailability({ available: true });
     } catch (err) {
-      await this.cleanupFailedProvider('STT', () => this.stt.destroy());
+      if (!this.stt.recoversAfterInitFailure) {
+        await this.cleanupFailedProvider('STT', () => this.stt.destroy());
+      }
       throwIfAborted(signal);
       console.error('[VoiceService] STT init failed:', err);
       this.context.lifecycle?.setCapability(
@@ -423,6 +425,9 @@ export class VoiceService implements SarahService {
   private applySttAvailability(state: SttAvailability): void {
     const changed = this.capabilities.stt !== state.available;
     this.capabilities.stt = state.available;
+    if (!state.available && this._voiceState === 'listening' && this.activeCaptureId) {
+      this.handleCaptureFailure(this.activeCaptureId, STT_UNAVAILABLE_MESSAGE);
+    }
     this.context.lifecycle?.setCapability(
       'stt',
       state.available ? 'ready' : 'unavailable',
@@ -1052,28 +1057,37 @@ export class VoiceService implements SarahService {
     ].filter((turnId): turnId is TurnId => Boolean(turnId)));
     for (const turnId of this.processingTurnIds) ownedTurnIds.add(turnId);
     for (const turnId of this.voiceRelevantTurns.keys()) ownedTurnIds.add(turnId);
-    for (const output of this.outputs.values()) ownedTurnIds.add(output.turnId);
+    for (const output of this.outputs.values()) {
+      if (output.shouldSpeak || this.voiceRelevantTurns.has(output.turnId)) {
+        ownedTurnIds.add(output.turnId);
+      }
+    }
     const openTurnIds = [...ownedTurnIds].filter((turnId) => this.context.bus.isTurnOpen(turnId));
-    const interruptedTurnId = this.activeInputTurnId
+    const candidateInterruptedTurnId = this.activeInputTurnId
       ?? this.processingTurnId
       ?? this.activeOutputTurnId
       ?? this.activePlaybackTurnId;
+    const interruptedTurnId = candidateInterruptedTurnId
+      && ownedTurnIds.has(candidateInterruptedTurnId)
+      ? candidateInterruptedTurnId
+      : null;
     this.voiceGeneration += 1;
     this.transitionGeneration = null;
     this.sttAbort?.abort();
     this.sttAbort = null;
     this.ttsQueue?.stop();
-    this.outputs.clear();
-    this.currentOutputId = null;
     this.activePlaybackTurnId = null;
     this.activePlaybackId = null;
-    this.processingTurnIds.clear();
-    this.voiceRelevantTurns.clear();
-    this.turnSpeechDecisions.clear();
     this.activeInputTurnId = null;
     this.activeCaptureId = null;
-    this.deferredSentences = [];
+    this.deferredSentences = this.deferredSentences.filter(
+      (item) => !ownedTurnIds.has(item.turnId),
+    );
     for (const turnId of ownedTurnIds) {
+      this.processingTurnIds.delete(turnId);
+      this.voiceRelevantTurns.delete(turnId);
+      this.turnSpeechDecisions.delete(turnId);
+      this.removeTurnOutputs(turnId);
       this.spokenTurns.delete(turnId);
       this.routerErrorTurns.delete(turnId);
       this.unavailableNoticeTurns.delete(turnId);

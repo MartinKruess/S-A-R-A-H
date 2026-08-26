@@ -1,4 +1,4 @@
-import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
+import type { SarahConfig, SarahConfigPatch, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { BusEvents } from './bus-events.js';
 import type { BusDiagnostic, IpcCommands, IpcEvents, SystemIpcInfo, SystemMetrics, VoiceLevel } from './ipc-contract.js';
 import type { PlaybackId, TurnId, VoiceCaptureId } from './turn-contract.js';
@@ -72,7 +72,7 @@ export interface SarahApi {
   getConfig(): Promise<SarahConfig>;
   getRuntimeStatus(): Promise<RuntimeSnapshot>;
   onRuntimeStatus(cb: (snapshot: RuntimeSnapshot) => void): () => void;
-  saveConfig(config: Partial<SarahConfig>): Promise<SaveConfigResult>;
+  saveConfig(config: SarahConfigPatch): Promise<SaveConfigResult>;
   selectFolder(title?: string): Promise<string | null>;
   detectPrograms(): Promise<ProgramEntry[]>;
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;

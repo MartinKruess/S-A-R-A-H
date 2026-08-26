@@ -9,6 +9,9 @@ export interface SttProvider {
   /** Unique provider ID, e.g. 'whisper' */
   readonly id: string;
 
+  /** Provider owns a bounded self-retry after a transient initial failure. */
+  readonly recoversAfterInitFailure?: boolean;
+
   /** Initialize the provider (verify binary exists, load model) */
   init(signal?: AbortSignal): Promise<void>;
 

@@ -491,6 +491,96 @@ describe('AudioBridge', () => {
     }
   });
 
+  it('self-retries a transient initial capture failure with bounded backoff', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      sarahMock.getConfig.mockResolvedValue({
+        audio: makeAudioConfig(),
+        controls: { voiceMode: 'push-to-talk' },
+      });
+      const transient = new Error('temporary device failure');
+      const getUserMedia = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+      getUserMedia.mockRejectedValueOnce(transient).mockResolvedValueOnce(mockStream);
+
+      await bridge.start();
+      expect(getUserMedia).toHaveBeenCalledOnce();
+      expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(false);
+
+      await vi.advanceTimersByTimeAsync(250);
+      const internal = bridge as unknown as { captureLifecyclePromise: Promise<void> };
+      await internal.captureLifecyclePromise;
+
+      expect(getUserMedia).toHaveBeenCalledTimes(2);
+      expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(true);
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops self-retrying after the bounded capture backoff budget is exhausted', async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      sarahMock.getConfig.mockResolvedValue({
+        audio: makeAudioConfig(),
+        controls: { voiceMode: 'push-to-talk' },
+      });
+      const getUserMedia = navigator.mediaDevices.getUserMedia as ReturnType<typeof vi.fn>;
+      getUserMedia.mockRejectedValue(new Error('device remains unavailable'));
+
+      await bridge.start();
+      await vi.advanceTimersByTimeAsync(10_000);
+      const internal = bridge as unknown as { captureLifecyclePromise: Promise<void> };
+      await internal.captureLifecyclePromise;
+
+      expect(getUserMedia).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getUserMedia).toHaveBeenCalledTimes(4);
+    } finally {
+      errorSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps subscription updates that arrive while startup snapshots are pending', async () => {
+    let resolveConfig!: (value: {
+      audio: AudioConfigFields;
+      controls: { voiceMode: 'push-to-talk' };
+    }) => void;
+    let resolveRuntime!: (value: {
+      state: 'ready';
+      generation: number;
+      updatedAt: number;
+      capabilities: { stt: { state: 'ready' } };
+    }) => void;
+    sarahMock.getConfig.mockReturnValueOnce(new Promise((resolve) => {
+      resolveConfig = resolve;
+    }));
+    sarahMock.getRuntimeStatus.mockReturnValueOnce(new Promise((resolve) => {
+      resolveRuntime = resolve;
+    }));
+
+    const starting = bridge.start();
+    voiceInputConfigCb({ voiceMode: 'off' });
+    capabilityCb({ stt: false, tts: true });
+    resolveConfig({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    resolveRuntime({
+      state: 'ready',
+      generation: 1,
+      updatedAt: 1,
+      capabilities: { stt: { state: 'ready' } },
+    });
+    await starting;
+
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(false);
+  });
+
   it('terminates capture setup when AudioContext resume hangs', async () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});

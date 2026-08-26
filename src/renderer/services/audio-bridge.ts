@@ -37,6 +37,7 @@ const PLAYBACK_SETUP_TIMEOUT_MS = 4000;
 const CAPTURE_RESUME_TIMEOUT_MS = 3000;
 const CAPTURE_WORKLET_TIMEOUT_MS = 5000;
 const CAPTURE_DEVICE_TIMEOUT_MS = 10_000;
+const CAPTURE_RETRY_DELAYS_MS = [250, 1_000, 3_000] as const;
 
 /** Path to the capture AudioWorklet module, relative to the renderer root. */
 const WORKLET_MODULE_URL = 'dist/renderer/services/audio-worklet-processor.js';
@@ -210,7 +211,14 @@ export class AudioBridge {
   private readonly captureStartPromises = new Set<Promise<boolean>>();
   private captureSetupAbort: AbortController | null = null;
   private captureRecoveryPromise: Promise<void> | null = null;
+  private captureRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private captureRetryAttempt = 0;
   private captureLifecyclePromise: Promise<void> = Promise.resolve();
+  private audioConfigRevision = 0;
+  private voiceInputConfigRevision = 0;
+  private capabilityRevision = 0;
+  private voiceStateRevision = 0;
+  private pendingVoiceState: { state: string; captureId?: VoiceCaptureId } | null = null;
   private readonly deviceChangeHandler = (): void => {
     void this.handleMediaDevicesChanged();
   };
@@ -221,26 +229,12 @@ export class AudioBridge {
   private applyPromise: Promise<void> = Promise.resolve();
 
   async start(): Promise<void> {
-    // Seed config/capability before exposing PTT readiness. VoiceService keeps
-    // the hotkey gated until setCaptureReady(true) arrives.
-    try {
-      const initialConfig = await sarah.getConfig();
-      this.currentAudio = initialConfig.audio;
-      this.currentInputDeviceId = initialConfig.audio.inputDeviceId;
-      this.currentOutputDeviceId = initialConfig.audio.outputDeviceId;
-      this.muted = initialConfig.audio.inputMuted;
-      this.voiceMode = initialConfig.controls?.voiceMode ?? 'off';
-    } catch (err) {
-      console.warn('[AudioBridge] initial config fetch failed:', err);
-    }
-    try {
-      const runtime = await sarah.getRuntimeStatus();
-      this.sttAvailable = runtime.capabilities.stt?.state === 'ready';
-    } catch (err) {
-      console.warn('[AudioBridge] initial STT capability fetch failed:', err);
-    }
-
     this.unsubState = sarah.voice.onStateChange(({ state, captureId }) => {
+      this.voiceStateRevision += 1;
+      if (!this.started) {
+        this.pendingVoiceState = { state, ...(captureId ? { captureId } : {}) };
+        return;
+      }
       this.handleStateChange(state, captureId);
     });
 
@@ -269,29 +263,78 @@ export class AudioBridge {
     navigator.mediaDevices.addEventListener?.('devicechange', this.deviceChangeHandler);
 
     this.unsubAudioConfig = sarah.onAudioConfigChanged((audio) => {
+      this.audioConfigRevision += 1;
+      if (!this.started) {
+        this.rememberAudioConfig(audio);
+        return;
+      }
       void this.applyAudioConfig(audio);
     });
     this.unsubVoiceInputConfig = sarah.onVoiceInputConfigChanged(({ voiceMode }) => {
+      this.voiceInputConfigRevision += 1;
+      const shouldResetRetry = this.voiceMode === 'off' && voiceMode !== 'off';
       this.voiceMode = voiceMode;
+      if (shouldResetRetry) this.resetCaptureRetry();
+      if (!this.started) return;
       void this.reconcileVoiceInputLifecycle();
     });
     this.unsubCapability = sarah.voice.onCapability(({ stt }) => {
+      this.capabilityRevision += 1;
+      const shouldResetRetry = !this.sttAvailable && stt;
       this.sttAvailable = stt;
+      if (shouldResetRetry) this.resetCaptureRetry();
+      if (!this.started) return;
       void this.reconcileVoiceInputLifecycle();
     });
 
+    const audioRevision = this.audioConfigRevision;
+    const voiceInputRevision = this.voiceInputConfigRevision;
+    const capabilityRevision = this.capabilityRevision;
+    const voiceStateRevision = this.voiceStateRevision;
+    const [configResult, runtimeResult, stateResult] = await Promise.allSettled([
+      sarah.getConfig(),
+      sarah.getRuntimeStatus(),
+      sarah.voice.getState(),
+    ]);
+
+    if (configResult.status === 'fulfilled') {
+      if (this.audioConfigRevision === audioRevision) {
+        this.rememberAudioConfig(configResult.value.audio);
+      }
+      if (this.voiceInputConfigRevision === voiceInputRevision) {
+        this.voiceMode = configResult.value.controls?.voiceMode ?? 'off';
+      }
+    } else {
+      console.warn('[AudioBridge] initial config fetch failed:', configResult.reason);
+    }
+    if (runtimeResult.status === 'fulfilled') {
+      if (this.capabilityRevision === capabilityRevision) {
+        this.sttAvailable = runtimeResult.value.capabilities.stt?.state === 'ready';
+      }
+    } else {
+      console.warn('[AudioBridge] initial STT capability fetch failed:', runtimeResult.reason);
+    }
+
+    const initialVoiceState = this.voiceStateRevision === voiceStateRevision
+      && stateResult.status === 'fulfilled'
+      ? stateResult.value
+      : this.pendingVoiceState;
+    if (stateResult.status === 'rejected') {
+      console.warn('[AudioBridge] initial voice state fetch failed:', stateResult.reason);
+    }
+
     this.started = true;
     await this.reconcileVoiceInputLifecycle();
-
-    // Check initial state (may trigger startCapture with seeded device id)
-    const initialState = await sarah.voice.getState();
-    this.handleStateChange(initialState.state, initialState.captureId);
+    if (initialVoiceState) {
+      this.handleStateChange(initialVoiceState.state, initialVoiceState.captureId);
+    }
   }
 
   async destroy(): Promise<void> {
     // Latch FIRST so any in-flight apply/startCapture bails before allocating
     // a new stream or worklet that we'd leak past teardown.
     this.destroyed = true;
+    this.resetCaptureRetry();
     this.stopCapture();
     await this.reportCaptureReady(false);
     for (const pending of this.playbackStartControllers.values()) pending.controller.abort();
@@ -401,6 +444,7 @@ export class AudioBridge {
     this.captureLifecyclePromise = this.captureLifecyclePromise.then(async () => {
       if (this.destroyed) return;
       if (!this.shouldKeepCaptureWarm()) {
+        this.resetCaptureRetry();
         await this.reportCaptureReady(false);
         this.recording = false;
         this.currentCaptureId = null;
@@ -409,10 +453,46 @@ export class AudioBridge {
       }
       const ready = await this.startCapture();
       await this.reportCaptureReady(ready);
+      if (ready) this.resetCaptureRetry();
+      else this.scheduleCaptureRetry();
     }, async () => {
-      if (!this.destroyed) await this.reportCaptureReady(false);
+      if (!this.destroyed) {
+        await this.reportCaptureReady(false);
+        this.scheduleCaptureRetry();
+      }
     });
     return this.captureLifecyclePromise;
+  }
+
+  private rememberAudioConfig(audio: AudioConfig): void {
+    this.currentAudio = audio;
+    this.currentInputDeviceId = audio.inputDeviceId;
+    this.currentOutputDeviceId = audio.outputDeviceId;
+    this.muted = audio.inputMuted;
+  }
+
+  private resetCaptureRetry(): void {
+    if (this.captureRetryTimer) clearTimeout(this.captureRetryTimer);
+    this.captureRetryTimer = null;
+    this.captureRetryAttempt = 0;
+  }
+
+  private scheduleCaptureRetry(): void {
+    if (
+      this.destroyed
+      || !this.shouldKeepCaptureWarm()
+      || this.captureRetryTimer
+      || this.captureRetryAttempt >= CAPTURE_RETRY_DELAYS_MS.length
+    ) return;
+
+    const delay = CAPTURE_RETRY_DELAYS_MS[this.captureRetryAttempt];
+    this.captureRetryAttempt += 1;
+    this.captureRetryTimer = setTimeout(() => {
+      this.captureRetryTimer = null;
+      if (!this.destroyed && this.shouldKeepCaptureWarm()) {
+        void this.reconcileVoiceInputLifecycle();
+      }
+    }, delay);
   }
 
   // ── Audio-Config reactions ──
@@ -463,6 +543,7 @@ export class AudioBridge {
     this.currentInputDeviceId = audio.inputDeviceId;
     this.currentOutputDeviceId = audio.outputDeviceId;
     this.muted = audio.inputMuted;
+    if (prevDeviceId !== audio.inputDeviceId) this.resetCaptureRetry();
     if (prevOutputDeviceId !== audio.outputDeviceId) {
       this.failedOutputDeviceId = undefined;
     }
@@ -652,6 +733,7 @@ export class AudioBridge {
       this.activeInputDeviceId = stream.getTracks()
         .map((track) => track.getSettings().deviceId)
         .find(Boolean);
+      this.resetCaptureRetry();
       return true;
     } catch (err) {
       await disposeLocal();

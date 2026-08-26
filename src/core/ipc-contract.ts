@@ -1,4 +1,4 @@
-import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js';
+import type { SarahConfig, SarahConfigPatch, ProgramEntry, AudioConfig } from './config-schema.js';
 import type { BusEvents } from './bus-events.js';
 import type { BusTopic } from './bus-events.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
@@ -12,7 +12,7 @@ export interface IpcCommands {
   'get-system-metrics':         { input: void; output: SystemMetrics };
   'get-config':                 { input: void; output: SarahConfig };
   'get-runtime-status':         { input: void; output: RuntimeSnapshot };
-  'save-config':                { input: Partial<SarahConfig>; output: SaveConfigResult };
+  'save-config':                { input: SarahConfigPatch; output: SaveConfigResult };
   'select-folder':              { input: string | undefined; output: string | null };
   'detect-programs':            { input: void; output: ProgramEntry[] };
   'scan-folder-exes':           { input: string; output: ProgramEntry[] };

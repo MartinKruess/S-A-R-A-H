@@ -9,7 +9,12 @@ import { ModelRuntime, type ModelRuntimePort } from './model-runtime.js';
 import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
 import { buildContextWindow } from './context-window.js';
 import { NUM_PREDICT_MAP } from './llm-types.js';
-import { isActionName, looksLikeActionCommand } from '../actions/action-schemas.js';
+import {
+  isActionName,
+  looksLikeActionCommand,
+  requiresActionConfirmation,
+  type ActionName,
+} from '../actions/action-schemas.js';
 import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
 import { MediaContext } from './media-context.js';
@@ -27,6 +32,11 @@ import {
 } from '../../core/turn-contract.js';
 import { TurnCoordinator, TurnQueueFullError } from '../../core/turn-coordinator.js';
 import { runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
+import { mustKeepTurnTransient, type TurnPersistencePolicy } from '../../core/memory-policy.js';
+import {
+  type ActionConfirmationReference,
+  type ConfirmedAction,
+} from '../../core/action-confirmation.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -49,7 +59,7 @@ export class RouterService implements SarahService {
   private modelRuntime: ModelRuntimePort;
   private mediaContext: MediaContext;
   private conversationId: number = FALLBACK_CONVERSATION_ID;
-  private startContext: ChatMessage[] = [];
+  private startContext: Array<ChatMessage & { conversationId: number }> = [];
   private persistenceWarned = false;
   private outputQueue: Promise<void> = Promise.resolve();
   private readonly coordinator = new TurnCoordinator();
@@ -60,6 +70,7 @@ export class RouterService implements SarahService {
     historyUser: string;
     persistedUser: string;
     assistants: string[];
+    persistence: TurnPersistencePolicy;
   }>();
   private pendingActions = new Map<string, {
     turnId: TurnId;
@@ -67,6 +78,7 @@ export class RouterService implements SarahService {
     resolve: (result: BusEvents['action:result']) => void;
   }>();
   private lastSearchSessionId: string | null = null;
+  private lifecycleUnsubscribe: (() => void) | null = null;
 
   constructor(
     private context: AppContext,
@@ -114,11 +126,23 @@ export class RouterService implements SarahService {
   }
 
   private async doInit(signal?: AbortSignal): Promise<void> {
-    const boot = await new ConversationStore(this.context.db).boot();
+    if (!this.lifecycleUnsubscribe && typeof this.context.lifecycle?.subscribe === 'function') {
+      this.lifecycleUnsubscribe = this.context.lifecycle.subscribe((snapshot) => {
+        if (snapshot.state === 'stopping' || snapshot.state === 'stopped') {
+          this.coordinator.destroy();
+        }
+      });
+    }
+    const trust = this.context.parsedConfig.trust;
+    const boot = await new ConversationStore(this.context.db).boot({
+      memoryAllowed: trust.memoryAllowed,
+      memoryExclusions: trust.memoryExclusions,
+    });
     this.conversationId = boot.conversationId;
     this.startContext = boot.startContext.map((row) => ({
       role: row.role === 'assistant' ? ('assistant' as const) : ('user' as const),
       content: row.content,
+      conversationId: row.conversation_id,
     }));
 
     try {
@@ -132,12 +156,15 @@ export class RouterService implements SarahService {
   }
 
   async destroy(signal?: AbortSignal): Promise<void> {
+    this.lifecycleUnsubscribe?.();
+    this.lifecycleUnsubscribe = null;
     this.coordinator.destroy();
     this.pendingActions.clear();
     this.lastSearchSessionId = null;
     this.turnDrafts.clear();
     this.errorTurns.clear();
     this.history = [];
+    this.context.actionConfirmations.clear();
     try {
       await this.modelRuntime.destroy(signal);
     } finally {
@@ -253,14 +280,23 @@ export class RouterService implements SarahService {
   }
 
   private async executeTurn(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    const trust = this.context.parsedConfig.trust;
     this.turnDrafts.set(envelope.turnId, {
       historyUser: envelope.effectiveText,
       persistedUser: envelope.originalText,
       assistants: [],
+      persistence: {
+        allowed: trust.memoryAllowed && envelope.command.kind !== 'anonymous',
+        exclusions: [...trust.memoryExclusions],
+      },
     });
     try {
       throwIfAborted(signal);
-      const immediateResponse = envelope.command.kind === 'builtin_unavailable'
+      const immediateResponse = envelope.command.kind === 'anonymous' && !trust.anonymousEnabled
+        ? 'Der Slash-Command /anonymous ist in den Einstellungen deaktiviert.'
+        : envelope.command.kind === 'anonymous' && envelope.command.arguments.length === 0
+          ? 'Schreibe deine vertrauliche Nachricht direkt hinter /anonymous.'
+          : envelope.command.kind === 'builtin_unavailable'
         ? `Der Slash-Command ${envelope.command.command} ist noch nicht verfügbar.`
         : envelope.command.kind === 'unknown'
           ? `Diesen Slash-Command kenne ich nicht: ${envelope.command.command}.`
@@ -268,6 +304,8 @@ export class RouterService implements SarahService {
 
       if (immediateResponse) {
         await this.emitAssistantResponse(envelope.turnId, immediateResponse, signal);
+      } else if (envelope.command.kind === 'confirmation') {
+        await this.confirmAction(envelope, signal);
       } else {
         await this.runTurn(envelope, signal);
       }
@@ -302,8 +340,7 @@ export class RouterService implements SarahService {
     // fires in the warm-9B window, where terse words bypass the gate.
     const hit = this.mediaContext.resolve(text, Date.now());
     if (hit) {
-      this.mediaContext.record(hit.action, Date.now());
-      await this.dispatchAction(envelope, hit.action, '', hit.speak, signal);
+      await this.dispatchOrRequestConfirmation(envelope, hit.action, '', hit.speak, signal);
       return;
     }
 
@@ -350,8 +387,7 @@ export class RouterService implements SarahService {
         await this.emitAssistantResponse(turnId, 'Das kann ich noch nicht.', signal);
         return;
       }
-      if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
-      await this.dispatchAction(
+      await this.dispatchOrRequestConfirmation(
         envelope,
         action,
         param,
@@ -449,12 +485,15 @@ export class RouterService implements SarahService {
 
   private async dispatchAction(
     envelope: TurnEnvelope,
-    action: string,
+    action: ActionName,
     param: string,
     acknowledgement: string,
     signal: AbortSignal,
+    confirmation?: ActionConfirmationReference,
+    confirmedSourceRequestId?: string,
   ): Promise<void> {
     const requestId = randomUUID();
+    if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
     if (action === 'web_search') {
       // A new search owns the visible-result pointer. If it fails or is
       // canceled, a later "erstes Ergebnis" must not reopen stale results.
@@ -468,9 +507,10 @@ export class RouterService implements SarahService {
       requestId,
       action,
       param,
-      ...(action === 'show_browser' && this.lastSearchSessionId
-        ? { sourceRequestId: this.lastSearchSessionId }
+      ...((confirmedSourceRequestId || (action === 'show_browser' && this.lastSearchSessionId))
+        ? { sourceRequestId: confirmedSourceRequestId ?? this.lastSearchSessionId ?? undefined }
         : {}),
+      ...(confirmation ? { confirmation } : {}),
     });
     await this.emitAssistantResponse(envelope.turnId, acknowledgement, signal);
     try {
@@ -495,10 +535,87 @@ export class RouterService implements SarahService {
     }
   }
 
+  private async dispatchOrRequestConfirmation(
+    envelope: TurnEnvelope,
+    action: ActionName,
+    param: string,
+    acknowledgement: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (requiresActionConfirmation(this.context.parsedConfig.trust.confirmationLevel, action)) {
+      const sourceRequestId = action === 'show_browser'
+        ? this.lastSearchSessionId ?? undefined
+        : undefined;
+      const confirmationId = this.context.actionConfirmations.request(
+        envelope.turnId,
+        action,
+        param,
+        sourceRequestId,
+      );
+      await this.emitAssistantResponse(
+        envelope.turnId,
+        `Für diese Aktion brauche ich deine Bestätigung. Antworte mit /confirm ${confirmationId}.`,
+        signal,
+      );
+      return;
+    }
+    await this.dispatchAction(envelope, action, param, acknowledgement, signal);
+  }
+
+  private async confirmAction(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    const confirmed = this.context.actionConfirmations.approve(
+      envelope.command.kind === 'confirmation' ? envelope.command.arguments : '',
+      envelope.turnId,
+    );
+    if (!confirmed) {
+      await this.emitAssistantResponse(
+        envelope.turnId,
+        'Diese Bestätigung ist ungültig oder abgelaufen.',
+        signal,
+      );
+      return;
+    }
+    await this.dispatchConfirmedAction(envelope, confirmed, signal);
+  }
+
+  private async dispatchConfirmedAction(
+    envelope: TurnEnvelope,
+    confirmed: ConfirmedAction,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!isActionName(confirmed.action)) {
+      await this.emitAssistantResponse(envelope.turnId, 'Diese Bestätigung ist ungültig.', signal);
+      return;
+    }
+    await this.dispatchAction(
+      envelope,
+      confirmed.action,
+      confirmed.param,
+      getActionAcknowledgement(confirmed.action, confirmed.param),
+      signal,
+      confirmed.confirmation,
+      confirmed.sourceRequestId,
+    );
+  }
+
   private buildMessages(systemPrompt: string, responseStyle: string, currentUser: string): ChatMessage[] {
+    const trust = this.context.parsedConfig.trust;
+    const excludedConversationIds = new Set(
+      this.startContext
+        .filter((message) => mustKeepTurnTransient([message.content], {
+          allowed: true,
+          exclusions: trust.memoryExclusions,
+        }))
+        .map((message) => message.conversationId),
+    );
+    const startContext: ChatMessage[] = trust.memoryAllowed
+      ? this.startContext
+        .filter((message) => !excludedConversationIds.has(message.conversationId))
+        .map((message) => ({ role: message.role, content: message.content }))
+      : [];
     return buildContextWindow({
       systemPrompt,
-      startContext: this.startContext,
+      startContext,
       history: [...this.history, { role: 'user', content: currentUser }],
       numCtx: this.context.parsedConfig.llm.workerOptions.num_ctx,
       numPredict: NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel,
@@ -547,6 +664,10 @@ export class RouterService implements SarahService {
     for (const content of draft.assistants) {
       this.history.push({ role: 'assistant', content });
     }
+    if (mustKeepTurnTransient(
+      [draft.persistedUser, draft.historyUser, ...draft.assistants],
+      draft.persistence,
+    )) return;
     await this.persistMessage('user', draft.persistedUser);
     for (const content of draft.assistants) {
       await this.persistMessage('assistant', content);

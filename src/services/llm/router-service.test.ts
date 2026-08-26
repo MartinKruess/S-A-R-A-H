@@ -12,6 +12,7 @@ import * as os from 'os';
 import { MessageBus } from '../../core/message-bus.js';
 import { MediaContext } from './media-context.js';
 import type { TurnRequest } from '../../core/turn-contract.js';
+import { ActionConfirmationGate } from '../../core/action-confirmation.js';
 
 class FakeProvider implements LlmProvider {
   readonly id = 'fake';
@@ -115,6 +116,47 @@ describe('RouterService (history & sessions)', () => {
     for (const m of msgs) {
       expect(m.conversation_id).toBe(2);
     }
+  });
+
+  it('keeps history in memory but neither loads nor persists it when memory is disabled', async () => {
+    await ctx.db.insert('conversations', { mode: 'ambient' });
+    await ctx.db.insert('messages', { conversation_id: 1, role: 'user', content: 'Altes Geheimnis' });
+    ctx.parsedConfig.trust.memoryAllowed = false;
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Erste flüchtige Frage');
+    await chatTurn(r, 'Zweite flüchtige Frage');
+
+    const sent = workerProvider.lastMessages ?? [];
+    expect(sent.some((message) => message.content === 'Altes Geheimnis')).toBe(false);
+    expect(sent.some((message) => message.content === 'Erste flüchtige Frage')).toBe(true);
+    expect(await ctx.db.query('messages')).toHaveLength(1);
+  });
+
+  it('processes /anonymous transiently without persisting either side of the turn', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, '/anonymous Mein Codename ist Eule');
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+
+    await chatTurn(r, 'Was war meine vorige Nachricht?');
+    const sent = workerProvider.lastMessages ?? [];
+    expect(sent.some((message) => message.content === 'Mein Codename ist Eule')).toBe(true);
+    expect(sent.some((message) => message.content.startsWith('/anonymous'))).toBe(false);
+    expect(await ctx.db.query('messages')).toHaveLength(2);
+  });
+
+  it('keeps a complete turn transient when user text or assistant output matches an exclusion', async () => {
+    ctx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Mein Kontostand ist vertraulich');
+
+    expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
   it('passes the authoritative user name and fixed Du address to the worker system prompt', async () => {
@@ -371,6 +413,59 @@ describe('RouterService (action layer)', () => {
     expect(done).toEqual(['Ich öffne Spotify.']);
     const msgs = await ctx.db.query<{ role: string; content: string }>('messages');
     expect(msgs.map((m) => m.content)).toContain('Ich öffne Spotify.'); // feedback persisted as assistant turn
+  });
+
+  it('requires and correlates an exact one-time confirmation for mutating actions at maximal level', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'maximal';
+    const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const outputs: BusEvents['llm:done'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data));
+    const requestedTurnId = '83838383-8383-4383-8383-838383838383';
+
+    await router.handleTurnRequest({
+      turnId: requestedTurnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Öffne Spotify',
+      createdAt: new Date().toISOString(),
+    });
+
+    expect(requests).toEqual([]);
+    const confirmationId = outputs[0].fullText.match(/\/confirm ([0-9a-f-]{36})/)?.[1];
+    expect(confirmationId).toBeDefined();
+
+    const confirmationTurnId = '84848484-8484-4484-8484-848484848484';
+    const confirmationTurn = router.handleTurnRequest({
+      turnId: confirmationTurnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: `/confirm ${confirmationId}`,
+      createdAt: new Date().toISOString(),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      turnId: confirmationTurnId,
+      action: 'open_program',
+      param: 'spotify',
+      confirmation: {
+        confirmationId,
+        requestedTurnId,
+      },
+    });
+    ctx.bus.emit('test', 'action:result', {
+      turnId: confirmationTurnId,
+      requestId: requests[0].requestId,
+      action: requests[0].action,
+      ok: true,
+    });
+    await confirmationTurn;
+
+    await router.handleChatMessage(`/confirm ${confirmationId}`);
+    expect(requests).toHaveLength(1);
   });
 
   it('keeps an action turn open after acknowledgement until its correlated result completes', async () => {
@@ -840,6 +935,25 @@ describe('RouterService (action layer)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
+  it('cancels active and queued turns as soon as lifecycle shutdown starts', async () => {
+    const worker = new BlockingProvider();
+    router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
+    await router.init();
+    router.activeModel = '9b';
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+    const first = router.handleChatMessage('Aktiver Turn');
+    const second = router.handleChatMessage('Wartender Turn');
+    await vi.waitFor(() => expect(worker.calls).toBe(1));
+
+    const shutdown = ctx.lifecycle.shutdown();
+    await Promise.all([first, second]);
+    await shutdown;
+
+    expect(terminals.filter((entry) => entry.status === 'canceled')).toHaveLength(2);
+    expect(worker.calls).toBe(1);
+  });
+
   it('refuses a duplicate active turnId before it can execute twice', async () => {
     const worker = new BlockingProvider();
     router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
@@ -929,7 +1043,16 @@ describe('RouterService (media context)', () => {
     return {
       bus,
       db: { insert: async () => 0 },
-      parsedConfig: { llm: { baseUrl: 'http://localhost:11434' } },
+      parsedConfig: {
+        llm: { baseUrl: 'http://localhost:11434' },
+        trust: {
+          memoryAllowed: true,
+          memoryExclusions: [],
+          confirmationLevel: 'standard',
+          anonymousEnabled: false,
+        },
+      },
+      actionConfirmations: new ActionConfirmationGate(),
     } as unknown as AppContext;
   }
 

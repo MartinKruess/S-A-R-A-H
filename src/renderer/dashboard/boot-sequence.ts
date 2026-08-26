@@ -88,7 +88,7 @@ interface BootAudioPlayback {
   stop(): void;
 }
 
-function playTtsAudio(
+export function playTtsAudio(
   audioData: number[],
   sampleRate: number,
 ): BootAudioPlayback {
@@ -102,6 +102,8 @@ function playTtsAudio(
   source.buffer = buffer;
   source.connect(audioContext.destination);
   let settled = false;
+  let started = false;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => {
     resolveDone = resolve;
@@ -109,19 +111,41 @@ function playTtsAudio(
   const finish = (): void => {
     if (settled) return;
     settled = true;
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = null;
     source.onended = null;
     resolveDone();
   };
   source.onended = finish;
-  source.start();
+  watchdog = setTimeout(() => {
+    try {
+      source.stop();
+    } catch {
+      // A suspended context may never have started the source.
+    }
+    finish();
+  }, SPLASH_PLAYBACK_WATCHDOG_MS);
+  void (async () => {
+    try {
+      if (audioContext?.state === 'suspended') await audioContext.resume();
+      if (settled) return;
+      source.start();
+      started = true;
+    } catch (error) {
+      console.warn('[Boot] Splash speech context could not resume:', error);
+      finish();
+    }
+  })();
   return {
     done,
     stop: () => {
       if (settled) return;
-      try {
-        source.stop();
-      } catch {
-        // The source may already have ended between the ownership check and stop().
+      if (started) {
+        try {
+          source.stop();
+        } catch {
+          // The source may already have ended between the ownership check and stop().
+        }
       }
       finish();
     },
@@ -174,6 +198,7 @@ let activeTtsPlayback: BootAudioPlayback | null = null;
 
 const PIPER_TERMINAL_WAIT_MS = 8_000;
 const SPLASH_TTS_REQUEST_WAIT_MS = 8_000;
+const SPLASH_PLAYBACK_WATCHDOG_MS = 15_000;
 
 // Genesis state
 let genesisAudioPlaying = false;

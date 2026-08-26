@@ -372,6 +372,39 @@ describe('RouterService', () => {
   });
 
   describe('error handling', () => {
+    it('cancels active and queued turns when lifecycle enters stopping', async () => {
+      let lifecycleListener: ((snapshot: { state: string }) => void) | null = null;
+      context.lifecycle = {
+        snapshot: { state: 'ready' },
+        subscribe: vi.fn((listener: (snapshot: { state: string }) => void) => {
+          lifecycleListener = listener;
+          listener({ state: 'ready' });
+          return vi.fn();
+        }),
+      } as unknown as AppContext['lifecycle'];
+      const shutdownAware = new RouterService(context, routerProvider, workerProvider);
+      await shutdownAware.init();
+      shutdownAware.activeModel = '9b';
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+          new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          })
+        ),
+      );
+      const terminals: string[] = [];
+      bus.on('turn:terminal', (message) => terminals.push(message.data.status));
+
+      const active = shutdownAware.handleChatMessage('Aktiv');
+      const queued = shutdownAware.handleChatMessage('Wartend');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      lifecycleListener!({ state: 'stopping' });
+      await Promise.all([active, queued]);
+
+      expect(terminals).toEqual(['canceled', 'canceled']);
+      expect(workerProvider.chat).toHaveBeenCalledOnce();
+    });
+
     it('emits llm:error when provider throws', async () => {
       await service.init();
       (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));

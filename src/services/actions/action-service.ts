@@ -1,14 +1,19 @@
 // src/services/actions/action-service.ts
 import type { SarahService } from '../../core/service.interface.js';
 import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
+import type { BusEvents } from '../../core/bus-events.js';
 import type { MessageBus } from '../../core/message-bus.js';
 import type { ProgramLauncher, ProgramEntry, LaunchResult } from '../../main/program-launcher.js';
 import type { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
 import type { MediaController } from './media-controller.js';
-import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
+import { ACTION_SCHEMAS, isActionName, requiresActionConfirmation } from './action-schemas.js';
 import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
+import {
+  ActionConfirmationGate,
+  type ConfirmationLevel,
+} from '../../core/action-confirmation.js';
 
 /** Structural view of SearchService (Task 9) — keeps this task testable standalone. */
 export interface SearchLike {
@@ -31,6 +36,8 @@ export interface ActionDeps {
   system: SystemActions;
   spotify: SpotifyActions;
   media: MediaController;
+  confirmationGate?: ActionConfirmationGate;
+  getConfirmationLevel?: () => ConfirmationLevel;
 }
 
 export interface ActionServiceOptions {
@@ -54,6 +61,8 @@ export class ActionService implements SarahService {
   }>();
   private readonly seenRequestIds = new Set<string>();
   private readonly drainTimeoutMs: number;
+  private readonly confirmationGate: ActionConfirmationGate;
+  private readonly getConfirmationLevel: () => ConfirmationLevel;
 
   constructor(
     private bus: MessageBus,
@@ -61,6 +70,8 @@ export class ActionService implements SarahService {
     options: ActionServiceOptions = {},
   ) {
     this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_ACTION_DRAIN_TIMEOUT_MS;
+    this.confirmationGate = deps.confirmationGate ?? new ActionConfirmationGate();
+    this.getConfirmationLevel = deps.getConfirmationLevel ?? (() => 'standard');
   }
 
   async init(): Promise<void> {
@@ -98,7 +109,7 @@ export class ActionService implements SarahService {
       return;
     }
     if (msg.topic !== 'action:request' || this.status !== 'running') return;
-    const { turnId, requestId, action, param, sourceRequestId } = msg.data;
+    const { turnId, requestId, action, param, sourceRequestId, confirmation } = msg.data;
     if (this.bus.isTurnTerminal(turnId)) {
       console.warn('[Actions] request for terminal turn refused:', turnId, requestId, action);
       return;
@@ -109,7 +120,15 @@ export class ActionService implements SarahService {
     }
     this.rememberRequestId(requestId);
     const controller = new AbortController();
-    const operation = this.execute(turnId, requestId, action, param, sourceRequestId, controller.signal);
+    const operation = this.execute(
+      turnId,
+      requestId,
+      action,
+      param,
+      sourceRequestId,
+      confirmation,
+      controller.signal,
+    );
     this.activeActions.set(requestId, { turnId, operation, controller });
     void operation
       .then((result) => {
@@ -170,12 +189,20 @@ export class ActionService implements SarahService {
     action: string,
     param: string,
     sourceRequestId: string | undefined,
+    confirmation: BusEvents['action:request']['confirmation'],
     signal: AbortSignal,
   ): Promise<LaunchResult> {
     throwIfAborted(signal);
     if (!isActionName(action)) {
       console.warn('[Actions] unknown action refused:', action, param);
       return { ok: false, speak: 'Das kann ich noch nicht.' };
+    }
+    if (
+      requiresActionConfirmation(this.getConfirmationLevel(), action)
+      && !this.confirmationGate.consume(turnId, action, param, confirmation)
+    ) {
+      console.warn('[Actions] unconfirmed action refused:', turnId, requestId, action);
+      return { ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' };
     }
     const parsed = ACTION_SCHEMAS[action].safeParse(param);
     if (!parsed.success) {

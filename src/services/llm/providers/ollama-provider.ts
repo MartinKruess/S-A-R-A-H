@@ -74,35 +74,52 @@ export class OllamaProvider implements LlmProvider {
     const decoder = new TextDecoder();
     let fullText = '';
     let buffer = '';
+    let terminalFrameReceived = false;
 
-    while (true) {
+    const consumeLine = (line: string): void => {
+      if (!line.trim()) return;
+      try {
+        const parsed = JSON.parse(line) as {
+          message?: { content?: string };
+          done?: boolean;
+        };
+        const chunk = parsed.message?.content ?? '';
+        if (chunk) {
+          fullText += chunk;
+          onChunk(chunk);
+        }
+        if (parsed.done === true) terminalFrameReceived = true;
+      } catch {
+        // Ignore malformed intermediate frames. A missing terminal frame still
+        // fails the complete response below, so partial output is never accepted.
+      }
+    };
+
+    while (!terminalFrameReceived) {
       if (options?.signal?.aborted) {
         await reader.cancel();
         throw new Error('aborted');
       }
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buffer += decoder.decode();
+        consumeLine(buffer);
+        buffer = '';
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line) as {
-            message: { content: string };
-            done: boolean;
-          };
-          const chunk = parsed.message.content;
-          if (chunk) {
-            fullText += chunk;
-            onChunk(chunk);
-          }
-        } catch {
-          // Skip malformed JSON chunks from Ollama
-        }
+        consumeLine(line);
+        if (terminalFrameReceived) break;
       }
+    }
+
+    if (!terminalFrameReceived) {
+      throw new Error('Ollama stream ended before the terminal done frame');
     }
 
     return fullText;

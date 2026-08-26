@@ -174,4 +174,34 @@ describe('SandboxBrowser.show', () => {
     await expect(showing).rejects.toMatchObject({ name: 'AbortError' });
     expect(windows[0].webContents.stop).toHaveBeenCalled();
   });
+
+  it('aborts while isolated storage preparation is still hanging', async () => {
+    const win = new FakeWindow();
+    win.webContents.session.clearStorageData.mockImplementationOnce(
+      async () => new Promise<void>(() => {}),
+    );
+    const browser = new SandboxBrowser(() => win);
+    const controller = new AbortController();
+    const blocked = browser.fetchPageHtml('https://example.com/', controller.signal);
+    await vi.waitFor(() => expect(win.webContents.session.clearStorageData).toHaveBeenCalled());
+    controller.abort();
+
+    await expect(blocked).rejects.toMatchObject({ name: 'AbortError' });
+    expect(win.webContents.stop).toHaveBeenCalled();
+  });
+
+  it('aborts while HTML extraction is still hanging', async () => {
+    const { browser, windows } = makeBrowser();
+    const controller = new AbortController();
+    const fetching = browser.fetchPageHtml('https://example.com/', controller.signal);
+    await vi.waitFor(() => expect(windows).toHaveLength(1));
+    windows[0].webContents.executeJavaScript.mockImplementationOnce(
+      async () => new Promise<string>(() => {}),
+    );
+    windows[0].webContents.emit('did-finish-load');
+    controller.abort();
+
+    await expect(fetching).rejects.toMatchObject({ name: 'AbortError' });
+    expect(windows[0].webContents.stop).toHaveBeenCalled();
+  });
 });

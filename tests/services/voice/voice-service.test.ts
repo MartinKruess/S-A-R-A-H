@@ -268,6 +268,25 @@ describe('VoiceService', () => {
     expect(stt.destroy).toHaveBeenCalledOnce();
   });
 
+  it('keeps a self-recovering STT provider alive after its initial attempt fails', async () => {
+    let availabilityListener: ((state: { available: boolean; message?: string }) => void) | null = null;
+    Object.defineProperty(stt, 'recoversAfterInitFailure', { value: true });
+    stt.onAvailabilityChange = vi.fn((listener) => {
+      availabilityListener = listener;
+      return vi.fn();
+    });
+    (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('transient init fail'));
+
+    await service.init();
+
+    expect(service.status).toBe('running');
+    expect(stt.destroy).not.toHaveBeenCalled();
+    expect(hotkey.register).toHaveBeenCalledOnce();
+
+    availabilityListener!({ available: true });
+    expect(hotkey.register).toHaveBeenCalledWith('F9', expect.any(Function), expect.any(Function));
+  });
+
   // --- 3. Registers hotkey in push-to-talk mode ---
 
   it('registers hotkey in push-to-talk mode', async () => {
@@ -1407,6 +1426,49 @@ describe('VoiceService partial failure (voice:capability)', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
+  it('terminalizes the held F9 capture when STT becomes unavailable', async () => {
+    const bus = new MessageBus();
+    const stt = createMockStt();
+    const audio = createMockAudio();
+    const hotkey = createMockHotkey();
+    let availabilityListener: ((state: { available: boolean; message?: string }) => void) | null = null;
+    stt.onAvailabilityChange = vi.fn((listener) => {
+      availabilityListener = listener;
+      return vi.fn();
+    });
+    const service = new VoiceService(
+      createMockContext(bus, 'push-to-talk'),
+      stt,
+      createMockTts(),
+      createMockWakeWord(),
+      audio,
+      hotkey,
+    );
+    service.setRendererCaptureReady(true);
+    await service.init();
+    const terminals: Array<{ turnId: string; status: string; message?: string }> = [];
+    bus.on('turn:terminal', (message) => terminals.push(message.data));
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    onDown();
+    const snapshot = service.voiceStateSnapshot;
+    availabilityListener!({ available: false, message: 'whisper exited' });
+    onUp();
+
+    expect(audio.stopRecording).toHaveBeenCalledWith(snapshot.captureId);
+    expect(terminals).toEqual([{
+      turnId: snapshot.turnId,
+      status: 'error',
+      message: STT_UNAVAILABLE_MESSAGE,
+    }]);
+    expect(stt.transcribe).not.toHaveBeenCalled();
+    expect(service.voiceState).toBe('idle');
+    expect(service.voiceStateSnapshot.captureId).toBeUndefined();
+    await service.destroy();
+  });
+
   it('publishes runtime TTS degradation and recovery after initial readiness', async () => {
     const bus = new MessageBus();
     const capabilities: Array<{ stt: boolean; tts: boolean }> = [];
@@ -1769,6 +1831,73 @@ describe('TTS deferral while listening (F9)', () => {
     expect(bus.isTurnTerminal(turnB)).toBe(true);
     expect(service.voiceState).toBe('listening');
     expect(tts.stop).toHaveBeenCalled();
+  });
+
+  it('keeps an independent pure text-chat output open when F9 interrupts voice playback', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const hotkey = createMockHotkey();
+    const service = new VoiceService(
+      createMockContext(bus),
+      createMockStt(),
+      tts,
+      createMockWakeWord(),
+      createMockAudio(),
+      hotkey,
+    );
+    service.setRendererCaptureReady(true);
+    await service.init();
+    const canceledTurns: string[] = [];
+    bus.on('turn:cancel', (message) => canceledTurns.push(message.data.turnId));
+
+    const voiceTurnId = '55555555-5555-4555-8555-555555555555';
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: voiceTurnId,
+      text: 'Gesprochene Antwort.',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId: voiceTurnId }));
+    await vi.waitFor(() => expect(service.voiceState).toBe('speaking'));
+
+    const textTurnId = '66666666-6666-4666-8666-666666666666';
+    const acceptedText = {
+      turnId: textTurnId,
+      source: 'chat' as const,
+      mode: 'chat' as const,
+    };
+    bus.emit('test', 'turn:accepted', acceptedText);
+    service.onMessage({
+      source: 'renderer',
+      topic: 'turn:accepted',
+      data: acceptedText,
+      timestamp: new Date().toISOString(),
+    });
+    service.onMessage({
+      source: 'renderer',
+      topic: 'chat:message',
+      data: {
+        ...acceptedText,
+        originalText: 'Nur als Text',
+        createdAt: new Date().toISOString(),
+      },
+      timestamp: new Date().toISOString(),
+    });
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: textTurnId,
+      text: 'Unabhängige Textantwort',
+    }));
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    onDown();
+
+    const outputs = service as unknown as {
+      outputs: Map<string, { turnId: string }>;
+    };
+    expect(canceledTurns).toEqual([voiceTurnId]);
+    expect(bus.isTurnOpen(textTurnId)).toBe(true);
+    expect([...outputs.outputs.values()].map((output) => output.turnId)).toContain(textTurnId);
+    expect(service.voiceState).toBe('listening');
+    await service.destroy();
   });
 
   it('terminally fails an auto-limited recording when STT rejects', async () => {

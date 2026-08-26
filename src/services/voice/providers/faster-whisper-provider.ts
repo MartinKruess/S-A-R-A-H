@@ -23,6 +23,7 @@ const SHUTDOWN_PROBE_TIMEOUT_MS = 1_500;
 
 export class FasterWhisperProvider implements SttProvider {
   readonly id = 'faster-whisper';
+  readonly recoversAfterInitFailure = true;
   private serverProcess: ChildProcess | null = null;
   private scriptPath: string;
   private lifecycleAbort = new AbortController();
@@ -55,7 +56,7 @@ export class FasterWhisperProvider implements SttProvider {
       attempt = this.doInit(linked.signal)
         .catch((error) => {
           if (this.initPromise === attempt) this.initPromise = null;
-          if (this.everReady && !this.destroyed) {
+          if (!this.destroyed && error instanceof Error && error.name !== 'AbortError') {
             const message = error instanceof Error ? error.message : String(error);
             this.publishAvailability(false, message);
             this.scheduleRestart();
@@ -221,12 +222,10 @@ export class FasterWhisperProvider implements SttProvider {
           : value instanceof Error
             ? value
             : new Error(String(value));
-        // A user/F9 cancellation is expected turn control and must not tear down
-        // the shared model. A hard TimeoutError or a real transport failure can
-        // leave native inference wedged, so recycle the owned runtime there.
-        if (!signal?.aborted || reason.name === 'TimeoutError') {
-          await this.recycleRuntime(reason.message);
-        }
+        // Once native transcription has started, aborting only the HTTP request
+        // does not stop the single-threaded Whisper work. Recycle the owned
+        // process so a following turn cannot queue behind discarded inference.
+        await this.recycleRuntime(reason.message);
         throw reason;
       }
 
@@ -329,7 +328,7 @@ export class FasterWhisperProvider implements SttProvider {
   }
 
   private scheduleRestart(): void {
-    if (this.destroyed || !this.everReady || this.restartTimer) return;
+    if (this.destroyed || this.restartTimer) return;
     const delayMs = Math.min(1_000 * (2 ** this.restartAttempt), RESTART_MAX_DELAY_MS);
     this.restartAttempt += 1;
     this.restartTimer = setTimeout(() => {

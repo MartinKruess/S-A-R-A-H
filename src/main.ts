@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { bootstrap, AppContext } from './core/bootstrap.js';
+import { bootstrap, repairInvalidConfig, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
 import { ModelRuntime } from './services/llm/model-runtime.js';
@@ -39,6 +39,11 @@ let systemActions: SystemActions | null = null;
 let oauth: OAuthConnectionService | null = null;
 
 const electronShutdown = registerElectronShutdown(app, () => appContext);
+let resolveSplashDone!: () => void;
+const splashDone = new Promise<void>((resolve) => {
+  resolveSplashDone = resolve;
+});
+ipcMain.once('splash-done', resolveSplashDone);
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -124,6 +129,7 @@ app.whenReady().then(async () => {
       app.quit();
       return;
     }
+    await repairInvalidConfig(appContext);
   }
 
   // --- Preload: create providers (fast, no activation) ---
@@ -198,6 +204,8 @@ app.whenReady().then(async () => {
     system: systemActions,
     spotify: spotifyActions,
     media: mediaController,
+    confirmationGate: appContext.actionConfirmations,
+    getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before
@@ -265,6 +273,7 @@ app.whenReady().then(async () => {
     getAppContext,
     piperProvider,
     containerManager,
+    splashDone,
   });
   appContext.lifecycle.registerCleanup('boot-handlers', stopBootHandlers, 'before_services');
 

@@ -319,3 +319,13 @@ Audit 7 wurde mit maximaler Prüftiefe, vertauschten und überlappenden Prüfber
 - Nicht als P1 gezählt wurden reine Fehlermeldungsformulierungen, UI-Nachlauf ohne falsche Funktion, theoretische Datenabflüsse ohne erreichbaren IPC-Pfad und Codeästhetik.
 
 Layer 1 bleibt offen. Vor der praktischen Windows-Matrix müssen die Befunde 83 bis 99 geplant, umgesetzt, vollständig geprüft und anschließend erneut uneingeschränkt auditiert werden.
+
+## Umsetzung der siebten Befundrunde
+
+Die Befunde 83 bis 99 wurden umgesetzt und mit Regressionstests abgesichert. Die Korrekturen erzwingen die Memory- und Bestätigungsregeln an technischen Grenzen, begrenzen und regenerieren Modell-, Browser-, Splash- und Voice-Laufzeiten, beenden Arbeit bereits beim Shutdown-Beginn und halten Capture-, Playback-, STT- sowie Audio-Konfigurationszustände auch bei Abbruch und Fehler konsistent.
+
+Eine fokussierte Integrationsprüfung des Umsetzungsdiffs fand noch einen offenen Unterpfad von Befund 92: Nicht durch Timeout ausgelöste Runtime-Fehler während eines Modellwechsels degradierten die Capability noch nicht und planten keinen Recheck. Dieser Unterpfad wurde im selben Durchgang geschlossen und mit einem `ECONNREFUSED`-Regressionstest abgesichert.
+
+Der integrierte Stand bestand danach 81 Testdateien mit 879 Tests, Main- und Renderer-Typecheck, den vollständigen Build und `git diff --check`. Die native SQLite-Bindung wurde anschließend wieder auf Electron 41.1.1 gestellt.
+
+Gemäß der Abstimmung vom 26.08.2026 folgt jetzt kein weiteres vollständiges Layer-1-Audit. Vor einer neuen systematischen Fehlersuche oder der praktischen Windows-Matrix wird das weitere Vorgehen gemeinsam besprochen. Konkrete Lücken, die bei der direkten Arbeit an den bekannten Befunden auffallen, dürfen weiterhin im engen Zusammenhang behoben werden.

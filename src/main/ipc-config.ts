@@ -3,7 +3,7 @@ import * as os from 'os';
 import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
-import type { SarahConfig } from '../core/config-schema.js';
+import type { SarahConfigPatch } from '../core/config-schema.js';
 import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
@@ -50,14 +50,22 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
   ipcMain.handle(
     'save-config',
-    (_event, config: Partial<SarahConfig>): Promise<SaveConfigResult> => {
+    (_event, config: SarahConfigPatch): Promise<SaveConfigResult> => {
       const operation = saveQueue.then(async () => {
         const ctx = getAppContext();
         const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
         const previousAudio = ctx.parsedConfig.audio;
         const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
         const previousLlm = ctx.parsedConfig.llm;
-        const merged = { ...existing, ...config };
+        const merged = {
+          ...existing,
+          ...config,
+          ...(
+            config.audio
+              ? { audio: { ...ctx.parsedConfig.audio, ...config.audio } }
+              : {}
+          ),
+        };
 
         const { SarahConfigSchema } = await import('../core/config-schema.js');
         const parsed = SarahConfigSchema.parse(merged);

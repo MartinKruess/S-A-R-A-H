@@ -3,7 +3,7 @@ import type { VoiceLevel } from '../../../core/ipc-contract.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudToggle, hudVSlider } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
-import { createAudioSync, near } from './voice-audio-sync.js';
+import { createAudioSync, near, persistMuteWithRollback } from './voice-audio-sync.js';
 
 const BAR_COUNT = 16;
 const FLOOR = 0.05;
@@ -30,13 +30,20 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   controls.className = 'voice-panel-controls';
 
   const sarah = getSarah();
+  let muteSaveRevision = 0;
+  let confirmedInputMuted = false;
 
   const muteToggle = hudToggle({
     label: 'MUTE',
     pressed: false,
     ariaLabel: 'Mikrofon stummschalten',
     onChange: (muted) => {
-      void audioSync.persist({ inputMuted: muted });
+      const revision = ++muteSaveRevision;
+      void persistMuteWithRollback(audioSync, muted, () => {
+        if (revision === muteSaveRevision) {
+          muteToggle.setPressedSilent(confirmedInputMuted);
+        }
+      });
     },
   });
 
@@ -123,6 +130,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   };
 
   const applyAudio = (audio: AudioConfig): void => {
+    confirmedInputMuted = audio.inputMuted;
     const nextDevice = audio.inputDeviceId ?? '';
     if (picker.value !== nextDevice) picker.value = nextDevice;
     if (muteToggle.pressed !== audio.inputMuted) {

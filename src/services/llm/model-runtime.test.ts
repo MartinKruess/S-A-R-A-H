@@ -166,6 +166,94 @@ describe('ModelRuntime', () => {
     expect(runtime.snapshot.activeRole).toBe('router');
   });
 
+  it('lets an aborted queued turn reject immediately and releases the queue after a transition deadline', async () => {
+    const memory = vram();
+    (memory.unloadModel as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () => new Promise<boolean>(() => {}))
+      .mockResolvedValue(true);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: memory,
+      transitionTimeoutMs: 20,
+      runtimeRecheckDelayMs: 60_000,
+    });
+    await runtime.init();
+
+    const blocked = runtime.generateWorkerText('blocked');
+    await vi.waitFor(() => expect(memory.unloadModel).toHaveBeenCalledTimes(1));
+    const controller = new AbortController();
+    const queued = runtime.route('queued', controller.signal);
+    controller.abort();
+
+    await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(blocked).rejects.toMatchObject({ name: 'TimeoutError' });
+    await expect(runtime.route('after deadline')).resolves.toMatchObject({
+      parsed: { kind: 'route' },
+    });
+    await runtime.destroy();
+  });
+
+  it('publishes a runtime outage and recovers capability through one controlled recheck', async () => {
+    const router = provider('router');
+    (router.chat as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('ok')
+      .mockRejectedValueOnce(new Error('Ollama connection lost'))
+      .mockResolvedValue('ok');
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: router,
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      onCapability: capability,
+      runtimeRecheckDelayMs: 5,
+    });
+    await runtime.init();
+
+    await expect(runtime.route('hello')).rejects.toThrow('Ollama connection lost');
+    expect(capability).toHaveBeenCalledWith('router', 'error', 'Ollama connection lost');
+    await vi.waitFor(() => {
+      expect(router.isAvailable).toHaveBeenCalledTimes(2);
+      expect(capability).toHaveBeenCalledWith('router', 'ready');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
+  it('degrades availability and rechecks after an eager-load connection failure', async () => {
+    const worker = provider('worker');
+    (worker.chat as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'))
+      .mockResolvedValue('ok');
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+      onCapability: capability,
+      runtimeRecheckDelayMs: 5,
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).rejects.toThrow('ECONNREFUSED');
+    expect(runtime.snapshot.roles.local_worker.availability).toBe('error');
+    expect(capability).toHaveBeenCalledWith(
+      'local_worker',
+      'error',
+      'connect ECONNREFUSED 127.0.0.1:11434',
+    );
+    await vi.waitFor(() => {
+      expect(worker.isAvailable).toHaveBeenCalledTimes(2);
+      expect(capability).toHaveBeenCalledWith('local_worker', 'ready', undefined);
+    });
+    expect(runtime.snapshot.roles.local_worker.availability).toBe('available');
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
   it('restores the router immediately when worker inference fails', async () => {
     const worker = provider('worker');
     (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
@@ -386,7 +474,7 @@ describe('ModelRuntime', () => {
     await runtime.destroy();
     releaseWorkerWarmup();
 
-    await expect(running).rejects.toThrow(/stale during shutdown/);
+    await expect(running).rejects.toThrow(/aborted|stale/i);
     expect(runtime.snapshot.state).toBe('stopped');
     expect(runtime.snapshot.activeRole).toBeNull();
     expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');

@@ -1,7 +1,7 @@
 // src/main/sandbox-browser.ts
 // Container 1 (Spec §6): the web can render here, but nothing can escape.
 import type { WebContents } from 'electron';
-import { abortError, throwIfAborted } from '../core/abort-utils.js';
+import { abortError, runWithTimeout, throwIfAborted } from '../core/abort-utils.js';
 
 const LOAD_TIMEOUT_MS = 15_000;
 const MAX_REDIRECTS = 5;
@@ -127,11 +127,31 @@ export class SandboxBrowser {
   async fetchPageHtml(url: string, signal: AbortSignal): Promise<string> {
     if (!isHttpUrl(url)) throw new Error(`Invalid URL: ${url}`);
     throwIfAborted(signal);
-    const win = await this.getWindow();
+    const win = await runWithTimeout(
+      () => this.getWindow(),
+      LOAD_TIMEOUT_MS,
+      'Browser window preparation timed out',
+      signal,
+    );
     const wc = win.webContents;
-    await wc.session.clearStorageData();
-    await wc.session.clearCache();
-    await seedConsentCookies(wc.session, url); // skip Bing's EU consent wall (search only)
+    try {
+      await runWithTimeout(
+        async (preparationSignal) => {
+          await wc.session.clearStorageData();
+          throwIfAborted(preparationSignal);
+          await wc.session.clearCache();
+          throwIfAborted(preparationSignal);
+          await seedConsentCookies(wc.session, url); // skip Bing's EU consent wall (search only)
+          throwIfAborted(preparationSignal);
+        },
+        LOAD_TIMEOUT_MS,
+        'Browser storage preparation timed out',
+        signal,
+      );
+    } catch (error) {
+      wc.stop();
+      throw error;
+    }
 
     return new Promise<string>((resolve, reject) => {
       let settled = false;
@@ -154,10 +174,18 @@ export class SandboxBrowser {
 
       const onFinish = (): void => {
         if (settled) return;
-        cleanup();
-        wc.executeJavaScript('document.documentElement.outerHTML').then(
-          (html) => resolve(String(html)),
-          (err) => reject(err instanceof Error ? err : new Error(String(err))),
+        void runWithTimeout(
+          () => wc.executeJavaScript('document.documentElement.outerHTML'),
+          LOAD_TIMEOUT_MS,
+          'Browser HTML extraction timed out',
+          signal,
+        ).then(
+          (html) => {
+            if (settled) return;
+            cleanup();
+            resolve(String(html));
+          },
+          (err) => fail(err instanceof Error ? err : new Error(String(err))),
         );
       };
       const onFail = (_e: unknown, code: number, desc: string): void => fail(new Error(`Load failed (${code}): ${desc}`));

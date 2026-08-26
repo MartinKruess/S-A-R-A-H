@@ -120,6 +120,33 @@ describe('ConversationStore', () => {
     expect(boot2.startContext.map((m) => m.content)).toEqual(['from run 1', 'answer run 1']);
   });
 
+  it('does not load persisted history when memory is disabled', async () => {
+    await storage.insert('conversations', { mode: 'ambient' });
+    await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'alte private Frage' });
+
+    const boot = await new ConversationStore(storage).boot({
+      memoryAllowed: false,
+      memoryExclusions: [],
+    });
+
+    expect(boot.startContext).toEqual([]);
+  });
+
+  it('filters configured exclusions out of the persisted start context', async () => {
+    await storage.insert('conversations', { mode: 'ambient' });
+    await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'Mein Hobby ist Musik' });
+    await storage.insert('conversations', { mode: 'ambient' });
+    await storage.insert('messages', { conversation_id: 2, role: 'user', content: 'Mein Kontostand bleibt privat' });
+    await storage.insert('messages', { conversation_id: 2, role: 'assistant', content: 'Das behandle ich vertraulich.' });
+
+    const boot = await new ConversationStore(storage).boot({
+      memoryAllowed: true,
+      memoryExclusions: ['Finanzen'],
+    });
+
+    expect(boot.startContext.map((message) => message.content)).toEqual(['Mein Hobby ist Musik']);
+  });
+
   it('falls back to in-memory sentinel when the session insert fails', async () => {
     const failing = new FailingStorage(storage, { failInsertTables: ['conversations'] });
 

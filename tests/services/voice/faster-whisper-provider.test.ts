@@ -138,9 +138,13 @@ describe('FasterWhisperProvider runtime ownership', () => {
     await provider.destroy();
   });
 
-  it('does not recycle the shared runtime for an expected F9 cancellation', async () => {
-    const process = new MockWhisperProcess();
-    spawnMock.mockReturnValue(process as unknown as ChildProcess);
+  it('kills native work on F9 cancellation before a following transcription starts', async () => {
+    vi.useFakeTimers();
+    const first = new MockWhisperProcess();
+    const second = new MockWhisperProcess();
+    spawnMock
+      .mockReturnValueOnce(first as unknown as ChildProcess)
+      .mockReturnValueOnce(second as unknown as ChildProcess);
     let transcriptionCalls = 0;
     vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
       const url = String(input);
@@ -168,10 +172,47 @@ describe('FasterWhisperProvider runtime ownership', () => {
     controller.abort();
 
     await expect(canceled).rejects.toMatchObject({ name: 'AbortError' });
-    expect(process.kill).not.toHaveBeenCalled();
-    expect(states).toEqual([{ available: true }]);
+    expect(first.kill).toHaveBeenCalledOnce();
+    expect(states.at(-1)).toMatchObject({ available: false });
+    await vi.advanceTimersByTimeAsync(1_000);
     await expect(provider.transcribe(new Float32Array([0.2]), 16_000)).resolves.toBe('Folgeturn');
-    expect(spawnMock).toHaveBeenCalledOnce();
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    await provider.destroy();
+  });
+
+  it('retries a transient failure during the very first startup', async () => {
+    vi.useFakeTimers();
+    const first = new MockWhisperProcess();
+    const second = new MockWhisperProcess();
+    spawnMock
+      .mockImplementationOnce(() => {
+        setTimeout(() => first.crash(), 0);
+        return first as unknown as ChildProcess;
+      })
+      .mockReturnValueOnce(second as unknown as ChildProcess);
+    let healthCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/health')) {
+        healthCalls += 1;
+        return healthCalls === 1
+          ? new Promise<Response>(() => {})
+          : Promise.resolve(response(true));
+      }
+      return Promise.reject(new Error('no previous server'));
+    });
+    const provider = new FasterWhisperProvider('C:/fake/resources');
+    const states: Array<{ available: boolean; message?: string }> = [];
+    provider.onAvailabilityChange((state) => states.push(state));
+
+    const firstStart = provider.init();
+    const firstStartFailed = expect(firstStart).rejects.toThrow(/before becoming ready/);
+    await vi.advanceTimersByTimeAsync(0);
+    await firstStartFailed;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(states.at(-1)).toEqual({ available: true }));
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
     await provider.destroy();
   });
 
