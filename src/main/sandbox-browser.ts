@@ -318,6 +318,8 @@ export class SandboxBrowser {
     return new Promise<string>((resolve, reject) => {
       let settled = false;
       let redirects = 0;
+      let activeNavigationUrl = comparableUrl(url);
+      const replacedNavigationUrls = new Set<string>();
 
       const cleanup = (): void => {
         settled = true;
@@ -350,10 +352,24 @@ export class SandboxBrowser {
           (err) => fail(err instanceof Error ? err : new Error(String(err))),
         );
       };
-      const onFail = (_e: unknown, code: number, desc: string): void => fail(new Error(`Load failed (${code}): ${desc}`));
+      const onFail = (
+        _e: unknown,
+        code: number,
+        desc: string,
+        validatedUrl = '',
+      ): void => {
+        const failedUrl = comparableUrl(validatedUrl);
+        if (
+          isRedirectCancellationCode(code, desc)
+          && failedUrl.length > 0
+          && replacedNavigationUrls.has(failedUrl)
+        ) return;
+        fail(new Error(`Load failed (${code}): ${desc}`));
+      };
       const onRedirect = (event: { preventDefault(): void }, redirectUrl: string): void => {
         redirects += 1;
         event.preventDefault();
+        replacedNavigationUrls.add(activeNavigationUrl);
         if (redirects > MAX_REDIRECTS) {
           wc.stop();
           fail(new Error(`Blocked redirect: ${redirectUrl}`));
@@ -362,8 +378,10 @@ export class SandboxBrowser {
         void this.validateForWindow(win, redirectUrl, signal).then(
           (safeUrl) => {
             if (settled || win.isDestroyed()) return;
-            void this.navigate(win, safeUrl.toString()).catch((error: Error & { code?: number | string }) => {
-              if (!isRedirectCancellation(error)) fail(error);
+            const nextUrl = safeUrl.toString();
+            activeNavigationUrl = comparableUrl(nextUrl);
+            void this.navigate(win, nextUrl).catch((error: Error & { code?: number | string }) => {
+              if (!isExpectedRedirectCancellation(error, nextUrl, replacedNavigationUrls)) fail(error);
             });
           },
           () => {
@@ -394,7 +412,7 @@ export class SandboxBrowser {
       signal.addEventListener('abort', onAbort, { once: true });
 
       this.navigate(win, url).catch((error: Error & { code?: number | string }) => {
-        if (redirects > 0 && isRedirectCancellation(error)) return;
+        if (isExpectedRedirectCancellation(error, url, replacedNavigationUrls)) return;
         fail(error);
       });
     });
@@ -428,6 +446,8 @@ export class SandboxBrowser {
     return new Promise<boolean>((resolve, reject) => {
       let settled = false;
       let redirects = 0;
+      let activeNavigationUrl = comparableUrl(url);
+      const replacedNavigationUrls = new Set<string>();
 
       const cleanup = (): void => {
         settled = true;
@@ -451,10 +471,25 @@ export class SandboxBrowser {
         win.show();
         resolve(true);
       };
-      const onFail = (): void => fail();
+      const onFail = (
+        _event?: unknown,
+        code?: number,
+        desc = '',
+        validatedUrl = '',
+      ): void => {
+        const failedUrl = comparableUrl(validatedUrl);
+        if (
+          code !== undefined
+          && isRedirectCancellationCode(code, desc)
+          && failedUrl.length > 0
+          && replacedNavigationUrls.has(failedUrl)
+        ) return;
+        fail();
+      };
       const onRedirect = (event: { preventDefault(): void }, redirectUrl: string): void => {
         redirects += 1;
         event.preventDefault();
+        replacedNavigationUrls.add(activeNavigationUrl);
         if (redirects > MAX_REDIRECTS) {
           wc.stop();
           fail();
@@ -463,8 +498,10 @@ export class SandboxBrowser {
         void this.validateForWindow(win, redirectUrl, signal).then(
           (safeUrl) => {
             if (settled || win.isDestroyed()) return;
-            void this.navigate(win, safeUrl.toString()).catch((error: Error & { code?: number | string }) => {
-              if (!isRedirectCancellation(error)) fail();
+            const nextUrl = safeUrl.toString();
+            activeNavigationUrl = comparableUrl(nextUrl);
+            void this.navigate(win, nextUrl).catch((error: Error & { code?: number | string }) => {
+              if (!isExpectedRedirectCancellation(error, nextUrl, replacedNavigationUrls)) fail();
             });
           },
           () => {
@@ -496,7 +533,7 @@ export class SandboxBrowser {
       wc.on('render-process-gone', onGone);
       signal?.addEventListener('abort', onAbort, { once: true });
       this.navigate(win, url).catch((error: Error & { code?: number | string }) => {
-        if (redirects > 0 && isRedirectCancellation(error)) return;
+        if (isExpectedRedirectCancellation(error, url, replacedNavigationUrls)) return;
         onFail();
       });
     });
@@ -519,4 +556,25 @@ function wcStopSafely(win: SandboxWindow): void {
 
 function isRedirectCancellation(error: Error & { code?: number | string }): boolean {
   return error.code === -3 || error.code === 'ERR_ABORTED' || error.message.includes('ERR_ABORTED');
+}
+
+function isRedirectCancellationCode(code: number, description: string): boolean {
+  return code === -3 || description.includes('ERR_ABORTED');
+}
+
+function comparableUrl(raw: string): string {
+  if (!raw) return '';
+  try {
+    return new URL(raw).toString();
+  } catch {
+    return raw;
+  }
+}
+
+function isExpectedRedirectCancellation(
+  error: Error & { code?: number | string },
+  url: string,
+  replacedNavigationUrls: ReadonlySet<string>,
+): boolean {
+  return isRedirectCancellation(error) && replacedNavigationUrls.has(comparableUrl(url));
 }

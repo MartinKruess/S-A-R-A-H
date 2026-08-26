@@ -26,6 +26,7 @@ import {
   CONVERSATION_WINDOW_MS,
   DEFAULT_PTT_KEY,
   isAbortPhrase,
+  normalizeVoiceMode,
 } from './voice-types.js';
 
 /** RMS threshold below which audio is considered silence */
@@ -73,7 +74,10 @@ export class VoiceService implements SarahService {
   private conversationActive = false;
   private conversationTimer: ReturnType<typeof setTimeout> | null = null;
   private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private rendererAvailable = true;
   private rendererCaptureReady = false;
+  private rendererCaptureHotkeyReconcilePending = false;
+  private rendererCaptureHotkeySuspended = false;
 
   private ttsQueue: TtsQueue | null = null;
   private playbackUnsub: (() => void) | null = null;
@@ -177,6 +181,30 @@ export class VoiceService implements SarahService {
     this.setState('idle');
   }
 
+  /** Withdraws renderer audio ownership and ends its correlated capture/playback work. */
+  handleRendererCaptureUnavailable(message: string): void {
+    const captureId = this.activeCaptureId ?? undefined;
+    const playbackTurnId = this.activePlaybackTurnId;
+    const playbackId = this.activePlaybackId;
+    if (
+      captureId
+      && this.voiceMode === 'push-to-talk'
+      && this._voiceState === 'listening'
+    ) {
+      this.rendererCaptureHotkeySuspended = true;
+    }
+    this.rendererAvailable = false;
+    this.applyRendererCaptureReady(false);
+    if (captureId) this.handleCaptureFailure(captureId, message);
+    if (playbackTurnId && playbackId) {
+      this.handlePlaybackFailure(playbackTurnId, playbackId, message, true);
+    } else if (this.ttsQueue?.isActive) {
+      this.ttsQueue.stop();
+      this.audio.setPlaying(false);
+      this.reconcileStoppedRendererAudio();
+    }
+  }
+
   /** Completes the exact renderer capture whose worklet and IPC tail were flushed. */
   handleCaptureFlushed(captureId: VoiceCaptureId): void {
     const waiter = this.captureFlushWaiters.get(captureId);
@@ -214,9 +242,26 @@ export class VoiceService implements SarahService {
   }
 
   setRendererCaptureReady(ready: boolean): void {
+    this.rendererAvailable = true;
+    this.flushDeferredSentences();
+    this.applyRendererCaptureReady(ready);
+  }
+
+  private applyRendererCaptureReady(ready: boolean): void {
     if (this.rendererCaptureReady === ready) return;
     this.rendererCaptureReady = ready;
     if (this.status !== 'running' || this.voiceMode !== 'push-to-talk') return;
+    if (this._voiceState === 'listening') {
+      this.rendererCaptureHotkeyReconcilePending = true;
+      return;
+    }
+    if (this.rendererCaptureHotkeySuspended) {
+      if (ready) {
+        this.rendererCaptureHotkeySuspended = false;
+        this.hotkey.resume();
+      }
+      return;
+    }
     if (ready || !this.capabilities.stt) {
       this.setupMode();
     } else {
@@ -228,12 +273,25 @@ export class VoiceService implements SarahService {
     const wasListening = this._voiceState === 'listening';
     this._voiceState = state;
     this.context.bus.emit(this.id, 'voice:state', this.createStateSnapshot(state));
-    if (wasListening && state !== 'listening' && this.deferredSentences.length > 0) {
-      for (const item of this.deferredSentences) {
-        this.ttsQueue?.enqueue(item);
+    if (
+      wasListening
+      && state !== 'listening'
+      && this.rendererCaptureHotkeyReconcilePending
+    ) {
+      this.rendererCaptureHotkeyReconcilePending = false;
+      if (this.rendererCaptureHotkeySuspended) {
+        this.hotkey.suspend();
+      } else if (
+        this.status === 'running'
+        && this.voiceMode === 'push-to-talk'
+        && (this.rendererCaptureReady || !this.capabilities.stt)
+      ) {
+        this.setupMode();
+      } else {
+        this.hotkey.unregister();
       }
-      this.deferredSentences = [];
     }
+    if (wasListening && state !== 'listening') this.flushDeferredSentences();
   }
 
   private createStateSnapshot(state: VoiceState): BusEvents['voice:state'] {
@@ -253,11 +311,25 @@ export class VoiceService implements SarahService {
 
   /** Never play TTS into an open recording — defer until listening ends (F9). */
   private enqueueOrDefer(item: TtsQueueItem): void {
-    if (this._voiceState === 'listening') {
+    if (this._voiceState === 'listening' || !this.rendererAvailable) {
       this.deferredSentences.push(item);
       return;
     }
     this.ttsQueue?.enqueue(item);
+  }
+
+  private flushDeferredSentences(): void {
+    if (
+      this._voiceState === 'listening'
+      || !this.rendererAvailable
+      || !this.ttsQueue
+      || this.deferredSentences.length === 0
+    ) return;
+    if (this._voiceState === 'processing' || this._voiceState === 'idle') {
+      this.setState('speaking');
+    }
+    for (const item of this.deferredSentences) this.ttsQueue.enqueue(item);
+    this.deferredSentences = [];
   }
 
   private async transition(generation: number, fn: () => Promise<void>): Promise<void> {
@@ -287,9 +359,7 @@ export class VoiceService implements SarahService {
     throwIfAborted(signal);
     this.initializing = true;
     const { controls } = this.context.parsedConfig;
-    const rawMode = controls.voiceMode;
-    // keyword mode is non-functional — treat as off
-    this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
+    this.voiceMode = normalizeVoiceMode(controls.voiceMode);
     this.pushToTalkKey = controls.pushToTalkKey;
     this.sttAvailabilityUnsub = this.stt.onAvailabilityChange?.((state) => {
       this.applySttAvailability(state);
@@ -500,15 +570,16 @@ export class VoiceService implements SarahService {
   }
 
   /** Feed an audio chunk from the renderer. Called by IPC handler. */
-  feedAudioChunk(captureId: VoiceCaptureId, chunk: Float32Array): void {
+  feedAudioChunk(captureId: VoiceCaptureId, chunk: Float32Array): boolean {
     const result = this.audio.feedChunk(captureId, chunk);
-    if (result === 'limit' && this._voiceState === 'listening') {
+    if (result.limitReached && this._voiceState === 'listening') {
       const generation = this.voiceGeneration;
       const turnId = this.activeInputTurnId;
       void this.transition(generation, () => this.stopListeningAndProcess(generation)).catch((error) => {
         this.handleProcessingError(error, turnId, generation);
       });
     }
+    return result.accepted;
   }
 
   onMessage(msg: TypedBusMessage): void {
@@ -641,14 +712,13 @@ export class VoiceService implements SarahService {
       if (!isOwned || this.routerErrorTurns.has(turnId)) return;
       this.routerErrorTurns.add(turnId);
       this.processingTurnIds.delete(turnId);
+      this.deferredSentences = this.deferredSentences.filter((item) => item.turnId !== turnId);
       for (const output of turnOutputs) {
-        if (output.shouldSpeak) {
-          const remainder = output.buffer.flush();
-          if (remainder) this.enqueueSentences(output, [remainder]);
-        }
+        output.buffer.reset();
         output.complete = true;
         output.failed = true;
       }
+      this.ttsQueue?.cancelTurn(turnId);
       const shouldSpeakError = this.turnSpeechDecisions.get(turnId)
         ?? (
           this.voiceMode !== 'off'
@@ -668,12 +738,28 @@ export class VoiceService implements SarahService {
   }
 
   /** Rejects only the renderer playback that still owns the correlated audio item. */
-  handlePlaybackFailure(turnId: TurnId, playbackId: PlaybackId, message: string): void {
+  handlePlaybackFailure(
+    turnId: TurnId,
+    playbackId: PlaybackId,
+    message: string,
+    stopRemaining = false,
+  ): void {
     if (this.activePlaybackTurnId !== turnId || this.activePlaybackId !== playbackId) return;
     this.activePlaybackTurnId = null;
     this.activePlaybackId = null;
     this.audio.setPlaying(false);
-    this.ttsQueue?.playbackFailed(turnId, playbackId, new Error(message));
+    this.ttsQueue?.playbackFailed(turnId, playbackId, new Error(message), stopRemaining);
+    if (stopRemaining) {
+      this.reconcileStoppedRendererAudio();
+    }
+  }
+
+  private reconcileStoppedRendererAudio(): void {
+    for (const spokenTurnId of [...this.spokenTurns]) {
+      this.tryCompleteSpokenTurn(spokenTurnId);
+    }
+    this.cleanupFinishedOutputs();
+    this.restoreOwnedVoiceState();
   }
 
   private getOrCreateOutput(
@@ -817,6 +903,8 @@ export class VoiceService implements SarahService {
   async applyConfig(): Promise<void> {
     this.cancelActiveWork('Voice configuration changed');
     // Tear down current mode
+    this.rendererCaptureHotkeyReconcilePending = false;
+    this.rendererCaptureHotkeySuspended = false;
     this.hotkey.unregister();
     this.wakeWord.stop();
     if (this.audio.isRecording) {
@@ -833,8 +921,7 @@ export class VoiceService implements SarahService {
     const parsed = SarahConfigSchema.parse(raw);
     this.context.parsedConfig = parsed;
     const { controls } = parsed;
-    const rawMode = controls.voiceMode;
-    this.voiceMode = rawMode === 'keyword' ? 'off' : rawMode;
+    this.voiceMode = normalizeVoiceMode(controls.voiceMode);
     this.pushToTalkKey = controls.pushToTalkKey;
 
     // Set up new mode

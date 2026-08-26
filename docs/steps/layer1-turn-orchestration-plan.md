@@ -397,3 +397,70 @@ Der integrierte Stand bestand danach 85 Testdateien mit 924 Tests, Main- und Ren
 Bewusst verbleibendes Restrisiko: Die doppelte öffentliche Hostprüfung nutzt unmittelbar vor der Navigation bereits den Resolver derselben Electron-Session und damit deren DNS-Cache. Eine kryptografische Bindung der geprüften IP an die nachfolgende Chromium-Verbindung ist mit `BrowserWindow.loadURL()` jedoch nicht verfügbar; vollständiges DNS-Rebinding-Pinning würde einen eigenen lokalen Proxy- beziehungsweise Netzwerkpfad erfordern. Dieses enge Restfenster wurde nicht durch eine unverhältnismäßige neue Netzwerkarchitektur ersetzt.
 
 Mit dieser Umsetzung ist kein neuntes vollständiges Audit beauftragt. Die praktische Windows-Matrix und das weitere Vorgehen werden weiterhin separat abgestimmt.
+
+## Ergebnis des neunten vollständigen Audits
+
+Auf ausdrücklichen neuen Auftrag wurde ausschließlich Layer 1 bis hinunter zu Layer 0 erneut geprüft. Eigenständige Layer-2-Themen wie Memory-, Berechtigungs- oder Privacy-Policy waren nicht Teil dieses Durchgangs. Überschneidungen zwischen den Prüfpfaden wurden nur einmal gezählt. Das Audit fand 13 neue produktiv erreichbare Ursachen:
+
+| Nr. | Priorität | Befund |
+|---:|:---:|---|
+| 120 | P1 | Speichern fachfremder Controls wie Quiet Mode oder Custom Commands wendet die komplette Voice-Konfiguration erneut an und kann einen laufenden Voice-Turn abbrechen. |
+| 121 | P1 | Mehrere direkte Renderer-Sends für Voice-Level, Runtime-Status, Voice-Input-Konfiguration und Systemmetriken sind nicht pro Fenster isoliert; ein schließendes Fenster kann Fan-out oder Capture-IPC abbrechen. |
+| 122 | P1 | Der noch nicht funktionsfähige Keyword-Modus wird im Main-Prozess wie `off` behandelt, hält den Renderer-Capture aber weiter warm. |
+| 123 | P1 | Ein suspendierter oder unterbrochener Capture-`AudioContext` bleibt fälschlich bereit und besitzt keinen begrenzten Resume-/Recovery-Pfad. |
+| 124 | P1 | Ungültige Push-to-Talk-Tasten passieren das Schema und deaktivieren PTT erst still im nativen Hotkey-Layer. |
+| 125 | P2 | Ein verspäteter initialer Voice-State-Snapshot kann einen neueren Live-State im Renderer überschreiben. |
+| 126 | P1 | Voice-Level-Telemetrie ist nicht an die aktive `captureId` gebunden und leitet auch verworfene beziehungsweise veraltete Chunks weiter. |
+| 127 | P1 | Der Lifecycle-Servicebericht kann einen präziseren, vom recovery-fähigen Router bereits publizierten Fehlerzustand fälschlich mit `ready` überschreiben. |
+| 128 | P1 | Router-, Action- oder Teilworkerfehler können als erfolgreicher „Worker nicht verfügbar“-Fallback maskiert werden, sobald der Worker-Snapshot nach dem Fehler unavailable ist. |
+| 129 | P1 | Ein absichtlich ersetzter SandboxBrowser-Redirect kann durch das nachfolgende Chromium-`ERR_ABORTED` trotzdem als fehlgeschlagene Navigation enden. |
+| 130 | P2 | Ein verspäteter initialer Runtime-Snapshot kann einen neueren Live-Runtime-Status im Dashboard überschreiben. |
+| 131 | P1 | Leere terminale Worker- beziehungsweise Search-Modellantworten werden als erfolgreiche Ergebnisse akzeptiert. |
+| 132 | P1 | Modell-Deadlines werfen einen normalen `Error('timeout')`; der Router-Zweig für `TimeoutError` und der vorgesehene Retry sind dadurch unerreichbar. |
+
+### Umsetzung der neunten Befundrunde
+
+Alle 13 Befunde wurden umgesetzt und regressionsgetestet. Voice-Konfiguration wird nur noch bei tatsächlich relevanten Änderungen neu angewendet, Voice-Modi und PTT-Tasten werden zentral normalisiert beziehungsweise validiert, Capture- und Level-Ereignisse sind korreliert und AudioContext-Recovery ist begrenzt. Renderer-Fan-out und Snapshots sind gegen tote Fenster und veraltete Antworten isoliert. Router-, Search- und Worker-Abschlüsse bleiben ehrlich und leere Antworten schlagen kontrolliert fehl.
+
+Beim direkten Integrationsreview wurde zusätzlich ein enger Lifecycle-Unterpfad geschlossen: Nach einer Recovery-Transition von `degraded` zu `starting` durfte der bereits abgeschlossene App-Start den Runtime-Zustand nicht dauerhaft im Bootzustand halten. Dieser Nachzug gehört zur Umsetzung von Befund 127 und wurde nicht als eigener Auditbefund gezählt.
+
+Der integrierte Stand bestand danach 88 Testdateien mit 947 Tests, beide Typechecks, den vollständigen Build und `git diff --check`.
+
+## Ergebnis des zehnten vollständigen Audits
+
+Weil Audit 9 mehr als fünf Befunde hatte, folgte automatisch ein weiterer, erneut auf Layer 1 und Layer 0 begrenzter Durchgang mit vertauschten Prüfbereichen. Er fand acht neue eigenständige Fehler:
+
+| Nr. | Priorität | Befund |
+|---:|:---:|---|
+| 133 | P1 | Ein Capture-Readiness-Flap während gehaltenem PTT kann den Hotkey neu registrieren und dadurch die physische Key-up-Flanke verlieren. |
+| 134 | P1 | Renderer-Reload oder -Crash während eines Captures beendet nur den Renderer-Graph; der Main-Turn kann in `listening` weiterlaufen. |
+| 135 | P2 | Ein verspäteter Fehler des initialen Runtime-Snapshot-IPC deaktiviert den Chat auch nach einem neueren Live-`ready`. |
+| 136 | P1 | Ein Worker-Recheck publiziert für einen bereits geladenen Router erneut `starting`; der Early Return des Modellwechsels stellt `ready` danach nicht wieder her. |
+| 137 | P1 | Beim internen Modell-Timeout kann der providerseitige `AbortError` das `TimeoutError`-Promise gewinnen; Retry und Fehlerklassifikation werden dadurch umgangen. |
+| 138 | P1 | Bricht der Worker nach bereits sichtbaren Chunks ab, ergänzt der Router einen zweiten Fallback und beendet den Turn fälschlich erfolgreich. |
+| 139 | P2 | Der in `AudioBridge.start()` ausgewählte Voice-Snapshot kann nach asynchronem Capture-Warmup einen inzwischen neueren Live-State überschreiben. |
+| 140 | P1 | Ein während des Boots publizierter Recovery-Zustand `starting` kann durch den erfolgreichen Servicebericht vor Abschluss der Recovery mit `ready` überschrieben werden. |
+
+### Umsetzung der zehnten Befundrunde
+
+Alle acht Befunde wurden umgesetzt. Hotkey-Ownership bleibt über transiente Capture-Recovery erhalten; Renderer-Verlust terminalisiert den korrelierten Capture mainseitig. Runtime- und Voice-Snapshots besitzen symmetrische Revisionsgrenzen. ModelRuntime publiziert bereits geladenen Routerzustand korrekt, eigene Deadlines bleiben auch gegenüber abort-reaktiven Providern `TimeoutError`, und ein Worker-Midstream-Fehler erzeugt genau ein Fehlerterminal. Unvollständige Assistant-Bubbles werden bei `error` ebenso wie bei `canceled` verworfen.
+
+Der integrierte Stand bestand danach 89 Testdateien mit 957 Tests, beide Typechecks, den vollständigen Build und `git diff --check`. Da auch dieser Durchgang mehr als fünf Befunde hatte, folgte automatisch Audit 11.
+
+## Ergebnis des elften vollständigen Audits
+
+Audit 11 prüfte erneut nur Layer 1 bis Layer 0 und konzentrierte sich auf die soeben geänderten Übergänge sowie ihre direkten Komponentenverträge. Nach Deduplizierung verblieben genau fünf neue Fehler:
+
+| Nr. | Priorität | Befund |
+|---:|:---:|---|
+| 141 | P2 | Ein beim Workerfehler im Dashboard verworfener Teilstream wird von VoiceService weitergesprochen und anschließend noch um die Fehleransage ergänzt. |
+| 142 | P1 | Renderer-Verlust beendet eine aktive TTS-Wiedergabe nicht; Queue und Voice-State warten bis zum Playback-ACK-Timeout und können weitere Audiodaten an den verlorenen Renderer senden. |
+| 143 | P1 | Bleibt die PTT-Taste während eines Renderer-Neustarts physisch gehalten, kann ein Keyrepeat nach der Neuregistrierung ungewollt einen zweiten Capture starten. |
+| 144 | P1 | Scheitert beim Idle-Restore das Entladen des Workers, bleibt der nicht erreichbare Router fälschlich `ready` und es wird kein Recovery-Recheck geplant. |
+| 145 | P2 | Erholt sich der Router während desselben Boots, hält die Bootsequenz trotzdem am zuerst beobachteten `router-terminal` fest und überspringt den Ready-Abschluss. |
+
+### Umsetzung und Stopbedingung der elften Befundrunde
+
+Alle fünf Befunde wurden umgesetzt und regressionsgetestet. Fehlerhafte Teilstreams verlieren aktive, vorgepufferte, wartende und während PTT zurückgestellte TTS-Arbeit, bevor ausschließlich die Fehleransage ausgegeben wird. Renderer-Präsenz und Mikrofon-Readiness sind getrennte Zustände; Renderer-Verlust stoppt die gesamte nicht mehr zustellbare Audioarbeit, während ein vorhandener Renderer auch bei deaktiviertem Mikrofon weiter TTS abspielen kann. Der native Hotkey behält den physischen Held-Latch über Renderer-Recovery, ohne den normalen Key-up bei einem bloßen Capture-Flap zu verlieren. Fehlgeschlagene Worker-Unloads degradieren nun auch den unerreichbaren Router und planen Recovery; die Bootsequenz gleicht ihren Abschluss gegen den aktuellen Lifecycle-Snapshot ab.
+
+Die abschließende Vollprüfung bestand 89 Testdateien mit 963 Tests, Main- und Renderer-Typecheck, den vollständigen Produktionsbuild und `git diff --check`. Gemäß der vereinbarten Schwelle endet die automatische Audit-Schleife hier: Genau fünf Befunde wurden vollständig umgesetzt, daher folgt kein zwölftes Audit. Eine praktische Windows-Matrix bleibt eine separate Abnahme und wurde in dieser Code-Audit-Schleife nicht ausgeführt.

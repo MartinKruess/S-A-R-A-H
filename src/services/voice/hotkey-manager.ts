@@ -30,18 +30,25 @@ export class HotkeyManager {
   private onDown: (() => void) | null = null;
   private onUp: (() => void) | null = null;
   private started = false;
+  private suspended = false;
+  private resumeAfterRelease = false;
 
   private keydownHandler = (e: { keycode: number }) => {
     if (e.keycode === this.keyCode && !this.isDown) {
       this.isDown = true;
-      this.onDown?.();
+      if (!this.suspended) this.onDown?.();
     }
   };
 
   private keyupHandler = (e: { keycode: number }) => {
     if (e.keycode === this.keyCode && this.isDown) {
       this.isDown = false;
-      this.onUp?.();
+      if (!this.suspended) {
+        this.onUp?.();
+      } else if (this.resumeAfterRelease) {
+        this.suspended = false;
+        this.resumeAfterRelease = false;
+      }
     }
   };
 
@@ -65,6 +72,8 @@ export class HotkeyManager {
     this.onDown = onDown;
     this.onUp = onUp;
     this.isDown = false;
+    this.suspended = false;
+    this.resumeAfterRelease = false;
 
     uIOhook.on('keydown', this.keydownHandler);
     uIOhook.on('keyup', this.keyupHandler);
@@ -74,6 +83,37 @@ export class HotkeyManager {
       this.started = true;
     }
 
+  }
+
+  /**
+   * Temporarily disarms PTT without losing the physical held-key state.
+   *
+   * - Keeps the native key-up listener installed.
+   * - Suppresses new PTT callbacks while the renderer is unavailable.
+   *
+   * @category Event Handler
+   */
+  suspend(): void {
+    if (!this.currentKey) return;
+    this.suspended = true;
+    this.resumeAfterRelease = false;
+  }
+
+  /**
+   * Rearms PTT immediately or after the currently held key is released.
+   *
+   * - Prevents OS key-repeat from becoming a fresh press after recovery.
+   *
+   * @category Event Handler
+   */
+  resume(): void {
+    if (!this.currentKey) return;
+    if (this.isDown) {
+      this.resumeAfterRelease = true;
+      return;
+    }
+    this.suspended = false;
+    this.resumeAfterRelease = false;
   }
 
   /**
@@ -88,6 +128,8 @@ export class HotkeyManager {
       this.onDown = null;
       this.onUp = null;
       this.isDown = false;
+      this.suspended = false;
+      this.resumeAfterRelease = false;
     }
   }
 

@@ -6,7 +6,7 @@ import type { MessageBus } from '../core/message-bus.js';
 import type { OllamaContainerManager } from '../services/llm/ollama-container-manager.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
-import { forwardToRenderers } from './forward-to-renderers.js';
+import { forwardToRenderers, sendToRendererSafely } from './forward-to-renderers.js';
 import { isValidChatInput, isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
@@ -57,9 +57,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   const send = (step: string, message?: string, severity: BootSeverity = 'info'): void => {
     if (stopped) return;
     const win = getMainWindow();
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('boot-status', { step, message, severity });
-    }
+    sendToRendererSafely(win, 'boot-status', { step, message, severity });
   };
 
   const delay = (ms: number): Promise<void> => new Promise((resolve) => {
@@ -175,9 +173,26 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
         LIFECYCLE_BOOT_TIMEOUT_MS,
         'Sarah-Dienste konnten nicht rechtzeitig aktiviert werden.',
       );
+      const currentRouter = ctx.lifecycle.snapshot.capabilities.router;
+      const currentRouterStep = deriveBootCapabilitySteps(
+        currentRouter,
+        { stt: false, tts: false },
+      ).router;
+      if (currentRouterStep !== routerStep) {
+        if (currentRouterStep === 'router-ready') {
+          send(currentRouterStep);
+        } else {
+          send(
+            currentRouterStep,
+            currentRouter?.message
+              ?? 'Sarah-Protokoll ist nicht verfügbar. Text- und Spracheingaben bleiben deaktiviert.',
+            'error',
+          );
+        }
+      }
       const voice = ctx.registry.get('voice') as VoiceService | undefined;
       const voiceCapabilities = voice?.capabilitySnapshot ?? { stt: false, tts: false };
-      const steps = deriveBootCapabilitySteps(router, voiceCapabilities);
+      const steps = deriveBootCapabilitySteps(currentRouter, voiceCapabilities);
 
       send(
         steps.stt,
@@ -331,8 +346,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   ];
 
   const runtimeUnsubscribe = getAppContext().lifecycle.subscribe((snapshot) => {
-    const win = getMainWindow();
-    if (win && !win.isDestroyed()) win.webContents.send('runtime-status', snapshot);
+    sendToRendererSafely(getMainWindow(), 'runtime-status', snapshot);
   });
 
   const perfByTurn = new Map<string, {
@@ -417,7 +431,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     const targetH = Math.round(screenH * 0.33);
     const startBounds = mainWindow.getBounds();
     const startTime = Date.now();
-    mainWindow.webContents.send('transition-start');
+    sendToRendererSafely(mainWindow, 'transition-start');
 
     transitionInterval = setInterval(() => {
       const win = getMainWindow();

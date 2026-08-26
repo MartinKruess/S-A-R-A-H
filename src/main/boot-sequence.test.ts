@@ -68,7 +68,7 @@ describe('main boot sequence splash speech ownership', () => {
     const send = vi.fn();
     const mainWindow = {
       isDestroyed: () => false,
-      webContents: { send },
+      webContents: { isDestroyed: () => false, send },
       getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
       setBounds: vi.fn(),
       loadFile: vi.fn().mockResolvedValue(undefined),
@@ -116,7 +116,7 @@ describe('main boot sequence splash speech ownership', () => {
   it('consumes splash completion that was captured before boot handlers registered', async () => {
     const mainWindow = {
       isDestroyed: () => false,
-      webContents: { send: vi.fn() },
+      webContents: { isDestroyed: () => false, send: vi.fn() },
       loadFile: vi.fn().mockResolvedValue(undefined),
     };
     const context = {
@@ -139,11 +139,44 @@ describe('main boot sequence splash speech ownership', () => {
     cleanup();
   });
 
+  it('keeps boot handlers registered when runtime-status delivery races renderer teardown', () => {
+    const snapshot = { state: 'registered', capabilities: {} };
+    const context = {
+      parsedConfig: { onboarding: { setupComplete: true } },
+      bus: new MessageBus(),
+      lifecycle: {
+        snapshot,
+        subscribe: vi.fn((listener: (value: typeof snapshot) => void) => {
+          listener(snapshot);
+          return vi.fn();
+        }),
+      },
+      registry: { get: vi.fn() },
+    };
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send: vi.fn(() => { throw new Error('renderer gone'); }),
+      },
+    };
+
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn() } as never,
+    });
+
+    expect(electronMocks.handlers.has('get-runtime-status')).toBe(true);
+    cleanup();
+  });
+
   it('publishes terminal degraded boot steps when router capability never settles', async () => {
     const send = vi.fn();
     const mainWindow = {
       isDestroyed: () => false,
-      webContents: { send },
+      webContents: { isDestroyed: () => false, send },
       getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
       setBounds: vi.fn(),
       loadFile: vi.fn().mockResolvedValue(undefined),
@@ -187,11 +220,87 @@ describe('main boot sequence splash speech ownership', () => {
     cleanup();
   });
 
+  it('corrects an initial router failure when recovery finishes before lifecycle start', async () => {
+    const send = vi.fn();
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      setBounds: vi.fn(),
+      loadFile: vi.fn().mockResolvedValue(undefined),
+      maximize: vi.fn(),
+      unmaximize: vi.fn(),
+      setSize: vi.fn(),
+      setPosition: vi.fn(),
+    };
+    const bus = new MessageBus();
+    let resolveLifecycleStart!: () => void;
+    const lifecycleStart = new Promise<void>((resolve) => { resolveLifecycleStart = resolve; });
+    let snapshot: {
+      state: string;
+      capabilities: { router: { state: string; message?: string } };
+    } = {
+      state: 'starting',
+      capabilities: {
+        router: { state: 'unavailable', message: 'Ollama offline' },
+      },
+    };
+    const listeners = new Set<(value: typeof snapshot) => void>();
+    const context = {
+      bus,
+      parsedConfig: { onboarding: { setupComplete: true } },
+      registry: {
+        get: vi.fn(() => ({ capabilitySnapshot: { stt: true, tts: true } })),
+      },
+      lifecycle: {
+        get snapshot() { return snapshot; },
+        start: vi.fn(() => lifecycleStart),
+        subscribe: vi.fn((listener: (value: typeof snapshot) => void) => {
+          listeners.add(listener);
+          listener(snapshot);
+          return () => listeners.delete(listener);
+        }),
+      },
+    };
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn() } as never,
+    });
+
+    electronMocks.emit('boot-ready');
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'boot-status',
+        expect.objectContaining({ step: 'router-terminal', severity: 'error' }),
+      );
+    });
+
+    snapshot = {
+      state: 'ready',
+      capabilities: { router: { state: 'ready' } },
+    };
+    for (const listener of listeners) listener(snapshot);
+    resolveLifecycleStart();
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'boot-status',
+        expect.objectContaining({ step: 'router-ready' }),
+      );
+    });
+
+    const terminalIndex = send.mock.calls.findIndex(([, payload]) => payload.step === 'router-terminal');
+    const readyIndex = send.mock.calls.findIndex(([, payload]) => payload.step === 'router-ready');
+    expect(readyIndex).toBeGreaterThan(terminalIndex);
+    cleanup();
+  });
+
   it('preserves voice mode for typed chat while keeping chat as the request source', async () => {
     const send = vi.fn();
     const mainWindow = {
       isDestroyed: () => false,
-      webContents: { send },
+      webContents: { isDestroyed: () => false, send },
       getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
       setBounds: vi.fn(),
       loadFile: vi.fn().mockResolvedValue(undefined),

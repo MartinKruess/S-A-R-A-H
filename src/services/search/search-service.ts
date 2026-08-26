@@ -88,6 +88,9 @@ export class SearchService implements SarahService {
       throwIfAborted(signal);
       const summary = await this.summarize(buildSummaryPrompt(results), signal);
       throwIfAborted(signal);
+      if (summary.trim().length === 0) {
+        throw new Error('Search summarizer returned an empty response');
+      }
       this.sessions.set(correlation.requestId, { ...correlation, results });
       while (this.sessions.size > 8) {
         const oldest = this.sessions.keys().next().value as string | undefined;

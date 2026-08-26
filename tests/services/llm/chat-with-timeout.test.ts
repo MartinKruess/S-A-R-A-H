@@ -45,8 +45,42 @@ describe('chatWithTimeout abort + retry', () => {
     const resultP = chatWithTimeout(provider, [], () => {});
     resultP.catch(() => {}); // assertion below consumes the rejection
     await vi.advanceTimersByTimeAsync(STREAM_TIMEOUT_MS + 1);
-    await expect(resultP).rejects.toThrow('timeout');
+    await expect(resultP).rejects.toMatchObject({ name: 'TimeoutError', message: 'timeout' });
     expect(provider.chat).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the shared TimeoutError contract after the retry also times out', async () => {
+    vi.useFakeTimers();
+    const provider = providerWith(async () => new Promise<string>(() => {}));
+
+    const resultP = chatWithTimeout(provider, [], () => {});
+    resultP.catch(() => {});
+    await vi.advanceTimersByTimeAsync((STREAM_TIMEOUT_MS * 2) + 1);
+
+    await expect(resultP).rejects.toMatchObject({ name: 'TimeoutError', message: 'timeout' });
+    expect(provider.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps its TimeoutError when the provider rejects synchronously on deadline abort', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const provider = providerWith(async (_messages, _onChunk, options) => {
+      calls += 1;
+      if (calls === 2) return 'retry result';
+      return new Promise<string>((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          const error = new Error('provider aborted');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      });
+    });
+
+    const resultP = chatWithTimeout(provider, [], () => {});
+    await vi.advanceTimersByTimeAsync(STREAM_TIMEOUT_MS + 1);
+
+    await expect(resultP).resolves.toBe('retry result');
+    expect(provider.chat).toHaveBeenCalledTimes(2);
   });
 
   it('ignores late chunks from the aborted first attempt', async () => {

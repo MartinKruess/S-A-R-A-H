@@ -4,7 +4,12 @@ import { AudioBridge } from '../services/audio-bridge.js';
 import { startBootSequence } from './boot-sequence.js';
 import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
-import { handleRejectedChatSubmission, isChatMessageWithinLimit } from './chat-submission.js';
+import {
+  handleRejectedChatSubmission,
+  isChatMessageWithinLimit,
+  shouldRemoveIncompleteAssistantOutput,
+} from './chat-submission.js';
+import { synchronizeRuntimeStatus } from './runtime-status-sync.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 import {
@@ -102,11 +107,10 @@ function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeSta
   }
 }
 
-void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
+const stopRuntimeStatusSync = synchronizeRuntimeStatus(sarah, applyRuntimeStatus, (error) => {
   console.warn('[Dashboard] Runtime status unavailable:', error);
   chatInput.disabled = true;
 });
-sarah.onRuntimeStatus(applyRuntimeStatus);
 
 let chatMode = false;
 const outputBubbles = new Map<string, {
@@ -210,7 +214,7 @@ sarah.onTurnTerminal((data) => {
   terminalTurns.add(data.turnId);
   for (const [outputId, output] of outputBubbles) {
     if (output.turnId !== data.turnId) continue;
-    if (data.status === 'canceled') output.bubble.remove();
+    if (shouldRemoveIncompleteAssistantOutput(data.status)) output.bubble.remove();
     outputBubbles.delete(outputId);
   }
   if (terminalTurns.size > 500) {
@@ -251,7 +255,8 @@ function startAudioBridge(): void {
 }
 
 window.addEventListener('beforeunload', () => {
-  audioBridge?.destroy();
+  stopRuntimeStatusSync();
+  void audioBridge?.destroy();
 });
 
 // ── Boot Sequence ──

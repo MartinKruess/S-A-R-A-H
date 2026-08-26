@@ -10,6 +10,7 @@ import { getService } from './ipc-helpers.js';
 import { isValidOptionalTitle } from './ipc-validation.js';
 import { getLlmRestartReasons, type SaveConfigResult } from '../core/config-apply.js';
 import { removeReservedCustomCommandCollisions } from '../services/commands/builtin-commands.js';
+import { sendToRendererSafely } from './forward-to-renderers.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -60,6 +61,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
         const previousAudio = ctx.parsedConfig.audio;
         const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
+        const previousPushToTalkKey = ctx.parsedConfig.controls.pushToTalkKey;
         const merged = {
           ...existing,
           ...config,
@@ -91,7 +93,9 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
         const inputDeviceChanged = previousAudio.inputDeviceId !== parsed.audio.inputDeviceId;
         const voiceModeChanged = previousVoiceMode !== parsed.controls.voiceMode;
-        const voiceService = 'controls' in config || inputDeviceChanged
+        const pushToTalkKeyChanged = previousPushToTalkKey !== parsed.controls.pushToTalkKey;
+        const voiceConfigChanged = voiceModeChanged || pushToTalkKeyChanged;
+        const voiceService = voiceConfigChanged || inputDeviceChanged
           ? getService<VoiceService>(ctx, 'voice')
           : null;
         if (voiceService && (voiceModeChanged || inputDeviceChanged)) {
@@ -101,18 +105,15 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
           voiceService.setRendererCaptureReady(false);
         }
         if (voiceModeChanged) {
-          const win = getMainWindow();
-          if (win && !win.isDestroyed()) {
-            // Renderer capture ownership must move before the main-process hotkey
-            // is reconfigured. This prevents a newly-enabled PTT key from
-            // accepting input while the microphone graph is still cold.
-            win.webContents.send('voice-input-config-changed', {
-              voiceMode: parsed.controls.voiceMode,
-            });
-          }
+          // Renderer capture ownership should move before the main-process
+          // hotkey is reconfigured. Delivery failure must not strand the
+          // already-persisted config between disk and VoiceService, though.
+          sendToRendererSafely(getMainWindow(), 'voice-input-config-changed', {
+            voiceMode: parsed.controls.voiceMode,
+          });
         }
 
-        if ('controls' in config && voiceService) {
+        if (voiceConfigChanged && voiceService) {
           await voiceService.applyConfig();
         }
 
@@ -122,12 +123,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
           if (mainWindow) recipients.add(mainWindow);
           for (const dialogWindow of dialogWindows.values()) recipients.add(dialogWindow);
           for (const win of recipients) {
-            if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-            try {
-              win.webContents.send('audio-config-changed', parsed.audio);
-            } catch (error) {
-              console.warn('[IPC] audio-config-changed delivery failed:', error);
-            }
+            sendToRendererSafely(win, 'audio-config-changed', parsed.audio);
           }
         }
 

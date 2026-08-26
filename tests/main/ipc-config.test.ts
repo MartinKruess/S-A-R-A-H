@@ -18,6 +18,42 @@ function fakeIpcMain(): { ipcMain: IpcMain; handlers: Map<string, Handler> } {
 }
 
 describe('save-config audio patches', () => {
+  it('reconfigures VoiceService only for voice mode or PTT-key changes', async () => {
+    const initial = SarahConfigSchema.parse({});
+    let stored: Record<string, object> = { ...initial };
+    const applyConfig = vi.fn(async () => undefined);
+    const setRendererCaptureReady = vi.fn();
+    const context = {
+      parsedConfig: initial,
+      registry: {
+        get: vi.fn(() => ({ applyConfig, setRendererCaptureReady })),
+      },
+      config: {
+        get: vi.fn(async () => stored),
+        set: vi.fn(async (_key: string, value: Record<string, object>) => { stored = value; }),
+      },
+    } as unknown as AppContext;
+    const { ipcMain, handlers } = fakeIpcMain();
+    registerConfigHandlers(ipcMain, {
+      getAppContext: () => context,
+      getMainWindow: () => null,
+      dialogWindows: new Map(),
+    });
+    const save = handlers.get('save-config');
+    if (!save) throw new Error('save-config handler was not registered');
+
+    await save({}, {
+      controls: { ...initial.controls, quietModeDuration: 120 },
+    });
+    expect(applyConfig).not.toHaveBeenCalled();
+
+    await save({}, {
+      controls: { ...context.parsedConfig.controls, pushToTalkKey: 'F10' },
+    });
+    expect(applyConfig).toHaveBeenCalledOnce();
+    expect(setRendererCaptureReady).not.toHaveBeenCalled();
+  });
+
   it('removes reserved collisions from programmatic custom-command saves', async () => {
     const initial = SarahConfigSchema.parse({});
     let stored: Record<string, object> = { ...initial };
@@ -134,5 +170,48 @@ describe('save-config audio patches', () => {
     expect(changed).toMatchObject({ restartRequired: true, restartReasons: ['Router-Modell'] });
     expect(unrelated).toMatchObject({ restartRequired: true, restartReasons: ['Router-Modell'] });
     expect(restored).toMatchObject({ restartRequired: false, restartReasons: [] });
+  });
+
+  it('applies persisted voice config even when renderer notification fails', async () => {
+    const initial = SarahConfigSchema.parse({});
+    let stored: Record<string, object> = { ...initial };
+    const voiceService = {
+      setRendererCaptureReady: vi.fn(),
+      applyConfig: vi.fn(async () => undefined),
+    };
+    const context = {
+      parsedConfig: initial,
+      registry: { get: vi.fn(() => voiceService) },
+      config: {
+        get: vi.fn(async () => stored),
+        set: vi.fn(async (_key: string, value: Record<string, object>) => { stored = value; }),
+      },
+    } as unknown as AppContext;
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        isDestroyed: () => false,
+        send: vi.fn(() => { throw new Error('renderer gone'); }),
+      },
+    } as unknown as BrowserWindow;
+    const { ipcMain, handlers } = fakeIpcMain();
+    registerConfigHandlers(ipcMain, {
+      getAppContext: () => context,
+      getMainWindow: () => mainWindow,
+      dialogWindows: new Map(),
+    });
+    const save = handlers.get('save-config');
+    if (!save) throw new Error('save-config handler was not registered');
+
+    await expect(save({}, {
+      controls: { ...initial.controls, voiceMode: 'push-to-talk' },
+    })).resolves.toMatchObject({
+      config: { controls: { voiceMode: 'push-to-talk' } },
+    });
+
+    expect(context.config.set).toHaveBeenCalledOnce();
+    expect(context.parsedConfig.controls.voiceMode).toBe('push-to-talk');
+    expect(voiceService.setRendererCaptureReady).toHaveBeenCalledWith(false);
+    expect(voiceService.applyConfig).toHaveBeenCalledOnce();
   });
 });

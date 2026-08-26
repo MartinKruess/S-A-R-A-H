@@ -15,7 +15,7 @@ import {
 
 export interface VoiceHandlerDeps {
   getAppContext: () => AppContext;
-  onChunk?: (chunk: Float32Array) => void;
+  onChunk?: (captureId: string, chunk: Float32Array) => void;
 }
 
 export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps): () => void {
@@ -70,8 +70,9 @@ export function registerVoiceHandlers(ipcMain: IpcMain, deps: VoiceHandlerDeps):
       return;
     }
     const samples = new Float32Array(input.chunk);
-    getService<VoiceService>(getAppContext(), 'voice').feedAudioChunk(input.captureId, samples);
-    if (onChunk) onChunk(samples);
+    const accepted = getService<VoiceService>(getAppContext(), 'voice')
+      .feedAudioChunk(input.captureId, samples);
+    if (accepted && onChunk) onChunk(input.captureId, samples);
   });
 
   ipcMain.handle('voice-capture-flushed', (_event, input: { captureId: string }) => {

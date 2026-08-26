@@ -11,6 +11,7 @@ const BAR_COUNT = 16;
 const MIN_EMIT_INTERVAL_MS = 33;
 
 const VoiceLevelSchema = z.object({
+  captureId: z.string().uuid(),
   rms: z.number().min(0).max(1),
   bars: z.array(z.number().min(0).max(1)).length(BAR_COUNT),
   ts: z.number(),
@@ -38,7 +39,7 @@ export function updateBars(bars: number[], newValue: number): number[] {
 }
 
 export function registerVoiceLevelForwarder(deps: VoiceLevelDeps): {
-  onChunk: (chunk: Float32Array) => void;
+  onChunk: (captureId: string, chunk: Float32Array) => void;
   stop: () => void;
 } {
   const { getMainWindow, dialogWindows } = deps;
@@ -48,10 +49,13 @@ export function registerVoiceLevelForwarder(deps: VoiceLevelDeps): {
   let lastEmit = 0;
   let pendingTimer: NodeJS.Timeout | null = null;
   let stopped = false;
+  let activeCaptureId: string | null = null;
 
   const broadcast = (): void => {
     if (stopped) return;
+    if (!activeCaptureId) return;
     const candidate: VoiceLevel = {
+      captureId: activeCaptureId,
       rms: lastRms,
       bars: bars.slice(),
       ts: Date.now(),
@@ -64,18 +68,33 @@ export function registerVoiceLevelForwarder(deps: VoiceLevelDeps): {
     lastEmit = candidate.ts;
 
     const main = getMainWindow();
-    if (main && !main.isDestroyed()) {
-      main.webContents.send('voice:level', parsed.data);
+    if (main && !main.isDestroyed() && !main.webContents.isDestroyed()) {
+      try {
+        main.webContents.send('voice:level', parsed.data);
+      } catch (error) {
+        console.warn('[VoiceLevel] main window update failed:', error);
+      }
     }
     for (const win of dialogWindows.values()) {
-      if (!win.isDestroyed()) {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      try {
         win.webContents.send('voice:level', parsed.data);
+      } catch (error) {
+        console.warn('[VoiceLevel] dialog window update failed:', error);
       }
     }
   };
 
-  const onChunk = (chunk: Float32Array): void => {
+  const onChunk = (captureId: string, chunk: Float32Array): void => {
     if (stopped) return;
+    if (activeCaptureId !== captureId) {
+      if (pendingTimer) clearTimeout(pendingTimer);
+      pendingTimer = null;
+      activeCaptureId = captureId;
+      bars = new Array<number>(BAR_COUNT).fill(0);
+      lastRms = 0;
+      lastEmit = 0;
+    }
     const rms = computeRms(chunk);
     lastRms = rms;
     bars = updateBars(bars, rms);
@@ -104,6 +123,7 @@ export function registerVoiceLevelForwarder(deps: VoiceLevelDeps): {
       clearTimeout(pendingTimer);
       pendingTimer = null;
     }
+    activeCaptureId = null;
   };
 
   return { onChunk, stop };

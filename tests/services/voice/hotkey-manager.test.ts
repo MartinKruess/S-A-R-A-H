@@ -88,6 +88,27 @@ describe('HotkeyManager', () => {
     expect(onDown).toHaveBeenCalledOnce();
   });
 
+  it('rearms only after a held key is released across renderer suspension', () => {
+    const onDown = vi.fn();
+    const onUp = vi.fn();
+    manager.register('F9', onDown, onUp);
+    const keydownHandler = getHandler('keydown');
+    const keyupHandler = getHandler('keyup');
+
+    keydownHandler({ keycode: 0x43 });
+    manager.suspend();
+    manager.resume();
+    keydownHandler({ keycode: 0x43 });
+
+    expect(onDown).toHaveBeenCalledOnce();
+
+    keyupHandler({ keycode: 0x43 });
+    expect(onUp).not.toHaveBeenCalled();
+
+    keydownHandler({ keycode: 0x43 });
+    expect(onDown).toHaveBeenCalledTimes(2);
+  });
+
   it('ignores events for wrong keycode', () => {
     const onDown = vi.fn();
     const onUp = vi.fn();

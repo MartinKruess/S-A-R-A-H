@@ -3,6 +3,7 @@ import {
   CHAT_REJECTED_MESSAGE,
   handleRejectedChatSubmission,
   isChatMessageWithinLimit,
+  shouldRemoveIncompleteAssistantOutput,
 } from './chat-submission.js';
 
 describe('chat submission rejection', () => {
@@ -25,5 +26,11 @@ describe('chat submission rejection', () => {
     handleRejectedChatSubmission('turn-1', new Set(['turn-1']), { remove }, showError);
     expect(remove).not.toHaveBeenCalled();
     expect(showError).not.toHaveBeenCalled();
+  });
+
+  it('removes incomplete assistant output only for unsuccessful terminals', () => {
+    expect(shouldRemoveIncompleteAssistantOutput('canceled')).toBe(true);
+    expect(shouldRemoveIncompleteAssistantOutput('error')).toBe(true);
+    expect(shouldRemoveIncompleteAssistantOutput('done')).toBe(false);
   });
 });

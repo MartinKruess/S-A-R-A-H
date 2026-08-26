@@ -138,10 +138,42 @@ describe('SandboxBrowser.fetchPageHtml', () => {
     win.webContents.emit('will-redirect', event, 'https://example.com/final');
     await vi.waitFor(() => expect(win.loadURL).toHaveBeenCalledTimes(2));
     rejectInitial(Object.assign(new Error('ERR_ABORTED'), { code: -3 }));
+    win.webContents.emit(
+      'did-fail-load',
+      {},
+      -3,
+      'ERR_ABORTED',
+      'https://example.com/start',
+    );
     win.webContents.emit('did-finish-load');
 
     await expect(fetching).resolves.toBe('<html>seite</html>');
     expect(win.loadURL).toHaveBeenLastCalledWith('https://example.com/final');
+  });
+
+  it('does not hide an unrelated ERR_ABORTED behind a previous redirect', async () => {
+    const { browser, windows } = makeBrowser();
+    const fetching = browser.fetchPageHtml(
+      'https://example.com/start',
+      new AbortController().signal,
+    );
+    await vi.waitFor(() => expect(windows[0].loadURL).toHaveBeenCalledOnce());
+
+    windows[0].webContents.emit(
+      'will-redirect',
+      { preventDefault: vi.fn() },
+      'https://example.com/final',
+    );
+    await vi.waitFor(() => expect(windows[0].loadURL).toHaveBeenCalledTimes(2));
+    windows[0].webContents.emit(
+      'did-fail-load',
+      {},
+      -3,
+      'ERR_ABORTED',
+      'https://example.com/final',
+    );
+
+    await expect(fetching).rejects.toThrow('ERR_ABORTED');
   });
 
   it('seeds Bing consent cookies before a bing.com fetch, not for other hosts', async () => {
@@ -228,6 +260,36 @@ describe('SandboxBrowser.show', () => {
 
     await expect(failedNavigation).resolves.toBe(false);
     expect(windows[0].hide).toHaveBeenCalledTimes(2);
+  });
+
+  it('continues a validated display redirect after the replaced load reports ERR_ABORTED', async () => {
+    const win = new FakeWindow();
+    let rejectInitial!: (error: Error & { code: number }) => void;
+    win.loadURL
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectInitial = reject; }))
+      .mockResolvedValue(undefined);
+    const browser = new SandboxBrowser(() => win, async () => ['93.184.216.34']);
+    const showing = browser.show('https://example.com/start');
+    await vi.waitFor(() => expect(win.loadURL).toHaveBeenCalledOnce());
+
+    win.webContents.emit(
+      'will-redirect',
+      { preventDefault: vi.fn() },
+      'https://example.com/final',
+    );
+    await vi.waitFor(() => expect(win.loadURL).toHaveBeenCalledTimes(2));
+    rejectInitial(Object.assign(new Error('ERR_ABORTED'), { code: -3 }));
+    win.webContents.emit(
+      'did-fail-load',
+      {},
+      -3,
+      'ERR_ABORTED',
+      'https://example.com/start',
+    );
+    win.webContents.emit('did-finish-load');
+
+    await expect(showing).resolves.toBe(true);
+    expect(win.show).toHaveBeenCalledOnce();
   });
 
   it('denies popups and keeps later navigation behind the HTTPS policy', async () => {

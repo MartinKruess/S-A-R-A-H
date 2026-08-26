@@ -61,13 +61,22 @@ export class TtsQueue {
     this.finishPlayback();
   }
 
-  playbackFailed(turnId: TurnId, playbackId: PlaybackId, error: Error): void {
+  playbackFailed(
+    turnId: TurnId,
+    playbackId: PlaybackId,
+    error: Error,
+    stopRemaining = false,
+  ): void {
     if (
       !this.activePlayback
       || this.activePlayback.item.turnId !== turnId
       || this.activePlayback.playbackId !== playbackId
     ) return;
     this.onError(error, this.activePlayback.item);
+    if (stopRemaining) {
+      this.stop();
+      return;
+    }
     this.finishPlayback();
   }
 

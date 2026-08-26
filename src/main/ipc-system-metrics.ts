@@ -1,6 +1,7 @@
 import * as os from 'os';
 import { z } from 'zod';
 import type { BrowserWindow, IpcMain } from 'electron';
+import { sendToRendererSafely } from './forward-to-renderers.js';
 import type { SystemMetrics } from '../core/ipc-contract.js';
 
 export interface CpuSnapshot {
@@ -183,13 +184,10 @@ export function registerSystemMetricsHandlers(
     latest = parsed.data;
 
     const main = getMainWindow();
-    if (main && !main.isDestroyed()) {
-      main.webContents.send('system:metrics', latest);
-    }
+    sendToRendererSafely(main, 'system:metrics', latest);
     for (const win of dialogWindows.values()) {
-      if (!win.isDestroyed()) {
-        win.webContents.send('system:metrics', latest);
-      }
+      if (win === main) continue;
+      sendToRendererSafely(win, 'system:metrics', latest);
     }
   };
 

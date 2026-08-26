@@ -72,6 +72,19 @@ describe('SearchService.runSearch', () => {
     expect(calls.show).not.toHaveBeenCalled();
   });
 
+  it('does not publish results when summarization returns only whitespace', async () => {
+    const summarize = vi.fn().mockResolvedValue('   \n\t');
+    const { service, calls } = makeService({ summarize });
+
+    await expect(service.runSearch('hotels', SEARCH_ONE)).rejects.toThrow(
+      'Search summarizer returned an empty response',
+    );
+    const result = await service.showResult('1', showCorrelation(SEARCH_ONE.requestId));
+
+    expect(result).toEqual({ ok: false, speak: 'Ich habe gerade keine Suchergebnisse offen.' });
+    expect(calls.show).not.toHaveBeenCalled();
+  });
+
   it('aborts and drains an active summary during service shutdown', async () => {
     let summarySignal: AbortSignal | undefined;
     const summarize = vi.fn((_prompt: string, signal?: AbortSignal) => {

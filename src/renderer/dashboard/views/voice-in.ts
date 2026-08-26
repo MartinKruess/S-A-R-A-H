@@ -3,7 +3,12 @@ import type { VoiceLevel } from '../../../core/ipc-contract.js';
 import type { VoiceState } from '../../../services/voice/voice-types.js';
 import { hudSelect, hudToggle, hudVSlider } from '../../components/index.js';
 import { getSarah } from '../../shared/window-global.js';
-import { createAudioSync, near, persistMuteWithRollback } from './voice-audio-sync.js';
+import {
+  createAudioSync,
+  createRevisionedSnapshotSync,
+  near,
+  persistMuteWithRollback,
+} from './voice-audio-sync.js';
 
 const BAR_COUNT = 16;
 const FLOOR = 0.05;
@@ -117,6 +122,7 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
   el.appendChild(sliders);
 
   const applyLevel = (data: VoiceLevel): void => {
+    if (data.captureId !== activeCaptureId) return;
     const n = Math.min(bars.length, data.bars.length);
     for (let i = 0; i < n; i++) {
       const v = Math.max(FLOOR, Math.min(1, data.bars[i]));
@@ -124,7 +130,9 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
     }
   };
 
-  const applyState = (payload: { state: VoiceState }): void => {
+  let activeCaptureId: string | null = null;
+  const applyState = (payload: { state: VoiceState; captureId?: string }): void => {
+    activeCaptureId = payload.state === 'listening' ? payload.captureId ?? null : null;
     stateEl.dataset.state = payload.state;
     stateEl.textContent = labelFor(payload.state);
   };
@@ -146,12 +154,16 @@ export function createVoiceInBody(): { el: HTMLElement; dispose: () => void } {
 
   const audioSync = createAudioSync('VoiceIn', applyAudio);
 
+  const stateSync = createRevisionedSnapshotSync(applyState);
   let unsubLevel: (() => void) | null = sarah.onVoiceLevel(applyLevel);
-  let unsubState: (() => void) | null = sarah.voice.onStateChange(applyState);
+  let unsubState: (() => void) | null = sarah.voice.onStateChange((state) => {
+    stateSync.applyEvent(state);
+  });
+  const initialStateRevision = stateSync.captureSnapshotRevision();
 
   sarah.voice
     .getState()
-    .then(applyState)
+    .then((state) => stateSync.applySnapshot(state, initialStateRevision))
     .catch((err: Error) => {
       console.warn('[VoiceIn] initial voice state fetch failed:', err);
     });

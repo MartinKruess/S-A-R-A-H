@@ -252,11 +252,13 @@ describe('ModelRuntime', () => {
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(false)
       .mockResolvedValue(true);
+    const capability = vi.fn();
     const runtime = new ModelRuntime({
       config,
       routerProvider: provider('router'),
       workerProvider: worker,
       vramManager: vram(),
+      onCapability: capability,
       runtimeRecheckDelayMs: 5,
     });
 
@@ -268,6 +270,10 @@ describe('ModelRuntime', () => {
       expect(runtime.snapshot.roles.local_worker.availability).toBe('available');
     });
     expect(runtime.snapshot.state).toBe('ready');
+    const routerStates = capability.mock.calls
+      .filter(([role]) => role === 'router')
+      .map(([, state]) => state);
+    expect(routerStates.at(-1)).toBe('ready');
     await runtime.destroy();
   });
 
@@ -326,6 +332,52 @@ describe('ModelRuntime', () => {
     expect(runtime.snapshot.activeRole).toBe('router');
     expect(runtime.snapshot.roles.router.residency).toBe('loaded');
     expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+  });
+
+  it('marks a blocked idle router restore unavailable and recovers it through recheck', async () => {
+    vi.useFakeTimers();
+    try {
+      const memory = vram();
+      (memory.unloadModel as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      const capability = vi.fn();
+      const runtime = new ModelRuntime({
+        config,
+        routerProvider: provider('router'),
+        workerProvider: provider('worker'),
+        vramManager: memory,
+        onCapability: capability,
+        idleTimeoutMs: 5,
+        runtimeRecheckDelayMs: 5,
+      });
+      await runtime.init();
+
+      await runtime.generateWorkerText('question');
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.waitFor(() => {
+        expect(runtime.snapshot.roles.router.availability).toBe('error');
+      });
+      expect(capability).toHaveBeenCalledWith(
+        'router',
+        'error',
+        expect.stringContaining('worker:9b'),
+      );
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.waitFor(() => {
+        expect(runtime.snapshot.activeRole).toBe('router');
+        expect(runtime.snapshot.roles.router.residency).toBe('loaded');
+        expect(runtime.snapshot.roles.router.availability).toBe('available');
+      });
+      expect(capability).toHaveBeenLastCalledWith('router', 'ready');
+      await runtime.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses to load the next role and restores the current role when it cannot be unloaded', async () => {

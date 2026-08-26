@@ -359,29 +359,20 @@ export class RouterService implements SarahService {
       return;
     }
 
-    try {
-      if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
-        if (looksLikeActionCommand(text)) {
-          // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
-          // routing target isn't known yet at swap start, so use a short/neutral
-          // phrase; the real action announcement follows over the normal path.
-          if (mode === 'voice') {
-            this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('switchingBack') });
-          }
-          await this.routeAndRespond(envelope, signal);
-        } else {
-          await this.runWorker(envelope, signal);
+    if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
+      if (looksLikeActionCommand(text)) {
+        // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
+        // routing target isn't known yet at swap start, so use a short/neutral
+        // phrase; the real action announcement follows over the normal path.
+        if (mode === 'voice') {
+          this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('switchingBack') });
         }
-      } else {
         await this.routeAndRespond(envelope, signal);
+      } else {
+        await this.runWorkerWithFallback(envelope, signal);
       }
-    } catch (err) {
-      throwIfAborted(signal);
-      if (this.isWorkerUnavailable()) {
-        await this.emitAssistantResponse(turnId, WORKER_UNAVAILABLE_MESSAGE, signal);
-        return;
-      }
-      throw err;
+    } else {
+      await this.routeAndRespond(envelope, signal);
     }
   }
 
@@ -433,10 +424,28 @@ export class RouterService implements SarahService {
       unloading: this.context.parsedConfig.llm.routerModel,
     });
 
-    await this.runWorker(envelope, signal);
+    await this.runWorkerWithFallback(envelope, signal);
   }
 
-  private async runWorker(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+  private async runWorkerWithFallback(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    let outputStarted = false;
+    try {
+      await this.runWorker(envelope, signal, () => {
+        outputStarted = true;
+      });
+    } catch (error) {
+      throwIfAborted(signal);
+      if (outputStarted) throw error;
+      if (!this.isWorkerUnavailable()) throw error;
+      await this.emitAssistantResponse(envelope.turnId, WORKER_UNAVAILABLE_MESSAGE, signal);
+    }
+  }
+
+  private async runWorker(
+    envelope: TurnEnvelope,
+    signal: AbortSignal,
+    onOutputStarted?: () => void,
+  ): Promise<void> {
     const { turnId, mode } = envelope;
     const systemPrompt = buildSystemPrompt(this.context.parsedConfig, mode);
     const responseStyle = this.context.parsedConfig.personalization.responseStyle;
@@ -449,6 +458,7 @@ export class RouterService implements SarahService {
       if (!this.isTurnOperational(turnId, signal)) return;
       const { fullText, tookMs } = await this.modelRuntime.streamWorker(messages, responseStyle, (chunk) => {
         if (this.isTurnOperational(turnId, signal)) {
+          onOutputStarted?.();
           this.context.bus.emit(this.id, 'llm:chunk', {
             turnId,
             outputId,

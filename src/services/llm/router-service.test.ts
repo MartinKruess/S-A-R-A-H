@@ -13,6 +13,8 @@ import { MessageBus } from '../../core/message-bus.js';
 import { MediaContext } from './media-context.js';
 import type { TurnRequest } from '../../core/turn-contract.js';
 import { ActionConfirmationGate } from '../../core/action-confirmation.js';
+import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
+import { ModelRuntime } from './model-runtime.js';
 
 class FakeProvider implements LlmProvider {
   readonly id = 'fake';
@@ -128,6 +130,37 @@ describe('RouterService (history & sessions)', () => {
     await router.init();
 
     expect(router.status).toBe('running');
+  });
+
+  it('keeps the initial router error truthful and publishes recovery through the lifecycle', async () => {
+    vi.useFakeTimers();
+    try {
+      const modelRuntime = new ModelRuntime({
+        config: ctx.parsedConfig.llm,
+        routerProvider: new RecoveringProvider(),
+        workerProvider,
+        eagerLoadTransitions: false,
+        runtimeRecheckDelayMs: 5_000,
+        onCapability: (name, state, message) => {
+          ctx.lifecycle.setCapability(name, state, message);
+        },
+      });
+      router = new RouterService(ctx, modelRuntime);
+      ctx.registry.register(router);
+
+      const initial = await ctx.lifecycle.start();
+
+      expect(initial.state).toBe('degraded');
+      expect(initial.capabilities.router).toMatchObject({ state: 'unavailable' });
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.waitFor(() => {
+        expect(ctx.lifecycle.snapshot.capabilities.router).toEqual({ state: 'ready' });
+      });
+      expect(ctx.lifecycle.snapshot.state).toBe('ready');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps history in memory but neither loads nor persists it when memory is disabled', async () => {
@@ -348,6 +381,34 @@ class UnavailableProvider implements LlmProvider {
 
   async chat(): Promise<string> {
     throw new Error('Unavailable provider must never be called');
+  }
+}
+
+class RecoveringProvider implements LlmProvider {
+  readonly id = 'recovering';
+  private checks = 0;
+
+  async isAvailable(): Promise<boolean> {
+    this.checks += 1;
+    return this.checks > 1;
+  }
+
+  async chat(_messages: ChatMessage[], onChunk: (text: string) => void): Promise<string> {
+    onChunk('ok');
+    return 'ok';
+  }
+}
+
+class FailingMidstreamProvider implements LlmProvider {
+  readonly id = 'failing-midstream';
+
+  async isAvailable(): Promise<boolean> {
+    return true;
+  }
+
+  async chat(_messages: ChatMessage[], onChunk: (text: string) => void): Promise<string> {
+    onChunk('Unvollständige Antwort');
+    throw new Error('worker connection lost');
   }
 }
 
@@ -613,6 +674,52 @@ describe('RouterService (action layer)', () => {
     ]);
     expect(errors).toHaveLength(0);
     expect(router.activeModel).toBe('2b');
+  });
+
+  it('does not mask a router failure as a successful worker-unavailable fallback', async () => {
+    router = new RouterService(ctx, new FailingAfterWarmupProvider(), new UnavailableProvider());
+    await router.init();
+    const done: string[] = [];
+    const errors: string[] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+    ctx.bus.on('llm:error', (message) => errors.push(message.data.message));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+
+    await router.handleChatMessage('Wie spät ist es?');
+
+    expect(done).not.toContain(WORKER_UNAVAILABLE_MESSAGE);
+    expect(errors).toEqual(['Sarah ist kurz weggedriftet. Einen Moment...']);
+    expect(terminals).toEqual([
+      expect.objectContaining({ status: 'error' }),
+    ]);
+  });
+
+  it('fails a worker turn after visible output without adding an unavailable fallback or done event', async () => {
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', '[ROUTE:9b]'),
+      new FailingMidstreamProvider(),
+    );
+    await router.init();
+    const chunks: string[] = [];
+    const done: string[] = [];
+    const errors: string[] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('llm:chunk', (message) => chunks.push(message.data.text));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+    ctx.bus.on('llm:error', (message) => errors.push(message.data.message));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+
+    await router.handleChatMessage('Erkläre mir Quantenphysik');
+
+    expect(chunks).toEqual(['Unvollständige Antwort']);
+    expect(chunks).not.toContain(WORKER_UNAVAILABLE_MESSAGE);
+    expect(done).toHaveLength(0);
+    expect(errors).toEqual(['Sarah ist kurz weggedriftet. Einen Moment...']);
+    expect(terminals).toEqual([
+      expect.objectContaining({ status: 'error' }),
+    ]);
   });
 
   it('expands a configured slash command before normal safe routing', async () => {

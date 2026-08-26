@@ -43,6 +43,15 @@ describe('SarahConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects unsupported push-to-talk keys so config repair can restore F9', () => {
+    const result = SarahConfigSchema.safeParse({
+      controls: { voiceMode: 'push-to-talk', pushToTalkKey: 'Space' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(SarahConfigSchema.parse({}).controls.pushToTalkKey).toBe('F9');
+  });
+
   it('handles a full realistic config', () => {
     const full = {
       onboarding: { setupComplete: true },

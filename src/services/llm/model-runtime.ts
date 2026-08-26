@@ -254,7 +254,14 @@ export class ModelRuntime implements ModelRuntimePort {
     };
     this.onCapability?.(
       role,
-      available ? (role === 'router' ? 'starting' : 'ready') : 'unavailable',
+      available
+        ? (
+            role === 'router'
+            && !(this.current.activeRole === role && this.current.roles[role].residency === 'loaded')
+              ? 'starting'
+              : 'ready'
+          )
+        : 'unavailable',
       available ? undefined : this.current.roles[role].message,
     );
   }
@@ -486,7 +493,12 @@ export class ModelRuntime implements ModelRuntimePort {
           this.current.roles[previousRole].message = message;
           this.current.state = 'degraded';
           this.onCapability?.(previousRole, 'error', message);
-          throw new Error(message);
+          const error = new Error(message);
+          // The target is not operational either: it cannot become resident
+          // while the previous model still owns VRAM. Publish that fact and
+          // let the normal runtime recheck retry the transition.
+          this.markRuntimeFailure(role, error);
+          throw error;
         }
       }
       this.current.roles[previousRole].residency = 'unloaded';

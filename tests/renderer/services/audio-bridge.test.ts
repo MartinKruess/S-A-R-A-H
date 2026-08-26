@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ── Mock Browser APIs ──
 
 function createMockAudioContext() {
+  const stateChangeListeners = new Set<() => void>();
   const workletAddModule = vi.fn().mockResolvedValue(undefined);
   const mockSourceNode = { connect: vi.fn(), disconnect: vi.fn() };
   const mockWorkletNode = {
@@ -52,6 +53,12 @@ function createMockAudioContext() {
     currentTime: 0,
     resume: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
+    addEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'statechange') stateChangeListeners.add(listener);
+    }),
+    removeEventListener: vi.fn((event: string, listener: () => void) => {
+      if (event === 'statechange') stateChangeListeners.delete(listener);
+    }),
     audioWorklet: { addModule: workletAddModule },
     createMediaStreamSource: vi.fn().mockReturnValue(mockSourceNode),
     createGain: createGainFn,
@@ -74,6 +81,10 @@ function createMockAudioContext() {
     _analyserNode: mockAnalyserNode,
     _streamDest: mockStreamDest,
     _workletAddModule: workletAddModule,
+    _emitStateChange: () => {
+      for (const listener of stateChangeListeners) listener();
+    },
+    _stateChangeListeners: stateChangeListeners,
   };
 }
 
@@ -440,6 +451,18 @@ describe('AudioBridge', () => {
     expect(sarahVoiceMock.sendAudioChunk).not.toHaveBeenCalled();
   });
 
+  it('normalizes the unavailable keyword mode to off instead of opening the microphone', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'keyword' },
+    });
+
+    await bridge.start();
+
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(false);
+  });
+
   it('closes and rewarms the mic when voice mode or STT capability changes', async () => {
     sarahMock.getConfig.mockResolvedValue({
       audio: makeAudioConfig(),
@@ -594,6 +617,48 @@ describe('AudioBridge', () => {
     expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(false);
   });
 
+  it('does not overwrite a live voice state after asynchronous startup reconciliation', async () => {
+    let resolveWorklet!: () => void;
+    captureCtxInstance.audioWorklet.addModule.mockReturnValueOnce(new Promise<void>((resolve) => {
+      resolveWorklet = resolve;
+    }));
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    const starting = bridge.start();
+    await vi.waitFor(() => expect(captureCtxInstance.audioWorklet.addModule).toHaveBeenCalledOnce());
+
+    stateChangeCb({ state: 'listening', captureId: TEST_CAPTURE_ID });
+    resolveWorklet();
+    await starting;
+
+    const internal = bridge as unknown as {
+      currentCaptureId: string | null;
+      recording: boolean;
+    };
+    expect(internal.currentCaptureId).toBe(TEST_CAPTURE_ID);
+    expect(internal.recording).toBe(true);
+  });
+
+  it('best-effort reports an active capture failure before renderer teardown', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    await bridge.start();
+    stateChangeCb({ state: 'listening', captureId: TEST_CAPTURE_ID });
+
+    const destroying = bridge.destroy();
+
+    expect(sarahVoiceMock.captureFailed).toHaveBeenCalledWith(
+      TEST_CAPTURE_ID,
+      'Die Mikrofonverbindung wurde unterbrochen. Bitte Audiogerät prüfen und erneut versuchen.',
+    );
+    await destroying;
+    expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(false);
+  });
+
   it('terminates capture setup when AudioContext resume hangs', async () => {
     vi.useFakeTimers();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -619,6 +684,45 @@ describe('AudioBridge', () => {
       errorSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('withdraws readiness and resumes a suspended live capture context', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    await bridge.start();
+    const liveCaptureContext = (bridge as unknown as { captureCtx: MockAudioCtx }).captureCtx;
+    captureCtxInstance.resume.mockImplementationOnce(async () => {
+      liveCaptureContext.state = 'running';
+    });
+    liveCaptureContext.state = 'suspended';
+
+    captureCtxInstance._emitStateChange();
+
+    await vi.waitFor(() => expect(captureCtxInstance.resume).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(sarahVoiceMock.setCaptureReady).toHaveBeenLastCalledWith(true);
+    });
+    const readiness = sarahVoiceMock.setCaptureReady.mock.calls.map(([ready]) => ready);
+    expect(readiness.slice(-2)).toEqual([false, true]);
+  });
+
+  it('removes the capture context state listener during teardown', async () => {
+    sarahMock.getConfig.mockResolvedValue({
+      audio: makeAudioConfig(),
+      controls: { voiceMode: 'push-to-talk' },
+    });
+    await bridge.start();
+
+    expect(captureCtxInstance._stateChangeListeners.size).toBe(1);
+    await bridge.destroy();
+
+    expect(captureCtxInstance.removeEventListener).toHaveBeenCalledWith(
+      'statechange',
+      expect.any(Function),
+    );
+    expect(captureCtxInstance._stateChangeListeners.size).toBe(0);
   });
 
   it('terminates capture setup when AudioWorklet loading hangs', async () => {

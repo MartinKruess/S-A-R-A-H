@@ -1,5 +1,5 @@
 import type { LlmProvider, ChatMessage, ChatOptions } from './llm-provider.interface.js';
-import { abortError, throwIfAborted } from '../../core/abort-utils.js';
+import { abortError, throwIfAborted, timeoutError } from '../../core/abort-utils.js';
 
 export const STREAM_TIMEOUT_MS = 120_000;
 
@@ -18,8 +18,9 @@ async function attempt(
   const timeoutPromise = new Promise<never>((_, reject) => {
     rejectTimeout = reject;
     timeoutId = setTimeout(() => {
-      controller.abort();
-      reject(new Error('timeout'));
+      const error = timeoutError('timeout');
+      reject(error);
+      controller.abort(error);
     }, STREAM_TIMEOUT_MS);
   });
 
@@ -39,8 +40,9 @@ async function attempt(
     onFirstChunk();
     clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
-      controller.abort();
-      rejectTimeout(new Error('timeout'));
+      const error = timeoutError('timeout');
+      rejectTimeout(error);
+      controller.abort(error);
     }, STREAM_TIMEOUT_MS);
     onChunk(chunk);
   };
@@ -70,7 +72,7 @@ export async function chatWithTimeout(
   try {
     return await attempt(provider, messages, onChunk, options, markStreamed);
   } catch (err) {
-    const isTimeout = err instanceof Error && err.message === 'timeout';
+    const isTimeout = err instanceof Error && err.name === 'TimeoutError';
     // Retry exactly once, and only if the user has not seen partial output —
     // the first attempt is aborted, its late chunks are ignored.
     if (!isTimeout || streamedToUser) throw err;

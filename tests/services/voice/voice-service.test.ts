@@ -47,7 +47,7 @@ function createMockAudio(): AudioManager {
     startRecording: vi.fn(function (this: AudioManager) {
       (this as { isRecording: boolean }).isRecording = true;
     }),
-    feedChunk: vi.fn(),
+    feedChunk: vi.fn().mockReturnValue({ accepted: true, limitReached: false }),
     stopRecording: vi.fn(function (this: AudioManager) {
       (this as { isRecording: boolean }).isRecording = false;
       return new Float32Array([0.1, 0.2, 0.3]);
@@ -62,6 +62,8 @@ function createMockAudio(): AudioManager {
 function createMockHotkey(): HotkeyManager {
   return {
     register: vi.fn(),
+    suspend: vi.fn(),
+    resume: vi.fn(),
     unregister: vi.fn(),
     destroy: vi.fn(),
   } as HotkeyManager;
@@ -1185,13 +1187,104 @@ describe('VoiceService', () => {
     expect(audio.setPlaying).toHaveBeenLastCalledWith(false);
   });
 
-  // --- 17. llm:error during streaming flushes and lets queue finish ---
-
-  it('flushes buffer and lets queue finish on llm:error during streaming', async () => {
+  it('fails the active correlated playback immediately when the renderer becomes unavailable', async () => {
     await service.init();
     const playbacks: Array<{ turnId: string; playbackId: string }> = [];
+    const stoppedPlaybacks: Array<{ turnId: string; playbackId: string }> = [];
+    const errors: Array<{ turnId?: string; message: string }> = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    bus.on('voice:stop-playback', (message) => stoppedPlaybacks.push(message.data));
+    bus.on('voice:error', (message) => errors.push(message.data));
+    const turnId = 'bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc';
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId,
+      text: 'Erster Satz. Zweiter Satz. Dritter Satz.',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId }));
+    terminalizeActiveOutput(service, bus);
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+
+    service.handleRendererCaptureUnavailable('Renderer verloren');
+
+    const internal = service as unknown as {
+      activePlaybackTurnId: string | null;
+      activePlaybackId: string | null;
+    };
+    expect(internal.activePlaybackTurnId).toBeNull();
+    expect(internal.activePlaybackId).toBeNull();
+    expect(audio.setPlaying).toHaveBeenLastCalledWith(false);
+    expect(stoppedPlaybacks).toEqual([{
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    }]);
+    expect(errors).toContainEqual(expect.objectContaining({
+      turnId,
+      message: 'Renderer verloren',
+    }));
+    await vi.waitFor(() => expect(service.voiceState).toBe('idle'));
+
+    const recoveryTurnId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: recoveryTurnId,
+      text: 'Neue Antwort nach dem Reload.',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId: recoveryTurnId }));
+    terminalizeActiveOutput(service, bus);
+    await flush();
+    expect(playbacks).toHaveLength(1);
+
+    // Even capture-ready=false proves a live renderer and must release playback.
+    service.setRendererCaptureReady(false);
+    await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+    expect(tts.speak).toHaveBeenCalledWith(
+      'Neue Antwort nach dem Reload.',
+      expect.any(AbortSignal),
+    );
+    expect(tts.speak).not.toHaveBeenCalledWith('Dritter Satz.', expect.any(AbortSignal));
+    expect(service.voiceState).toBe('speaking');
+  });
+
+  it('generation-safely stops first-sentence synthesis when the renderer is lost before playback', async () => {
+    let resolveSynthesis: ((audio: Float32Array) => void) | null = null;
+    (tts.speak as ReturnType<typeof vi.fn>).mockImplementation(() => (
+      new Promise<Float32Array>((resolve) => {
+        resolveSynthesis = resolve;
+      })
+    ));
+    await service.init();
+    const playbacks: Array<{ turnId: string; playbackId: string }> = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    const turnId = 'dededede-dede-4ede-8ede-dededededede';
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', { turnId, text: 'Antwort.' }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId }));
+    terminalizeActiveOutput(service, bus);
+    await vi.waitFor(() => expect(tts.speak).toHaveBeenCalledOnce());
+    expect(playbacks).toHaveLength(0);
+
+    service.handleRendererCaptureUnavailable('Renderer verloren');
+    const completeSynthesis = resolveSynthesis as ((audio: Float32Array) => void) | null;
+    if (!completeSynthesis) throw new Error('Expected pending TTS synthesis');
+    completeSynthesis(new Float32Array([0.1, 0.2]));
+    await flush();
+
+    const internal = service as unknown as { ttsQueue: { isActive: boolean } | null };
+    expect(playbacks).toHaveLength(0);
+    expect(internal.ttsQueue?.isActive).toBe(false);
+    expect(service.voiceState).toBe('idle');
+    expect(tts.stop).toHaveBeenCalledOnce();
+  });
+
+  // --- 17. llm:error cancels partial speech before the error announcement ---
+
+  it('cancels active, prebuffered and queued partial speech before speaking the llm error', async () => {
+    await service.init();
+    const playbacks: Array<{ turnId: string; playbackId: string }> = [];
+    const stoppedPlaybacks: Array<{ turnId: string; playbackId: string }> = [];
     const doneTurns: string[] = [];
     bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    bus.on('voice:stop-playback', (message) => stoppedPlaybacks.push(message.data));
     bus.on('voice:done', (message) => doneTurns.push(message.data.turnId));
 
     // Get into processing state
@@ -1204,9 +1297,11 @@ describe('VoiceService', () => {
     await flush();
 
     // Send a chunk to start streaming
-    const chunk = makeMsg(service, bus, 'llm:chunk', { text: 'Teilantwort.' });
+    const chunk = makeMsg(service, bus, 'llm:chunk', {
+      text: 'Teil eins. Teil zwei. Teil drei.',
+    });
     service.onMessage(chunk);
-    await flush();
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
 
     expect(service.voiceState).toBe('speaking');
 
@@ -1220,16 +1315,21 @@ describe('VoiceService', () => {
     service.onMessage({ source: 'router', topic: 'turn:terminal', data: terminal, timestamp: new Date().toISOString() });
 
     expect(service.voiceState).toBe('speaking');
-    expect(playbacks).toHaveLength(1);
-    bus.emit('renderer', 'voice:playback-done', playbacks[0]);
     await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+    expect(stoppedPlaybacks).toEqual([{
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    }]);
     bus.emit('renderer', 'voice:playback-done', playbacks[1]);
     await vi.waitFor(() => expect(service.voiceState).toBe('idle'));
+    await flush();
+    expect(playbacks).toHaveLength(2);
 
     const internal = service as unknown as { outputs: Map<string, object>; processingTurnIds: Set<string> };
     expect(internal.outputs.size).toBe(0);
     expect(internal.processingTurnIds.size).toBe(0);
     expect(doneTurns).toEqual([chunk.data.turnId]);
+    expect(tts.speak).not.toHaveBeenCalledWith('Teil drei.', expect.any(AbortSignal));
     expect(tts.speak).toHaveBeenCalledWith('Connection lost', expect.any(AbortSignal));
   });
 
@@ -1533,6 +1633,79 @@ describe('VoiceService partial failure (voice:capability)', () => {
     await service.destroy();
   });
 
+  it('preserves the held PTT key-up while renderer capture readiness recovers', async () => {
+    const bus = new MessageBus();
+    const hotkey = createMockHotkey();
+    const stt = createMockStt();
+    const service = new VoiceService(
+      createMockContext(bus, 'push-to-talk'),
+      stt,
+      createMockTts(),
+      createMockWakeWord(),
+      createMockAudio(),
+      hotkey,
+    );
+    acknowledgeCaptureFlushes(bus, service);
+    service.setRendererCaptureReady(true);
+    await service.init();
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+
+    onDown();
+    service.setRendererCaptureReady(false);
+    service.setRendererCaptureReady(true);
+
+    expect(service.voiceState).toBe('listening');
+    expect(hotkey.unregister).not.toHaveBeenCalled();
+    expect(hotkey.register).toHaveBeenCalledTimes(1);
+
+    onUp();
+    await flush();
+
+    expect(stt.transcribe).toHaveBeenCalledOnce();
+    expect(service.voiceState).toBe('processing');
+    expect(hotkey.register).toHaveBeenCalledTimes(2);
+    await service.destroy();
+  });
+
+  it('terminalizes a renderer-lost capture once and rearms PTT without re-registering a held key', async () => {
+    const bus = new MessageBus();
+    const hotkey = createMockHotkey();
+    const service = new VoiceService(
+      createMockContext(bus, 'push-to-talk'),
+      createMockStt(),
+      createMockTts(),
+      createMockWakeWord(),
+      createMockAudio(),
+      hotkey,
+    );
+    const terminals: Array<{ turnId: string; status: string; message?: string }> = [];
+    bus.on('turn:terminal', (message) => terminals.push(message.data));
+    service.setRendererCaptureReady(true);
+    await service.init();
+    const onDown = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0][1] as () => void;
+    onDown();
+    const snapshot = service.voiceStateSnapshot;
+
+    service.handleRendererCaptureUnavailable('Renderer verloren');
+    service.handleRendererCaptureUnavailable('Renderer verloren');
+    service.setRendererCaptureReady(true);
+
+    expect(terminals).toEqual([{
+      turnId: snapshot.turnId,
+      status: 'error',
+      message: 'Renderer verloren',
+    }]);
+    expect(service.voiceState).toBe('idle');
+    expect(service.voiceStateSnapshot.captureId).toBeUndefined();
+    expect(hotkey.suspend).toHaveBeenCalledOnce();
+    expect(hotkey.resume).toHaveBeenCalledOnce();
+    expect(hotkey.unregister).not.toHaveBeenCalled();
+    expect(hotkey.register).toHaveBeenCalledOnce();
+    await service.destroy();
+  });
+
   it('publishes runtime TTS degradation and recovery after initial readiness', async () => {
     const bus = new MessageBus();
     const capabilities: Array<{ stt: boolean; tts: boolean }> = [];
@@ -1629,6 +1802,39 @@ describe('VoiceService partial failure (voice:capability)', () => {
 });
 
 describe('TTS deferral while listening (F9)', () => {
+  it('drops deferred partial output on llm:error and retains only the error announcement', async () => {
+    const bus = new MessageBus();
+    const tts = createMockTts();
+    const hotkey = createMockHotkey();
+    const service = new VoiceService(createMockContext(bus), createMockStt(), tts, createMockWakeWord(), createMockAudio(), hotkey);
+    service.setRendererCaptureReady(true);
+    await service.init();
+    const onDown = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0][1] as () => void;
+    onDown();
+
+    const chunk = makeMsg(service, bus, 'llm:chunk', { text: 'Unvollständige Teilantwort.' });
+    service.onMessage(chunk);
+    service.onMessage(makeMsg(service, bus, 'llm:error', {
+      turnId: chunk.data.turnId,
+      message: 'Connection lost',
+    }));
+
+    const internal = service as unknown as {
+      deferredSentences: Array<{ text: string }>;
+      setState: (s: string) => void;
+    };
+    expect(internal.deferredSentences.map((item) => item.text)).toEqual(['Connection lost']);
+
+    internal.setState('processing');
+    await vi.waitFor(() => expect(tts.speak).toHaveBeenCalledOnce());
+    expect(tts.speak).toHaveBeenCalledWith('Connection lost', expect.any(AbortSignal));
+    expect(tts.speak).not.toHaveBeenCalledWith(
+      'Unvollständige Teilantwort.',
+      expect.any(AbortSignal),
+    );
+    await service.destroy();
+  });
+
   it('buffers llm output while listening and enqueues it after the recording ends', async () => {
     const bus = new MessageBus();
     const tts = createMockTts();
@@ -1980,7 +2186,10 @@ describe('TTS deferral while listening (F9)', () => {
     );
     service.setRendererCaptureReady(true);
     acknowledgeCaptureFlushes(bus, service);
-    (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue('limit');
+    (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue({
+      accepted: true,
+      limitReached: true,
+    });
     (stt.transcribe as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('STT failed'));
     await service.init();
     const errors: Array<{ turnId?: string; message: string }> = [];
@@ -2022,7 +2231,10 @@ describe('TTS deferral while listening (F9)', () => {
       );
       service.setRendererCaptureReady(true);
       acknowledgeCaptureFlushes(bus, service);
-      (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue('limit');
+      (audio.feedChunk as ReturnType<typeof vi.fn>).mockReturnValue({
+        accepted: true,
+        limitReached: true,
+      });
       (stt.transcribe as ReturnType<typeof vi.fn>).mockImplementation(
         () => new Promise<string>(() => {}),
       );

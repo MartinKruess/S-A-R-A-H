@@ -27,6 +27,7 @@ import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
 import { registerElectronShutdown } from './main/electron-shutdown.js';
+import { registerVoiceRendererLifecycle } from './main/voice-renderer-lifecycle.js';
 
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
@@ -236,6 +237,14 @@ app.whenReady().then(async () => {
     hotkeyManager,
   );
   appContext.registry.register(voiceService);
+  if (mainWindow) {
+    const stopVoiceRendererLifecycle = registerVoiceRendererLifecycle(mainWindow, voiceService);
+    appContext.lifecycle.registerCleanup(
+      'voice-renderer-lifecycle',
+      stopVoiceRendererLifecycle,
+      'before_services',
+    );
+  }
 
   // --- Shared dependency getters (avoid stale refs in modules) ---
   const getMainWindow = () => mainWindow;

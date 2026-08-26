@@ -4,6 +4,10 @@ import type { AudioConfig } from '../../core/config-schema.js';
 import type { SarahApi } from '../../core/sarah-api.js';
 import type { PlaybackId, TurnId, VoiceCaptureId } from '../../core/turn-contract.js';
 import {
+  normalizeVoiceMode,
+  type EffectiveVoiceMode,
+} from '../../services/voice/voice-types.js';
+import {
   computeEffectiveGain,
   decideCaptureReset,
   isCaptureConfigEqual,
@@ -137,7 +141,7 @@ export class AudioBridge {
   private currentCaptureId: VoiceCaptureId | null = null;
   private activeInputDeviceId: string | undefined = undefined;
   private preferredInputRecoveryPending = false;
-  private voiceMode: 'off' | 'push-to-talk' | 'keyword' = 'off';
+  private voiceMode: EffectiveVoiceMode = 'off';
   private sttAvailable = false;
   private reportedCaptureReady: boolean | null = null;
 
@@ -211,6 +215,12 @@ export class AudioBridge {
   private captureStartPromise: Promise<boolean> | null = null;
   private readonly captureStartPromises = new Set<Promise<boolean>>();
   private captureSetupAbort: AbortController | null = null;
+  private captureStateResumeAbort: AbortController | null = null;
+  private captureStateResumePromise: Promise<void> | null = null;
+  private captureContextStateListener: {
+    context: AudioContext;
+    handler: () => void;
+  } | null = null;
   private captureRecoveryPromise: Promise<void> | null = null;
   private captureRecoveryPending = false;
   private captureRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -278,8 +288,9 @@ export class AudioBridge {
     });
     this.unsubVoiceInputConfig = sarah.onVoiceInputConfigChanged(({ voiceMode }) => {
       this.voiceInputConfigRevision += 1;
-      const shouldResetRetry = this.voiceMode === 'off' && voiceMode !== 'off';
-      this.voiceMode = voiceMode;
+      const effectiveMode = normalizeVoiceMode(voiceMode);
+      const shouldResetRetry = this.voiceMode === 'off' && effectiveMode !== 'off';
+      this.voiceMode = effectiveMode;
       if (shouldResetRetry) this.resetCaptureRetry();
       if (!this.started) return;
       void this.reconcileVoiceInputLifecycle();
@@ -308,7 +319,7 @@ export class AudioBridge {
         this.rememberAudioConfig(configResult.value.audio);
       }
       if (this.voiceInputConfigRevision === voiceInputRevision) {
-        this.voiceMode = configResult.value.controls?.voiceMode ?? 'off';
+        this.voiceMode = normalizeVoiceMode(configResult.value.controls?.voiceMode ?? 'off');
       }
     } else {
       console.warn('[AudioBridge] initial config fetch failed:', configResult.reason);
@@ -325,13 +336,14 @@ export class AudioBridge {
       && stateResult.status === 'fulfilled'
       ? stateResult.value
       : this.pendingVoiceState;
+    const initialVoiceStateRevision = this.voiceStateRevision;
     if (stateResult.status === 'rejected') {
       console.warn('[AudioBridge] initial voice state fetch failed:', stateResult.reason);
     }
 
     this.started = true;
     await this.reconcileVoiceInputLifecycle();
-    if (initialVoiceState) {
+    if (initialVoiceState && this.voiceStateRevision === initialVoiceStateRevision) {
       this.handleStateChange(initialVoiceState.state, initialVoiceState.captureId);
     }
   }
@@ -341,12 +353,19 @@ export class AudioBridge {
     // a new stream or worklet that we'd leak past teardown.
     this.destroyed = true;
     this.resetCaptureRetry();
-    if (this.currentCaptureId) this.cancelRendererCapture(this.currentCaptureId);
+    const failedCaptureId = this.currentCaptureId;
+    const captureFailureReport = failedCaptureId
+      ? sarah.voice.captureFailed(failedCaptureId, CAPTURE_LOST_MESSAGE).catch((error) => {
+        console.warn('[AudioBridge] Active capture teardown could not be reported:', error);
+      })
+      : Promise.resolve();
+    if (failedCaptureId) this.cancelRendererCapture(failedCaptureId);
     this.captureIpcTails.clear();
     this.recording = false;
     this.currentCaptureId = null;
     this.stopCapture();
     await this.reportCaptureReady(false);
+    await captureFailureReport;
     for (const pending of this.playbackStartControllers.values()) pending.controller.abort();
 
     // Let any queued applyAudioConfig run to completion — it'll see `destroyed`
@@ -360,6 +379,9 @@ export class AudioBridge {
     });
 
     await Promise.allSettled([...this.captureStartPromises]);
+    await this.captureStateResumePromise?.catch(() => {
+      /* teardown continues after a failed context resume */
+    });
     await this.captureRecoveryPromise?.catch(() => {
       /* teardown continues after a failed recovery */
     });
@@ -446,6 +468,7 @@ export class AudioBridge {
     const tracks = this.stream?.getTracks() ?? [];
     return this.capturing
       && this.captureStartPromise === null
+      && this.captureCtx?.state === 'running'
       && this.stream !== null
       && this.workletNode !== null
       && tracks.length > 0
@@ -765,10 +788,15 @@ export class AudioBridge {
       this.captureGain = captureGain;
       this.workletNode = workletNode;
       this.workletLoaded = true;
+      this.attachCaptureContextStateListener(captureContext, generation);
       this.activeInputDeviceId = stream.getTracks()
         .map((track) => track.getSettings().deviceId)
         .find(Boolean);
       this.resetCaptureRetry();
+      if (captureContext.state !== 'running') {
+        this.handleCaptureContextStateChange(captureContext, generation);
+        return false;
+      }
       return true;
     } catch (err) {
       await disposeLocal();
@@ -890,6 +918,76 @@ export class AudioBridge {
     });
   }
 
+  /** Reconcile a live capture graph when Chromium suspends or loses its AudioContext. */
+  private handleCaptureContextStateChange(context: AudioContext, generation: number): void {
+    if (
+      this.destroyed
+      || this.captureCtx !== context
+      || generation !== this.captureGeneration
+    ) return;
+
+    const state = String(context.state);
+    if (state === 'running') {
+      if (this.isCaptureReady()) void this.reportCaptureReady(true);
+      return;
+    }
+    if (state !== 'suspended') {
+      this.scheduleCaptureRecovery();
+      return;
+    }
+    if (this.captureStateResumePromise) return;
+
+    const controller = new AbortController();
+    this.captureStateResumeAbort = controller;
+    let resumePromise!: Promise<void>;
+    resumePromise = (async () => {
+      await this.reportCaptureReady(false);
+      try {
+        await waitForAudioOperation(
+          context.resume(),
+          controller.signal,
+          CAPTURE_RESUME_TIMEOUT_MS,
+          'Microphone AudioContext recovery timed out',
+        );
+        if (
+          this.destroyed
+          || this.captureCtx !== context
+          || generation !== this.captureGeneration
+        ) return;
+        if (String(context.state) !== 'running') {
+          throw new Error(`Microphone AudioContext remained ${String(context.state)}`);
+        }
+        await this.reportCaptureReady(this.isCaptureReady());
+      } catch (value) {
+        const error = value instanceof Error ? value : new Error(String(value));
+        if (!isAudioOperationAborted(error)) {
+          console.warn('[AudioBridge] Capture AudioContext could not be resumed:', error);
+          this.scheduleCaptureRecovery();
+        }
+      } finally {
+        if (this.captureStateResumeAbort === controller) this.captureStateResumeAbort = null;
+        if (this.captureStateResumePromise === resumePromise) {
+          this.captureStateResumePromise = null;
+        }
+      }
+    })();
+    this.captureStateResumePromise = resumePromise;
+  }
+
+  private attachCaptureContextStateListener(context: AudioContext, generation: number): void {
+    this.detachCaptureContextStateListener();
+    const handler = (): void => this.handleCaptureContextStateChange(context, generation);
+    context.addEventListener('statechange', handler);
+    this.captureContextStateListener = { context, handler };
+  }
+
+  private detachCaptureContextStateListener(): void {
+    const listener = this.captureContextStateListener;
+    if (!listener) return;
+    listener.context.removeEventListener('statechange', listener.handler);
+    this.captureContextStateListener = null;
+  }
+
   private async recoverCapture(failedCaptureId: VoiceCaptureId | undefined): Promise<void> {
     this.recording = false;
     this.currentCaptureId = null;
@@ -978,6 +1076,9 @@ export class AudioBridge {
     this.captureGeneration += 1;
     this.captureSetupAbort?.abort();
     this.captureSetupAbort = null;
+    this.captureStateResumeAbort?.abort();
+    this.captureStateResumeAbort = null;
+    this.detachCaptureContextStateListener();
     this.capturing = false;
     this.activeInputDeviceId = undefined;
 

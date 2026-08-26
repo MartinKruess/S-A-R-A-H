@@ -77,16 +77,31 @@ describe('AudioManager', () => {
 
   it('ignores stale capture ids and enforces the one-minute sample cap', () => {
     manager.startRecording(CAPTURE_ID);
-    expect(manager.feedChunk('old-capture', new Float32Array([1]))).toBe('ignored');
+    expect(manager.feedChunk('old-capture', new Float32Array([1]))).toEqual({
+      accepted: false,
+      limitReached: false,
+    });
 
     const chunk = new Float32Array(65_536);
-    let result: 'accepted' | 'ignored' | 'limit' = 'accepted';
-    for (let index = 0; index < 20 && result === 'accepted'; index += 1) {
+    let result = { accepted: true, limitReached: false };
+    for (let index = 0; index < 20 && !result.limitReached; index += 1) {
       result = manager.feedChunk(CAPTURE_ID, chunk);
     }
 
-    expect(result).toBe('limit');
+    expect(result.limitReached).toBe(true);
     expect(manager.stopRecording(CAPTURE_ID).length)
       .toBeLessThanOrEqual(AudioManager.MAX_RECORDING_SAMPLES);
+  });
+
+  it('distinguishes accepted audio from an over-limit chunk', () => {
+    manager.startRecording(CAPTURE_ID);
+    const first = manager.feedChunk(
+      CAPTURE_ID,
+      new Float32Array(AudioManager.MAX_RECORDING_SAMPLES - 1),
+    );
+    const rejected = manager.feedChunk(CAPTURE_ID, new Float32Array(2));
+
+    expect(first).toEqual({ accepted: true, limitReached: false });
+    expect(rejected).toEqual({ accepted: false, limitReached: true });
   });
 });

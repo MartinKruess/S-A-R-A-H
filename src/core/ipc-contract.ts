@@ -154,6 +154,7 @@ export interface SystemMetrics {
 
 /** Live voice input level pushed via `voice:level`. `bars` is a rolling FIFO window, oldest → newest. */
 export interface VoiceLevel {
+  captureId: VoiceCaptureId;
   rms: number;
   bars: number[];
   ts: number;

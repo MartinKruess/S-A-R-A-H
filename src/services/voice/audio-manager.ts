@@ -41,13 +41,23 @@ export class AudioManager {
   /**
    * Feed a PCM chunk from the renderer. Called by IPC handler.
    */
-  feedChunk(captureId: string, chunk: Float32Array): 'accepted' | 'ignored' | 'limit' {
-    if (!this._isRecording || this.captureId !== captureId) return 'ignored';
-    if (this.recordingSamples + chunk.length > AudioManager.MAX_RECORDING_SAMPLES) return 'limit';
+  feedChunk(captureId: string, chunk: Float32Array): {
+    accepted: boolean;
+    limitReached: boolean;
+  } {
+    if (!this._isRecording || this.captureId !== captureId) {
+      return { accepted: false, limitReached: false };
+    }
+    if (this.recordingSamples + chunk.length > AudioManager.MAX_RECORDING_SAMPLES) {
+      return { accepted: false, limitReached: true };
+    }
     this.recordingChunks.push(new Float32Array(chunk));
     this.recordingSamples += chunk.length;
     this.onChunkCallback?.(chunk);
-    return this.recordingSamples >= AudioManager.MAX_RECORDING_SAMPLES ? 'limit' : 'accepted';
+    return {
+      accepted: true,
+      limitReached: this.recordingSamples >= AudioManager.MAX_RECORDING_SAMPLES,
+    };
   }
 
   /**
