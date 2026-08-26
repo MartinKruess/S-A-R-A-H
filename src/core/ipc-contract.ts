@@ -2,13 +2,16 @@ import type { SarahConfig, ProgramEntry, AudioConfig } from './config-schema.js'
 import type { VoiceState } from '../services/voice/voice-types.js';
 import type { BusEvents } from './bus-events.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
+import type { SaveConfigResult } from './config-apply.js';
+import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 
 /** IPC channels using ipcMain.handle / ipcRenderer.invoke (request-response) */
 export interface IpcCommands {
   'get-system-info':            { input: void; output: SystemIpcInfo };
   'get-system-metrics':         { input: void; output: SystemMetrics };
   'get-config':                 { input: void; output: SarahConfig };
-  'save-config':                { input: Partial<SarahConfig>; output: SarahConfig };
+  'get-runtime-status':         { input: void; output: RuntimeSnapshot };
+  'save-config':                { input: Partial<SarahConfig>; output: SaveConfigResult };
   'select-folder':              { input: string | undefined; output: string | null };
   'detect-programs':            { input: void; output: ProgramEntry[] };
   'scan-folder-exes':           { input: string; output: ProgramEntry[] };
@@ -44,6 +47,7 @@ export interface IpcEvents {
   'system:metrics':        SystemMetrics;
   'voice:level':           VoiceLevel;
   'audio-config-changed':  AudioConfig;
+  'runtime-status':        RuntimeSnapshot;
 }
 
 /** IPC events sent from renderer to main (one-way) */

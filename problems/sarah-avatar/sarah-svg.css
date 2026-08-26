@@ -1,0 +1,41 @@
+.logo {
+  width: 100%;
+  height: 300px;
+}
+
+.base,
+.beam {
+  font-size: 120px;
+  font-family: Georgia, serif;
+  fill: transparent;
+}
+
+.base {
+  stroke: #ffcc66;
+  stroke-width: 2;
+  stroke-dasharray: 1200;
+  stroke-dashoffset: 1200;
+  animation: drawText 4s ease forwards;
+  filter: drop-shadow(0 0 15px #ffb000);
+}
+
+.beam {
+  stroke: white;
+  stroke-width: 4;
+  stroke-dasharray: 80 1200;
+  stroke-dashoffset: 1200;
+  animation: beamMove 4s ease forwards;
+  filter: drop-shadow(0 0 15px white) drop-shadow(0 0 35px #ffaa00);
+}
+
+@keyframes drawText {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes beamMove {
+  to {
+    stroke-dashoffset: 0;
+  }
+}

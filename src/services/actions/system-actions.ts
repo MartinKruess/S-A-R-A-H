@@ -5,7 +5,12 @@ import type { LaunchResult } from '../../main/program-launcher.js';
 const UNSUPPORTED: LaunchResult = { ok: false, speak: 'Das unterstützt dein System nicht.' };
 const MAX_TIMERS = 5;
 
-type ExecFn = (cmd: string, args: string[], cb: (err: Error | null) => void) => void;
+type ExecFn = (
+  cmd: string,
+  args: string[],
+  cb: (err: Error | null) => void,
+  signal?: AbortSignal,
+) => void;
 
 /** Fixed CoreAudio script (verified spike 17.07.) — only the scalar value is inlined. */
 const VOLUME_SCRIPT_PREFIX = `Add-Type -TypeDefinition @'
@@ -44,8 +49,8 @@ export class SystemActions {
   private nextTimerId = 1;
 
   constructor(opts: { execFn?: ExecFn; onNotify?: (speak: string) => void; platform?: string } = {}) {
-    this.execFn = opts.execFn ?? ((cmd, args, cb) => {
-      nodeExecFile(cmd, args, (err, _stdout, stderr) => {
+    this.execFn = opts.execFn ?? ((cmd, args, cb, signal) => {
+      nodeExecFile(cmd, args, { signal }, (err, _stdout, stderr) => {
         if (err && stderr) console.warn('[SystemActions] exec stderr:', String(stderr).trim().slice(0, 300));
         cb(err);
       });
@@ -58,25 +63,30 @@ export class SystemActions {
     this.onNotify = fn;
   }
 
-  async setVolume(percent: number): Promise<LaunchResult> {
+  async setVolume(percent: number, signal?: AbortSignal): Promise<LaunchResult> {
     if (this.platform !== 'win32') return UNSUPPORTED;
     const scalar = String(Math.round(percent) / 100);
     const script = `${VOLUME_SCRIPT_PREFIX}${scalar})`;
     return new Promise((resolve) => {
-      this.execFn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], (err) => {
+      const args = ['-NoProfile', '-NonInteractive', '-Command', script];
+      const done = (err: Error | null): void => {
         if (err) console.warn('[SystemActions] setVolume failed:', `${percent}%`, err.message);
         else console.log('[SystemActions] setVolume ok:', `${percent}% (scalar ${scalar}) — system master volume set`);
         resolve(err ? { ok: false, speak: 'Die Lautstärke ließ sich nicht ändern.' } : { ok: true });
-      });
+      };
+      if (signal) this.execFn('powershell.exe', args, done, signal);
+      else this.execFn('powershell.exe', args, done);
     });
   }
 
-  async lockScreen(): Promise<LaunchResult> {
+  async lockScreen(signal?: AbortSignal): Promise<LaunchResult> {
     if (this.platform !== 'win32') return UNSUPPORTED;
     return new Promise((resolve) => {
-      this.execFn('rundll32.exe', ['user32.dll,LockWorkStation'], (err) => {
+      const done = (err: Error | null): void => {
         resolve(err ? { ok: false, speak: 'Das Sperren hat nicht geklappt.' } : { ok: true });
-      });
+      };
+      if (signal) this.execFn('rundll32.exe', ['user32.dll,LockWorkStation'], done, signal);
+      else this.execFn('rundll32.exe', ['user32.dll,LockWorkStation'], done);
     });
   }
 

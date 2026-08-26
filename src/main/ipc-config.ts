@@ -8,6 +8,7 @@ import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 import { isValidOptionalTitle } from './ipc-validation.js';
+import { getLlmRestartReasons, type SaveConfigResult } from '../core/config-apply.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -17,6 +18,7 @@ export interface ConfigHandlerDeps {
 
 export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps): void {
   const { getAppContext, getMainWindow, dialogWindows } = deps;
+  let saveQueue: Promise<void> = Promise.resolve();
 
   ipcMain.handle('get-system-info', async () => {
     const cpus = os.cpus();
@@ -48,30 +50,40 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
   ipcMain.handle(
     'save-config',
-    async (_event, config: Partial<SarahConfig>) => {
-      const ctx = getAppContext();
-      const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
-      const previousAudio = ctx.parsedConfig.audio;
-      const merged = { ...existing, ...config };
+    (_event, config: Partial<SarahConfig>): Promise<SaveConfigResult> => {
+      const operation = saveQueue.then(async () => {
+        const ctx = getAppContext();
+        const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
+        const previousAudio = ctx.parsedConfig.audio;
+        const previousLlm = ctx.parsedConfig.llm;
+        const merged = { ...existing, ...config };
 
-      const { SarahConfigSchema } = await import('../core/config-schema.js');
-      const parsed = SarahConfigSchema.parse(merged);
+        const { SarahConfigSchema } = await import('../core/config-schema.js');
+        const parsed = SarahConfigSchema.parse(merged);
 
-      await ctx.config.set('root', merged);
-      ctx.parsedConfig = parsed;
+        await ctx.config.set('root', merged);
+        ctx.parsedConfig = parsed;
 
-      if ('controls' in config) {
-        await getService<VoiceService>(ctx, 'voice').applyConfig();
-      }
-
-      if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
-        const win = getMainWindow();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('audio-config-changed', parsed.audio);
+        if ('controls' in config) {
+          await getService<VoiceService>(ctx, 'voice').applyConfig();
         }
-      }
 
-      return ctx.parsedConfig;
+        if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
+          const win = getMainWindow();
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('audio-config-changed', parsed.audio);
+          }
+        }
+
+        const restartReasons = getLlmRestartReasons(previousLlm, parsed.llm);
+        return {
+          config: ctx.parsedConfig,
+          restartRequired: restartReasons.length > 0,
+          restartReasons,
+        };
+      });
+      saveQueue = operation.then(() => undefined, () => undefined);
+      return operation;
     },
   );
 

@@ -39,6 +39,30 @@ describe('OllamaProvider', () => {
     vi.restoreAllMocks();
   });
 
+  it('isAvailable does not accept a different tag of the same model family', async () => {
+    provider = new OllamaProvider('http://localhost:11434', 'mistral-nemo:12b');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ models: [{ name: 'mistral-nemo:7b' }] }),
+    } as Response);
+
+    await expect(provider.isAvailable()).resolves.toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it('propagates an external availability-check abort', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('fetch aborted')), { once: true });
+    }));
+    const controller = new AbortController();
+
+    const checking = provider.isAvailable(controller.signal);
+    controller.abort();
+
+    await expect(checking).rejects.toMatchObject({ name: 'AbortError' });
+    vi.restoreAllMocks();
+  });
+
   it('chat streams chunks and returns full response', async () => {
     const encoder = new TextEncoder();
     const chunks = [

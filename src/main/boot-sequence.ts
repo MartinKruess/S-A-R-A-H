@@ -2,117 +2,179 @@ import * as path from 'path';
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
-import type { RouterService } from '../services/llm/router-service.js';
 import type { OllamaContainerManager } from '../services/llm/ollama-container-manager.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
-import type { FasterWhisperProvider } from '../services/voice/providers/faster-whisper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers } from './forward-to-renderers.js';
 import { isValidChatMessage } from './ipc-validation.js';
-import { deriveBootIssue } from './boot-issues.js';
+import { deriveBootCapabilitySteps } from './boot-capabilities.js';
+import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
+import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../core/chat-availability.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
   getAppContext: () => AppContext;
-  routerService: RouterService;
-  whisperProvider: FasterWhisperProvider;
   piperProvider: PiperProvider;
   containerManager: OllamaContainerManager;
 }
 
-export function registerBootHandlers(deps: BootSequenceDeps): void {
-  const { getMainWindow, getAppContext, routerService, whisperProvider, piperProvider, containerManager } = deps;
+type BootSeverity = 'info' | 'warning' | 'error';
 
-  const send = (step: string, message?: string, severity: 'info' | 'warning' | 'error' = 'info') => {
+/**
+ * Register the splash, chat and boot bridge for the current main-process run.
+ *
+ * - Starts services through the application lifecycle exactly once.
+ * - Emits terminal success/degraded steps from verified capability state.
+ * - Returns a cleanup that removes IPC/bus listeners and animation timers.
+ *
+ * @returns Idempotent boot-handler cleanup.
+ *
+ * @category Event Handler
+ */
+export function registerBootHandlers(deps: BootSequenceDeps): () => void {
+  const { getMainWindow, getAppContext, piperProvider, containerManager } = deps;
+  let stopped = false;
+  let transitionInterval: ReturnType<typeof setInterval> | null = null;
+  let revealTimeout: ReturnType<typeof setTimeout> | null = null;
+  let revealResolver: (() => void) | null = null;
+  const pendingDelays = new Set<{
+    timer: ReturnType<typeof setTimeout>;
+    resolve: () => void;
+  }>();
+
+  const send = (step: string, message?: string, severity: BootSeverity = 'info'): void => {
+    if (stopped) return;
     const win = getMainWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send('boot-status', { step, message, severity });
     }
   };
 
-  // Start heavy inits immediately, keep promise refs so boot-ready can await them.
-  const whisperReady = whisperProvider.init().catch((err) => {
-    console.error('[Boot] Whisper init failed:', err);
+  const delay = (ms: number): Promise<void> => new Promise((resolve) => {
+    const entry = {
+      timer: null as unknown as ReturnType<typeof setTimeout>,
+      resolve,
+    };
+    entry.timer = setTimeout(() => {
+      pendingDelays.delete(entry);
+      resolve();
+    }, ms);
+    pendingDelays.add(entry);
+    const timer = entry.timer;
+    timer.unref?.();
   });
-  // Container must be up before router init — chained so the promise still
-  // starts eagerly at registration time (orb-reveal timing unchanged).
-  let containerError: string | null = null;
-  const routerReady = containerManager
-    .ensureRunning()
-    .then(() => routerService.init())
-    .catch((err) => {
-      containerError = err instanceof Error ? err.message : String(err);
-      console.error('[Boot] Ollama container/router init failed:', err);
-    });
 
-  ipcMain.once('boot-ready', async () => {
+  const waitForReveal = (): Promise<void> => new Promise((resolve) => {
+    if (stopped) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      if (revealTimeout) clearTimeout(revealTimeout);
+      revealTimeout = null;
+      revealResolver = null;
+      ipcMain.removeListener('reveal-done', finish);
+      resolve();
+    };
+    revealResolver = finish;
+    ipcMain.once('reveal-done', finish);
+    revealTimeout = setTimeout(finish, 8_000);
+  });
+
+  const waitForCapability = (
+    ctx: AppContext,
+    name: string,
+    startPromise: Promise<unknown>,
+  ): Promise<CapabilitySnapshot | undefined> => new Promise((resolve) => {
+    let unsubscribe: (() => void) | null = null;
+    let unsubscribeAfterRegistration = false;
+    let settled = false;
+    const finish = (capability?: CapabilitySnapshot): void => {
+      if (settled) return;
+      settled = true;
+      if (unsubscribe) unsubscribe();
+      else unsubscribeAfterRegistration = true;
+      resolve(capability);
+    };
+    unsubscribe = ctx.lifecycle.subscribe((snapshot) => {
+      const capability = snapshot.capabilities[name];
+      if (capability && !['registered', 'starting'].includes(capability.state)) {
+        finish(capability);
+      }
+    });
+    if (unsubscribeAfterRegistration) unsubscribe();
+    void startPromise.catch(() => finish(ctx.lifecycle.snapshot.capabilities[name]));
+  });
+
+  const runBoot = async (): Promise<void> => {
     const mainWindow = getMainWindow();
-    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (!mainWindow || mainWindow.isDestroyed() || stopped) return;
+
+    const ctx = getAppContext();
+    send('whisper', 'Spracherkennung wird aktiviert ...');
+    send('router', 'Sarah Protokoll wird initialisiert ...');
 
     try {
-      send('whisper', 'Spracherkennung wird aktiviert ...');
+      const lifecycleStart = ctx.lifecycle.start();
+      const router = await waitForCapability(ctx, 'router', lifecycleStart);
+      const routerStep = deriveBootCapabilitySteps(router, { stt: false, tts: false }).router;
 
-      // Router determines orb reveal — don't block on whisper (takes 30-45s cold)
-      send('router', 'Sarah Protokoll wird initialisiert ...');
-      await routerReady;
-
-      const issue = deriveBootIssue(containerError, routerService.status);
-      if (issue) {
-        send('router', issue.message, issue.severity);
-        // Keep the error readable before router-ready hides the status line
-        await new Promise((r) => setTimeout(r, 3000));
-      } else {
+      if (routerStep === 'router-ready') {
         const gpu = await containerManager.checkGpu();
         if (gpu === 'cpu') {
-          console.warn('[Boot] Ollama is running WITHOUT GPU (CPU mode)');
-          send('router', 'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.', 'warning');
-          // Keep the warning readable before router-ready hides the status line
-          await new Promise((r) => setTimeout(r, 3000));
+          send(
+            'router',
+            'Warnung: Ollama läuft ohne GPU — Antworten werden sehr langsam.',
+            'warning',
+          );
+          await delay(3_000);
+          if (stopped) return;
         }
+        send(routerStep);
+      } else {
+        send(
+          routerStep,
+          router?.message ?? 'Sarah-Protokoll ist nicht verfügbar. Text- und Spracheingaben bleiben deaktiviert.',
+          'error',
+        );
       }
 
-      // Signal router ready — renderer starts orb reveal (even if router errored)
-      send('router-ready');
+      const reveal = waitForReveal();
+      await lifecycleStart;
+      const voice = ctx.registry.get('voice') as VoiceService | undefined;
+      const voiceCapabilities = voice?.capabilitySnapshot ?? { stt: false, tts: false };
+      const steps = deriveBootCapabilitySteps(router, voiceCapabilities);
 
-      // Whisper finishes in background; signal renderer when ready so it can enable voice
-      whisperReady
-        .then(() => { send('whisper-ready'); })
-        .catch(() => { send('whisper-ready'); });
+      send(
+        steps.stt,
+        voiceCapabilities.stt ? undefined : 'Spracherkennung ist nicht verfügbar. Textchat bleibt nutzbar.',
+        voiceCapabilities.stt ? 'info' : 'warning',
+      );
 
-      // Wait for reveal animation to finish (renderer sends reveal-done IPC)
-      await new Promise<void>((resolve) => {
-        ipcMain.once('reveal-done', () => resolve());
-        setTimeout(resolve, 8000); // Fallback
-      });
+      await reveal;
+      if (stopped) return;
 
       send('piper', 'Sprachprotokolle werden geladen ...');
-      // Piper init is near-instant (file checks only), so add minimum display time
-      await Promise.all([
-        piperProvider.init().catch((err) => {
-          console.error('[Boot] Piper init failed:', err);
-        }),
-        new Promise((r) => setTimeout(r, 1000)),
-      ]);
-
-      // Signal piper ready — renderer starts break + TTS
-      send('piper-ready');
-
-      // Wire up remaining service plumbing (TtsQueue, hotkeys, subscriptions, status)
-      // init() is single-flight (A8): repeated calls return the same promise
-      const ctx = getAppContext();
-      await ctx.registry.initAll().catch((err) => {
-        console.error('[Boot] Service wiring failed:', err);
-      });
-    } catch (err) {
-      console.error('[Boot] Activation failed:', err);
-      send('router-ready');
-      send('piper-ready');
-      const ctx = getAppContext();
-      await ctx.registry.initAll().catch(() => {});
+      await delay(1_000);
+      send(
+        steps.tts,
+        voiceCapabilities.tts ? undefined : 'Sprachausgabe ist nicht verfügbar. Antworten erscheinen als Text.',
+        voiceCapabilities.tts ? 'info' : 'warning',
+      );
+    } catch (value) {
+      const message = value instanceof Error ? value.message : String(value);
+      console.error('[Boot] Activation failed:', value);
+      if (stopped) return;
+      send('router-terminal', message, 'error');
+      send('whisper-unavailable', 'Spracherkennung konnte nicht aktiviert werden.', 'warning');
+      await waitForReveal();
+      send('piper-unavailable', 'Sprachausgabe konnte nicht aktiviert werden.', 'warning');
     }
-  });
+  };
 
-  // Splash TTS handler (uses Piper directly, VoiceService not wired yet)
+  const onBootReady = (): void => { void runBoot(); };
+  ipcMain.once('boot-ready', onBootReady);
+
   ipcMain.handle('splash-tts', async (_event, text: string) => {
     if (!isValidChatMessage(text)) {
       console.warn('[IPC] invalid payload for splash-tts');
@@ -132,28 +194,27 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
     }
   });
 
-  function loadDashboardBootMode(): void {
+  const loadDashboardBootMode = (): void => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    // Window is already 800x600 centered from splash — just swap the page
-    mainWindow.loadFile(path.join(__dirname, '..', '..', 'dashboard.html'));
-  }
+    void mainWindow.loadFile(path.join(__dirname, '..', '..', 'dashboard.html'));
+  };
 
-  ipcMain.on('splash-done', () => {
+  const onSplashDone = (): void => {
     const mainWindow = getMainWindow();
     if (!mainWindow) return;
     if (getAppContext().parsedConfig.onboarding.setupComplete) {
       loadDashboardBootMode();
     } else {
       mainWindow.maximize();
-      mainWindow.loadFile(path.join(__dirname, '..', '..', 'wizard.html'));
+      void mainWindow.loadFile(path.join(__dirname, '..', '..', 'wizard.html'));
     }
-  });
+  };
+  ipcMain.on('splash-done', onSplashDone);
 
-  ipcMain.on('wizard-done', () => {
+  const onWizardDone = (): void => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    // Wizard was maximized — restore to splash size and center
     mainWindow.unmaximize();
     mainWindow.setSize(800, 600);
     const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
@@ -162,7 +223,8 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       Math.round((screenH - 600) / 2),
     );
     loadDashboardBootMode();
-  });
+  };
+  ipcMain.on('wizard-done', onWizardDone);
 
   ipcMain.handle('chat-message', async (_event, text: string) => {
     if (!isValidChatMessage(text)) {
@@ -170,83 +232,113 @@ export function registerBootHandlers(deps: BootSequenceDeps): void {
       return;
     }
     const ctx = getAppContext();
+    if (!isChatAvailable(ctx.lifecycle.snapshot)) {
+      ctx.bus.emit('runtime', 'llm:error', {
+        message: CHAT_UNAVAILABLE_MESSAGE,
+      });
+      return;
+    }
     const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
     if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
-      // Only enable one-shot TTS when user types in voice mode, not in chat mode
       voiceService.setChatSpeak();
     }
     ctx.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
   });
+  ipcMain.handle('get-runtime-status', () => getAppContext().lifecycle.snapshot);
 
-  // Forward LLM events to all renderer windows
   const bus: MessageBus = getAppContext().bus;
-  forwardToRenderers(bus, 'llm:chunk');
-  forwardToRenderers(bus, 'llm:done');
-  forwardToRenderers(bus, 'llm:error');
-  forwardToRenderers(bus, 'storage:degraded');
+  const unsubscribers = [
+    forwardToRenderers(bus, 'llm:chunk'),
+    forwardToRenderers(bus, 'llm:done'),
+    forwardToRenderers(bus, 'llm:error'),
+    forwardToRenderers(bus, 'storage:degraded'),
+  ];
 
-  // ── Performance timing collector ──
+  const runtimeUnsubscribe = getAppContext().lifecycle.subscribe((snapshot) => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) win.webContents.send('runtime-status', snapshot);
+  });
+
   let perfStart = 0;
   let perfData: Record<string, unknown> = {};
-
-  bus.on('perf:timing', (msg) => {
+  unsubscribers.push(bus.on('perf:timing', (msg) => {
     const { label, ms, meta } = msg.data;
     if (!perfStart) perfStart = Date.now();
     perfData[`${label}Ms`] = ms;
     if (meta) Object.assign(perfData, meta);
     if (label === 'router') perfData.usedWorker = false;
     if (label === 'worker') perfData.usedWorker = true;
-  });
+  }));
 
-  const logPerf = () => {
+  const logPerf = (): void => {
     if (!perfStart) return;
-    const msKeys = Object.keys(perfData).filter(k => k.endsWith('Ms'));
-    const totalMs = msKeys.reduce((sum, k) => sum + (perfData[k] as number), 0);
-    console.log('\n[⏱ Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
+    const msKeys = Object.keys(perfData).filter((key) => key.endsWith('Ms'));
+    const totalMs = msKeys.reduce((sum, key) => sum + (perfData[key] as number), 0);
+    console.log('\n[Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
     perfStart = 0;
     perfData = {};
   };
-
-  bus.on('voice:done', logPerf);
-  // Chat-only mode (no voice) — log on llm:done if no whisper was involved
-  bus.on('llm:done', () => {
+  unsubscribers.push(bus.on('voice:done', logPerf));
+  unsubscribers.push(bus.on('llm:done', () => {
     if (!perfData.whisperMs) logPerf();
-  });
+  }));
 
-  ipcMain.once('boot-done', () => {
+  const onBootDone = (): void => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const targetW = Math.round(screenH * 0.3);
     const targetH = Math.round(screenH * 0.33);
-    const targetX = 0;
-    const targetY = 0;
-
     const startBounds = mainWindow.getBounds();
-    const duration = 1500;
     const startTime = Date.now();
-
     mainWindow.webContents.send('transition-start');
 
-    const interval = setInterval(() => {
+    transitionInterval = setInterval(() => {
       const win = getMainWindow();
       if (!win || win.isDestroyed()) {
-        clearInterval(interval);
+        if (transitionInterval) clearInterval(transitionInterval);
+        transitionInterval = null;
         return;
       }
-      const elapsed = Date.now() - startTime;
-      const p = Math.min(elapsed / duration, 1);
-      const eased = 1 - Math.pow(1 - p, 3);
-
+      const progress = Math.min((Date.now() - startTime) / 1_500, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
       win.setBounds({
-        x: Math.round(startBounds.x + (targetX - startBounds.x) * eased),
-        y: Math.round(startBounds.y + (targetY - startBounds.y) * eased),
+        x: Math.round(startBounds.x * (1 - eased)),
+        y: Math.round(startBounds.y * (1 - eased)),
         width: Math.round(startBounds.width + (targetW - startBounds.width) * eased),
         height: Math.round(startBounds.height + (targetH - startBounds.height) * eased),
       });
-
-      if (p >= 1) clearInterval(interval);
+      if (progress >= 1 && transitionInterval) {
+        clearInterval(transitionInterval);
+        transitionInterval = null;
+      }
     }, 16);
-  });
+  };
+  ipcMain.once('boot-done', onBootDone);
+
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    if (transitionInterval) clearInterval(transitionInterval);
+    transitionInterval = null;
+    if (revealTimeout) clearTimeout(revealTimeout);
+    revealTimeout = null;
+    revealResolver?.();
+    revealResolver = null;
+    for (const pending of pendingDelays) {
+      clearTimeout(pending.timer);
+      pending.resolve();
+    }
+    pendingDelays.clear();
+    ipcMain.removeListener('boot-ready', onBootReady);
+    ipcMain.removeListener('splash-done', onSplashDone);
+    ipcMain.removeListener('wizard-done', onWizardDone);
+    ipcMain.removeListener('boot-done', onBootDone);
+    ipcMain.removeHandler('splash-tts');
+    ipcMain.removeHandler('chat-message');
+    ipcMain.removeHandler('get-runtime-status');
+    for (const unsubscribe of unsubscribers) unsubscribe();
+    runtimeUnsubscribe();
+  };
 }

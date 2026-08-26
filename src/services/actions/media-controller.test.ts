@@ -49,6 +49,24 @@ describe('WindowsMediaController', () => {
     expect(await c.next('')).toEqual({ ok: false, speak: 'Das hat gerade nicht geklappt.' });
   });
 
+  it('propagates shutdown abort to the helper runner', async () => {
+    let helperSignal: AbortSignal | undefined;
+    const run = vi.fn<HelperRunner>((_request, signal) => {
+      helperSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('helper aborted')), { once: true });
+      });
+    });
+    const c = controller({ run });
+    const abort = new AbortController();
+
+    const running = c.next('', abort.signal);
+    abort.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    expect(helperSignal?.aborted).toBe(true);
+  });
+
   it('non-win32 → unsupported, never runs the helper', async () => {
     const run = vi.fn<HelperRunner>();
     const c = controller({ run, platform: 'linux' });

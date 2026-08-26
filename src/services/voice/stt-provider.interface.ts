@@ -5,11 +5,11 @@ export interface SttProvider {
   readonly id: string;
 
   /** Initialize the provider (verify binary exists, load model) */
-  init(): Promise<void>;
+  init(signal?: AbortSignal): Promise<void>;
 
   /** Transcribe PCM audio to text. Language is a BCP-47 code like 'de' or 'en'. */
   transcribe(audio: Float32Array, sampleRate: number, language?: string): Promise<string>;
 
   /** Clean up resources */
-  destroy(): Promise<void>;
+  destroy(signal?: AbortSignal): Promise<void>;
 }

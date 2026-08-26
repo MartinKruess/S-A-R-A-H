@@ -37,7 +37,30 @@ describe('VramManager', () => {
 
     it('does not throw on fetch error', async () => {
       mockFetch.mockRejectedValue(new Error('connection refused'));
-      await expect(manager.unloadModel('phi4-mini:3.8b')).resolves.toBeUndefined();
+      await expect(manager.unloadModel('phi4-mini:3.8b')).resolves.toBe(false);
+    });
+  });
+
+  describe('waitForModel', () => {
+    it('matches the explicitly configured model tag', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          models: [{ model: 'qwen3:8b', size_vram: 1 }],
+        }),
+      });
+
+      await expect(manager.waitForModel('qwen3:8b', 1, 0)).resolves.toBe(true);
+    });
+
+    it('returns false after bounded unsuccessful checks', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ models: [] }),
+      });
+
+      await expect(manager.waitForModel('missing:1b', 2, 0)).resolves.toBe(false);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 

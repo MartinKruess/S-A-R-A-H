@@ -15,6 +15,7 @@ import {
   randomState,
   refreshTokens,
 } from './oauth-pkce.js';
+import { abortError, throwIfAborted } from '../../core/abort-utils.js';
 
 type FetchFn = typeof fetch;
 
@@ -53,6 +54,9 @@ export class OAuthConnectionService {
   private redirectPort: number;
   /** Provider ids with a connect flow in progress — prevents a second loopback bind. */
   private readonly connecting = new Set<string>();
+  /** Active loopback flows, cancelled during application shutdown. */
+  private readonly activeConnections = new Map<string, (error: Error) => Promise<void>>();
+  private destroyed = false;
 
   constructor(deps: OAuthConnectionServiceDeps) {
     this.providers = deps.providers;
@@ -97,7 +101,8 @@ export class OAuthConnectionService {
    * the expiry skew. Missing token, unconfigured provider (empty clientId), or a
    * failed refresh → null (a failed refresh also disconnects the provider).
    */
-  async getAccessToken(id: string): Promise<string | null> {
+  async getAccessToken(id: string, signal?: AbortSignal): Promise<string | null> {
+    throwIfAborted(signal);
     const p = this.provider(id);
     if (!p || !p.clientId) return null;
 
@@ -109,7 +114,7 @@ export class OAuthConnectionService {
     }
 
     try {
-      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn);
+      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn, signal);
       const updated: StoredToken = {
         // Keep the existing refresh token unless the response rotated it.
         refreshToken: tokens.refreshToken ?? stored.refreshToken,
@@ -120,6 +125,7 @@ export class OAuthConnectionService {
       this.tokenStore.set(id, updated);
       return updated.accessToken;
     } catch (err) {
+      if (signal?.aborted) throw abortError();
       console.warn(`[OAuth] refresh failed for '${id}', disconnecting:`, (err as Error).message);
       this.tokenStore.delete(id);
       return null;
@@ -136,6 +142,7 @@ export class OAuthConnectionService {
    * tokens. Rejects on state mismatch, timeout, or any error (server always closed).
    */
   async connect(id: string): Promise<void> {
+    if (this.destroyed) throw new Error('Die Anwendung wird beendet. Verbindung abgebrochen.');
     const p = this.provider(id);
     if (!p) throw new Error(`Unbekannter Dienst: ${id}`);
     if (!p.clientId) {
@@ -154,18 +161,29 @@ export class OAuthConnectionService {
       let settled = false;
       const server = http.createServer();
 
-      const finish = (err?: Error): void => {
+      const closeServer = (): Promise<void> => new Promise((closeResolve) => {
+        if (!server.listening) {
+          closeResolve();
+          return;
+        }
+        server.close(() => closeResolve());
+      });
+
+      const finish = async (err?: Error): Promise<void> => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        server.close();
         this.connecting.delete(id);
+        this.activeConnections.delete(id);
+        await closeServer();
         if (err) reject(err);
         else resolve();
       };
 
+      this.activeConnections.set(id, async (error) => finish(error));
+
       const timer = setTimeout(() => {
-        finish(new Error('Zeitüberschreitung bei der Verbindung — bitte erneut versuchen.'));
+        void finish(new Error('Zeitüberschreitung bei der Verbindung — bitte erneut versuchen.'));
       }, CONNECT_TIMEOUT_MS);
 
       server.on('error', (err: NodeJS.ErrnoException) => {
@@ -175,9 +193,9 @@ export class OAuthConnectionService {
           console.warn(
             `[OAuth] loopback port ${this.redirectPort} busy — set SPOTIFY_REDIRECT_PORT to a free port and register it in the provider dashboard.`,
           );
-          finish(new Error('Die Verbindung ließ sich gerade nicht starten. Bitte versuche es erneut.'));
+          void finish(new Error('Die Verbindung ließ sich gerade nicht starten. Bitte versuche es erneut.'));
         } else {
-          finish(err);
+          void finish(err);
         }
       });
 
@@ -215,19 +233,36 @@ export class OAuthConnectionService {
             });
 
             respond(200, SUCCESS_HTML);
-            finish();
+            await finish();
           } catch (err) {
             respond(400, '<!doctype html><meta charset="utf-8"><p>Verbindung fehlgeschlagen.</p>');
-            finish(err as Error);
+            await finish(err as Error);
           }
         })();
       });
 
       server.listen(this.redirectPort, '127.0.0.1', () => {
         Promise.resolve(this.openExternal(buildAuthorizeUrl(p, { redirectUri, state, challenge }))).catch(
-          (err: Error) => finish(err),
+          (err: Error) => { void finish(err); },
         );
       });
     });
+  }
+
+  /**
+   * Abort active loopback authorization flows and release their ports.
+   * Stored provider tokens remain untouched.
+   *
+   * @category External Integration
+   */
+  async destroy(): Promise<void> {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    const error = new Error('Die Anwendung wird beendet. Verbindung abgebrochen.');
+    await Promise.allSettled(
+      [...this.activeConnections.values()].map((cancel) => cancel(error)),
+    );
+    this.activeConnections.clear();
+    this.connecting.clear();
   }
 }

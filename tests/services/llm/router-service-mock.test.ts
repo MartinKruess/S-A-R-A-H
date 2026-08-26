@@ -77,7 +77,7 @@ describe('RouterService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    routerProvider = createMockProvider('router', '[ROUTE:self] Hallo Martin!');
+    routerProvider = createMockProvider('router', '[ROUTE:9b]');
     workerProvider = createMockProvider('worker', 'Ausführliche Antwort vom 9B Modell.');
     const mock = createMockContext();
     context = mock.context;
@@ -105,10 +105,10 @@ describe('RouterService', () => {
     expect(options).toMatchObject({ num_predict: 1, keep_alive: -1 });
   });
 
-  it('stays running when warmup fails (non-fatal)', async () => {
+  it('does not claim readiness when router warmup fails', async () => {
     (routerProvider.chat as any).mockRejectedValueOnce(new Error('ollama unreachable'));
     await service.init();
-    expect(service.status).toBe('running');
+    expect(service.status).toBe('error');
   });
 
   it('status is error after init when router provider not available', async () => {
@@ -130,50 +130,18 @@ describe('RouterService', () => {
     });
   });
 
-  describe('routing to self', () => {
-    it('emits feedback directly and stores messages in db', async () => {
-      await service.init();
-      (routerProvider.chat as any).mockClear();
-
-      const chunks: string[] = [];
-      const dones: string[] = [];
-      bus.on('llm:chunk', (msg) => chunks.push(msg.data.text));
-      bus.on('llm:done', (msg) => dones.push(msg.data.fullText));
-
-      await service.handleChatMessage('Hallo', 'chat');
-
-      // Router provider was called, worker was NOT called
-      expect(routerProvider.chat).toHaveBeenCalledTimes(1);
-      expect(workerProvider.chat).not.toHaveBeenCalled();
-
-      // Feedback emitted as chunk and done
-      expect(chunks).toContain('Hallo Martin!');
-      expect(dones).toEqual(['Hallo Martin!']);
-
-      // Messages stored in db (user + assistant) — filter out the
-      // ConversationStore's session-bootstrap insert into 'conversations'.
-      const insertCalls = (context.db.insert as any).mock.calls.filter(
-        (call: [string, Record<string, unknown>]) => call[0] === 'messages',
-      );
-      expect(insertCalls.length).toBe(2);
-      expect(insertCalls[0][1].role).toBe('user');
-      expect(insertCalls[1][1].role).toBe('assistant');
-      expect(insertCalls[1][1].content).toBe('Hallo Martin!');
-    });
-  });
-
   describe('routing to 9b', () => {
     beforeEach(() => {
       (routerProvider.chat as any).mockImplementation(
         async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
-          const response = '[ROUTE:9b] Moment, ich schaue genauer...';
+          const response = '[ROUTE:9b]';
           onChunk(response);
           return response;
         },
       );
     });
 
-    it('emits routing feedback then worker response', async () => {
+    it('emits a routing event without model prose and then the worker response', async () => {
       await service.init();
 
       const chunks: string[] = [];
@@ -188,9 +156,8 @@ describe('RouterService', () => {
       // Routing event emitted
       expect(routings.length).toBe(1);
       expect(routings[0]).toEqual({
-        from: '2b',
-        to: '9b',
-        feedback: 'Moment, ich schaue genauer...',
+        from: 'router',
+        to: 'local_worker',
       });
 
       // Worker response emitted
@@ -218,7 +185,7 @@ describe('RouterService', () => {
   });
 
   describe('no-tag fallback', () => {
-    it('treats response without tag as self', async () => {
+    it('falls back safely to the worker when the router returns prose', async () => {
       (routerProvider.chat as any).mockImplementation(
         async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
           const response = 'Hallo, wie kann ich helfen?';
@@ -234,10 +201,10 @@ describe('RouterService', () => {
 
       await service.handleChatMessage('Hallo', 'chat');
 
-      // Treated as self — no worker call
-      expect(workerProvider.chat).not.toHaveBeenCalled();
-      expect(dones).toEqual(['Hallo, wie kann ich helfen?']);
-      expect(service.activeModel).toBe('2b');
+      expect(workerProvider.chat).toHaveBeenCalledTimes(1);
+      expect(dones).toEqual(['Ausführliche Antwort vom 9B Modell.']);
+      expect(dones).not.toContain('Hallo, wie kann ich helfen?');
+      expect(service.activeModel).toBe('9b');
     });
   });
 
@@ -246,7 +213,7 @@ describe('RouterService', () => {
       vi.useFakeTimers();
       (routerProvider.chat as any).mockImplementation(
         async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
-          const response = '[ROUTE:9b] Moment...';
+          const response = '[ROUTE:9b]';
           onChunk(response);
           return response;
         },
@@ -294,7 +261,7 @@ describe('RouterService', () => {
     function route9b(): void {
       (routerProvider.chat as any).mockImplementation(
         async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
-          const response = '[ROUTE:9b] Moment, ich schaue genauer...';
+          const response = '[ROUTE:9b]';
           onChunk(response);
           return response;
         },
@@ -316,7 +283,14 @@ describe('RouterService', () => {
     });
 
     it('emits a switchingBack filler on the 9B→2B gate in voice mode', async () => {
-      await service.init(); // default router response is [ROUTE:self]
+      await service.init();
+      (routerProvider.chat as any).mockImplementation(
+        async (_msgs: ChatMessage[], onChunk: (t: string) => void) => {
+          const response = '[ACTION:open_program:spotify]';
+          onChunk(response);
+          return response;
+        },
+      );
       service.activeModel = '9b';
 
       const fillers: string[] = [];
@@ -381,8 +355,8 @@ describe('RouterService', () => {
 
   describe('error handling', () => {
     it('emits llm:error when provider throws', async () => {
-      (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));
       await service.init();
+      (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));
 
       const errors: string[] = [];
       bus.on('llm:error', (msg) => errors.push(msg.data.message));

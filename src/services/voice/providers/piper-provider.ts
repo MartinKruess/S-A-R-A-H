@@ -21,7 +21,7 @@ export class PiperProvider implements TtsProvider {
   private initPromise: Promise<void> | null = null;
 
   // init() is single-flight (A8): repeated calls return the same promise.
-  init(): Promise<void> {
+  init(_signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) {
       this.initPromise = this.doInit();
     }

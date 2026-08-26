@@ -39,6 +39,17 @@ describe('SandboxBrowser.fetchPageHtml', () => {
     expect(windows).toHaveLength(0);
   });
 
+  it('rejects an already-aborted search before creating a browser window', async () => {
+    const { browser, windows } = makeBrowser();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(browser.fetchPageHtml('https://example.com/', controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(windows).toHaveLength(0);
+  });
+
   it('clears storage, loads, and returns the page html on did-finish-load', async () => {
     const { browser, windows } = makeBrowser();
     const p = browser.fetchPageHtml('https://example.com/', new AbortController().signal);
@@ -150,5 +161,17 @@ describe('SandboxBrowser.show', () => {
     expect(windows).toHaveLength(2); // frisches Fenster
     windows[1].webContents.emit('did-finish-load');
     await expect(p2).resolves.toBe(true);
+  });
+
+  it('aborts an active stored-result display during shutdown', async () => {
+    const { browser, windows } = makeBrowser();
+    const controller = new AbortController();
+    const showing = browser.show('https://example.com/seite', controller.signal);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    controller.abort();
+
+    await expect(showing).rejects.toMatchObject({ name: 'AbortError' });
+    expect(windows[0].webContents.stop).toHaveBeenCalled();
   });
 });

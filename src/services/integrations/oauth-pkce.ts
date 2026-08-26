@@ -69,11 +69,13 @@ async function postToken(
   tokenEndpoint: string,
   params: URLSearchParams,
   fetchFn: FetchFn,
+  signal?: AbortSignal,
 ): Promise<OAuthTokens> {
   const res = await fetchFn(tokenEndpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: params.toString(),
+    ...(signal ? { signal } : {}),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -107,11 +109,12 @@ export function refreshTokens(
   p: OAuthProvider,
   refreshToken: string,
   fetchFn: FetchFn = fetch,
+  signal?: AbortSignal,
 ): Promise<OAuthTokens> {
   const params = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
     client_id: p.clientId,
   });
-  return postToken(p.tokenEndpoint, params, fetchFn);
+  return postToken(p.tokenEndpoint, params, fetchFn, signal);
 }

@@ -13,10 +13,10 @@ export interface SarahService {
   readonly status: ServiceStatus;
 
   /** Initialize the service. Called once by the registry at startup. */
-  init(): Promise<void>;
+  init(signal?: AbortSignal): Promise<void>;
 
-  /** Shut down the service. Called once by the registry at shutdown. */
-  destroy(): Promise<void>;
+  /** Shut down the service. Implementations must be idempotent for late-init cleanup. */
+  destroy(signal?: AbortSignal): Promise<void>;
 
   /** Handle an incoming bus message. Called by the registry for subscribed topics. */
   onMessage(msg: TypedBusMessage): void;

@@ -4,6 +4,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import type { SttProvider } from '../stt-provider.interface.js';
 import { normalizeUtterance } from '../normalize-audio.js';
+import {
+  abortableDelay,
+  abortError,
+  linkAbortSignals,
+  runWithTimeout,
+  throwIfAborted,
+} from '../../../core/abort-utils.js';
 
 const SERVER_PORT = 8786;
 const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
@@ -14,6 +21,7 @@ export class FasterWhisperProvider implements SttProvider {
   readonly id = 'faster-whisper';
   private serverProcess: ChildProcess | null = null;
   private scriptPath: string;
+  private lifecycleAbort = new AbortController();
 
   constructor(private resourcesPath: string) {
     this.scriptPath = path.join(resourcesPath, 'whisper', 'faster-whisper-server.py');
@@ -22,14 +30,16 @@ export class FasterWhisperProvider implements SttProvider {
   private initPromise: Promise<void> | null = null;
 
   // init() is single-flight (A8): repeated calls return the same promise.
-  init(): Promise<void> {
+  init(signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit();
+      const linked = linkAbortSignals(signal, this.lifecycleAbort.signal);
+      this.initPromise = this.doInit(linked.signal).finally(() => linked.dispose());
     }
     return this.initPromise;
   }
 
-  private async doInit(): Promise<void> {
+  private async doInit(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     // Idempotency guard — skip if server is already running
     if (this.serverProcess) return;
 
@@ -39,9 +49,10 @@ export class FasterWhisperProvider implements SttProvider {
 
     // Kill any leftover server from a previous run
     try {
-      await fetch(`${SERVER_URL}/shutdown`, { method: 'POST' });
-      await new Promise((r) => setTimeout(r, 1000));
+      await fetch(`${SERVER_URL}/shutdown`, { method: 'POST', signal });
+      await abortableDelay(1000, signal);
     } catch {
+      throwIfAborted(signal);
       // No old server running — expected
     }
 
@@ -50,6 +61,7 @@ export class FasterWhisperProvider implements SttProvider {
     const spawnFailed = new Promise<never>((_, reject) => {
       rejectOnSpawnError = reject;
     });
+    let startupComplete = false;
 
     // Start the Python server process
     this.serverProcess = spawn('python', [
@@ -76,8 +88,33 @@ export class FasterWhisperProvider implements SttProvider {
       rejectOnSpawnError(new Error(`Failed to start faster-whisper (is Python in PATH?): ${err.message}`));
     });
 
-    // Wait for server to be ready, abort immediately if the process itself fails
-    await Promise.race([this.waitForServer(), spawnFailed]);
+    const processExited = new Promise<never>((_, reject) => {
+      this.serverProcess?.once('exit', (code, exitSignal) => {
+        this.serverProcess = null;
+        if (!startupComplete) {
+          const detail = exitSignal ? `signal ${exitSignal}` : `code ${code ?? 'unknown'}`;
+          reject(new Error(`faster-whisper exited before becoming ready (${detail})`));
+        }
+      });
+    });
+
+    const onAbort = (): void => {
+      this.serverProcess?.kill();
+      this.serverProcess = null;
+      rejectOnSpawnError(abortError('Faster Whisper startup aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      // Wait for server to be ready, abort immediately if the process itself fails.
+      await Promise.race([this.waitForServer(signal), spawnFailed, processExited]);
+      startupComplete = true;
+    } catch (error) {
+      await this.destroy();
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
   }
 
   async transcribe(audio: Float32Array, sampleRate: number, language = 'de'): Promise<string> {
@@ -105,29 +142,41 @@ export class FasterWhisperProvider implements SttProvider {
     }
   }
 
-  async destroy(): Promise<void> {
-    if (this.serverProcess) {
+  async destroy(signal?: AbortSignal): Promise<void> {
+    this.lifecycleAbort.abort();
+    const process = this.serverProcess;
+    this.serverProcess = null;
+    if (process) {
       try {
-        await fetch(`${SERVER_URL}/shutdown`, { method: 'POST' });
+        await runWithTimeout(
+          (cleanupSignal) => fetch(`${SERVER_URL}/shutdown`, {
+            method: 'POST',
+            signal: cleanupSignal,
+          }).then(() => undefined),
+          1_500,
+          'Faster Whisper graceful shutdown timed out',
+          signal,
+        );
       } catch {
         // Server may already be gone
+      } finally {
+        process.kill();
       }
-      this.serverProcess.kill();
-      this.serverProcess = null;
     }
   }
 
-  private async waitForServer(): Promise<void> {
+  private async waitForServer(signal?: AbortSignal): Promise<void> {
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
 
     while (Date.now() < deadline) {
       try {
-        const res = await fetch(`${SERVER_URL}/health`);
+        const res = await fetch(`${SERVER_URL}/health`, { signal });
         if (res.ok) return;
       } catch {
+        throwIfAborted(signal);
         // Server not ready yet
       }
-      await new Promise((r) => setTimeout(r, HEALTH_POLL_MS));
+      await abortableDelay(HEALTH_POLL_MS, signal);
     }
 
     throw new Error(`faster-whisper server did not start within ${STARTUP_TIMEOUT_MS / 1000}s`);

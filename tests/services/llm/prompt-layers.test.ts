@@ -95,7 +95,7 @@ describe('buildCoreUser', () => {
     expect(result).not.toContain('Developer');
   });
 
-  it('uses "User" when displayName is empty', () => {
+  it('marks a missing display name explicitly', () => {
     const profile: SarahConfig['profile'] = {
       displayName: '',
       lastName: '',
@@ -107,10 +107,10 @@ describe('buildCoreUser', () => {
       hobbies: [],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('User');
+    expect(result).toContain('preferred_name: not_provided');
   });
 
-  it('marks user info as background only', () => {
+  it('marks profile facts as authoritative but relevance-bound', () => {
     const profile: SarahConfig['profile'] = {
       displayName: 'Martin',
       lastName: '',
@@ -122,8 +122,8 @@ describe('buildCoreUser', () => {
       hobbies: ['Gaming'],
     };
     const result = buildCoreUser(profile);
-    expect(result).toContain('background info');
-    expect(result).toContain('Do NOT bring it up');
+    expect(result).toContain('authoritative current application state');
+    expect(result).toContain('only when the user asks for them or they are directly relevant');
   });
 });
 

@@ -4,9 +4,7 @@ import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import { buildSystemPrompt } from './prompt-builder.js';
-import { VramManager } from './vram-manager.js';
-import { RoutingService } from './routing-service.js';
-import { WorkerService } from './worker-service.js';
+import { ModelRuntime, type ModelRuntimePort } from './model-runtime.js';
 import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
 import { buildContextWindow } from './context-window.js';
 import { NUM_PREDICT_MAP } from './llm-types.js';
@@ -15,8 +13,10 @@ import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
 import { MediaContext } from './media-context.js';
 import type { MediaAction } from '../actions/media-controller.js';
-
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+import { getActionAcknowledgement } from '../actions/action-feedback.js';
+import { resolveProfileResponse } from './profile-response.js';
+import { resolveSlashCommand } from '../commands/slash-command-resolver.js';
+import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -28,13 +28,10 @@ export class RouterService implements SarahService {
   readonly id = 'router';
   readonly subscriptions = ['chat:message', 'action:result', 'action:notify'] as const;
   status: ServiceStatus = 'pending';
-  activeModel: '2b' | '9b' = '2b';
 
   private history: ChatMessage[] = [];
-  private vramManager: VramManager;
-  private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private routing: RoutingService;
-  private worker: WorkerService;
+  private modelRuntime: ModelRuntimePort;
+  private mediaContext: MediaContext;
   private conversationId: number = FALLBACK_CONVERSATION_ID;
   private startContext: ChatMessage[] = [];
   private persistenceWarned = false;
@@ -44,27 +41,50 @@ export class RouterService implements SarahService {
 
   constructor(
     private context: AppContext,
-    private routerProvider: LlmProvider,
-    workerProvider: LlmProvider,
-    private mediaContext: MediaContext = new MediaContext(),
+    runtimeOrRouterProvider: ModelRuntimePort | LlmProvider,
+    workerProviderOrMediaContext?: LlmProvider | MediaContext,
+    mediaContext: MediaContext = new MediaContext(),
   ) {
-    this.vramManager = new VramManager(context.parsedConfig.llm.baseUrl);
-    this.routing = new RoutingService(routerProvider);
-    this.worker = new WorkerService(workerProvider);
+    if ('generateWorkerText' in runtimeOrRouterProvider) {
+      this.modelRuntime = runtimeOrRouterProvider;
+      this.mediaContext = workerProviderOrMediaContext instanceof MediaContext
+        ? workerProviderOrMediaContext
+        : mediaContext;
+    } else {
+      if (!workerProviderOrMediaContext || workerProviderOrMediaContext instanceof MediaContext) {
+        throw new Error('RouterService requires a worker provider');
+      }
+      this.modelRuntime = new ModelRuntime({
+        config: context.parsedConfig.llm,
+        routerProvider: runtimeOrRouterProvider,
+        workerProvider: workerProviderOrMediaContext,
+        eagerLoadTransitions: false,
+      });
+      this.mediaContext = mediaContext;
+    }
+  }
+
+  /** Legacy UI/test alias; productive lifecycle state uses model roles. */
+  get activeModel(): '2b' | '9b' {
+    return this.modelRuntime.snapshot.activeRole === 'local_worker' ? '9b' : '2b';
+  }
+
+  set activeModel(value: '2b' | '9b') {
+    this.modelRuntime.assumeRole(value === '9b' ? 'local_worker' : 'router');
   }
 
   private initPromise: Promise<void> | null = null;
 
   // init() is single-flight (A8): repeated calls return the same promise,
   // so the eager boot call and registry.initAll() cannot double-initialize.
-  init(): Promise<void> {
+  init(signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit();
+      this.initPromise = this.doInit(signal);
     }
     return this.initPromise;
   }
 
-  private async doInit(): Promise<void> {
+  private async doInit(signal?: AbortSignal): Promise<void> {
     const boot = await new ConversationStore(this.context.db).boot();
     this.conversationId = boot.conversationId;
     this.startContext = boot.startContext.map((row) => ({
@@ -72,24 +92,24 @@ export class RouterService implements SarahService {
       content: row.content,
     }));
 
-    const available = await this.routerProvider.isAvailable();
-    if (!available) {
+    try {
+      await this.modelRuntime.init(signal);
+    } catch (err) {
+      console.error('[Router] Model runtime init failed:', err);
       this.status = 'error';
       return;
     }
-    // Warm router model into VRAM so the first real prompt doesn't pay cold-load cost.
-    // Failures are non-fatal — status stays 'running', first real call will retry.
-    await this.routing.warmup().catch((err) => {
-      console.warn('[Router] Warmup failed (non-fatal):', err);
-    });
     this.status = 'running';
   }
 
-  async destroy(): Promise<void> {
-    this.clearIdleTimer();
+  async destroy(signal?: AbortSignal): Promise<void> {
     this.pendingActions.clear();
     this.history = [];
-    this.status = 'stopped';
+    try {
+      await this.modelRuntime.destroy(signal);
+    } finally {
+      this.status = 'stopped';
+    }
   }
 
   onMessage(msg: TypedBusMessage): void {
@@ -134,12 +154,25 @@ export class RouterService implements SarahService {
       return;
     }
 
-    this.history.push({ role: 'user', content: text });
+    const command = resolveSlashCommand(
+      text,
+      this.context.parsedConfig.controls?.customCommands ?? [],
+    );
+    const effectiveText = command.kind === 'custom' ? command.expandedText : text;
+    const immediateResponse = command.kind === 'builtin_unavailable'
+      ? `Der Slash-Command ${command.command} ist noch nicht verfügbar.`
+      : command.kind === 'unknown'
+        ? `Diesen Slash-Command kenne ich nicht: ${command.command}.`
+        : null;
+
+    this.history.push({ role: 'user', content: effectiveText });
 
     // Claim this turn's slot synchronously (before any await) so a
     // concurrently racing action:result/action:notify (see
     // speakAfterCurrentTurn) waits for this turn instead of jumping ahead.
-    const thisTurn = this.runTurn(text, mode);
+    const thisTurn = immediateResponse
+      ? this.runDeterministicTurn(effectiveText, immediateResponse)
+      : this.runTurn(effectiveText, mode);
     this.turnInFlight = thisTurn;
     try {
       await thisTurn;
@@ -148,8 +181,19 @@ export class RouterService implements SarahService {
     }
   }
 
+  private async runDeterministicTurn(text: string, response: string): Promise<void> {
+    await this.persistMessage('user', text);
+    await this.emitAssistantResponse(response);
+  }
+
   private async runTurn(text: string, mode: 'chat' | 'voice'): Promise<void> {
     await this.persistMessage('user', text);
+
+    const profileResponse = resolveProfileResponse(text, this.context.parsedConfig.profile);
+    if (profileResponse) {
+      await this.emitAssistantResponse(profileResponse);
+      return;
+    }
 
     // MediaContext (Layer-1 terse follow-ups) — before any routing so it also
     // fires in the warm-9B window, where terse words bypass the gate.
@@ -164,37 +208,34 @@ export class RouterService implements SarahService {
     }
 
     try {
-      if (this.activeModel === '9b') {
+      if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
         if (looksLikeActionCommand(text)) {
-          // Gate (Spec §3): swap the worker out, let the router really decide.
-          const llmConfig = this.context.parsedConfig.llm;
           // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
           // routing target isn't known yet at swap start, so use a short/neutral
           // phrase; the real action announcement follows over the normal path.
           if (mode === 'voice') {
             this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('switchingBack') });
           }
-          await this.vramManager.swapModels(llmConfig.workerModel).catch((err) => {
-            console.warn('[Router] Gate swap failed (non-fatal, routing anyway):', err);
-          });
-          this.activeModel = '2b'; // R4-M1: before routeAndRespond; the 9b route re-sets it
-          this.clearIdleTimer();
           await this.routeAndRespond(text, mode);
         } else {
-          this.resetIdleTimer();
           await this.runWorker(mode);
         }
       } else {
         await this.routeAndRespond(text, mode);
       }
     } catch (err) {
+      if (this.isWorkerUnavailable()) {
+        await this.emitAssistantResponse(WORKER_UNAVAILABLE_MESSAGE);
+        return;
+      }
       const errorKey = err instanceof Error && err.message === 'timeout' ? 'timeout' : 'connection';
       this.context.bus.emit(this.id, 'llm:error', { message: ERROR_MESSAGES[errorKey] });
     }
   }
 
   private async routeAndRespond(text: string, mode: 'chat' | 'voice'): Promise<void> {
-    const result = await this.routing.route(text);
+    const result = await this.modelRuntime.route(text);
+    if (!this.isOperational()) return;
     this.context.bus.emit(this.id, 'perf:timing', { label: 'router', ms: result.tookMs });
 
     if (!result.hadTag) {
@@ -202,7 +243,7 @@ export class RouterService implements SarahService {
     }
 
     if (result.parsed.kind === 'action') {
-      const { action, param, feedback } = result.parsed;
+      const { action, param } = result.parsed;
       if (!isActionName(action)) {
         console.warn('[Router] Unknown action name, refusing:', action, 'raw param:', param);
         await this.emitAssistantResponse('Das kann ich noch nicht.');
@@ -212,40 +253,30 @@ export class RouterService implements SarahService {
       this.pendingActions.set(requestId, { action });
       this.context.bus.emit(this.id, 'action:request', { requestId, action, param });
       if (action.startsWith('media_')) this.mediaContext.record(action as MediaAction, Date.now());
-      await this.emitAssistantResponse(feedback);
-      return;
-    }
-
-    if (result.parsed.route === 'self') {
-      await this.emitAssistantResponse(result.parsed.feedback);
+      await this.emitAssistantResponse(getActionAcknowledgement(action, param));
       return;
     }
 
     // Routes: 9b, backend, extern, vision — all go to 9B for now
-    const busTarget = result.parsed.route === 'vision' ? '9b' as const : result.parsed.route;
+    const busTarget = result.parsed.route === 'backend' || result.parsed.route === 'extern'
+      ? result.parsed.route
+      : 'local_worker' as const;
     this.context.bus.emit(this.id, 'llm:routing', {
-      from: '2b',
+      from: 'router',
       to: busTarget,
-      feedback: result.parsed.feedback,
     });
 
-    const llmConfig = this.context.parsedConfig.llm;
     // Bridge the 2B→9B swap pause with a spoken filler (voice only), emitted
     // before awaiting the swap so TTS synthesis fills the load time. The real
     // worker answer follows over the normal path.
     if (mode === 'voice') {
       this.context.bus.emit(this.id, 'llm:filler', { text: getFeedback('frontendThinking') });
     }
-    await this.vramManager.swapModels(llmConfig.routerModel).catch((err) => {
-      console.warn('[Router] Swap failed (non-fatal, worker call proceeds):', err);
-    });
     this.context.bus.emit(this.id, 'llm:model-swap', {
-      loading: llmConfig.workerModel,
-      unloading: llmConfig.routerModel,
+      loading: this.context.parsedConfig.llm.workerModel,
+      unloading: this.context.parsedConfig.llm.routerModel,
     });
 
-    this.activeModel = '9b';
-    this.resetIdleTimer();
     await this.runWorker(mode);
   }
 
@@ -257,9 +288,12 @@ export class RouterService implements SarahService {
     // The whole stream is ONE queue job: late action results wait, chunks never interleave.
     await this.enqueueOutput(async () => {
       if (this.status !== 'running') return;
-      const { fullText, tookMs } = await this.worker.stream(messages, responseStyle, (chunk) => {
-        this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
+      const { fullText, tookMs } = await this.modelRuntime.streamWorker(messages, responseStyle, (chunk) => {
+        if (this.isOperational()) {
+          this.context.bus.emit(this.id, 'llm:chunk', { text: chunk });
+        }
       });
+      if (!this.isOperational()) return;
       this.context.bus.emit(this.id, 'perf:timing', { label: 'worker', ms: tookMs });
       this.history.push({ role: 'assistant', content: fullText });
       await this.persistMessage('assistant', fullText);
@@ -269,10 +303,11 @@ export class RouterService implements SarahService {
 
   /** Serialize every assistant output; a failed job never blocks the queue. */
   private enqueueOutput(job: () => Promise<void>): Promise<void> {
-    this.outputQueue = this.outputQueue.then(job).catch((err) => {
+    const currentJob = this.outputQueue.then(job);
+    this.outputQueue = currentJob.catch((err) => {
       console.warn('[Router] Output job failed:', err);
     });
-    return this.outputQueue;
+    return currentJob;
   }
 
   /**
@@ -329,24 +364,16 @@ export class RouterService implements SarahService {
     });
   }
 
-  private resetIdleTimer(): void {
-    this.clearIdleTimer();
-    this.idleTimer = setTimeout(async () => {
-      const llmConfig = this.context.parsedConfig.llm;
-      await this.vramManager.unloadModel(llmConfig.workerModel);
-      this.activeModel = '2b';
-      // Router was unloaded during the swap to worker — re-warm it so the
-      // next prompt doesn't pay another cold-load.
-      await this.routing.warmup().catch((err) => {
-        console.warn('[Router] Re-warmup after idle swap failed:', err);
-      });
-    }, IDLE_TIMEOUT_MS);
+  private isOperational(): boolean {
+    const lifecycleState = this.context.lifecycle?.snapshot.state;
+    return this.status === 'running'
+      && lifecycleState !== 'stopping'
+      && lifecycleState !== 'stopped';
   }
 
-  private clearIdleTimer(): void {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
+  private isWorkerUnavailable(): boolean {
+    const worker = this.modelRuntime.snapshot.roles.local_worker;
+    return worker.availability !== 'available' || worker.residency === 'error';
   }
+
 }

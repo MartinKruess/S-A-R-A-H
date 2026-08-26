@@ -178,8 +178,10 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
       const prompt = promptInput.value.trim();
       if (!cmd || !prompt) return;
       if (!cmd.startsWith('/')) cmd = '/' + cmd;
-      if (BUILTIN_COMMANDS.some(b => b.command === cmd)) return;
-      if (customCmds.some(c => c.command === cmd)) return;
+      cmd = cmd.toLowerCase();
+      if (!/^\/[a-z0-9_-]{1,50}$/i.test(cmd)) return;
+      if (BUILTIN_COMMANDS.some(b => b.command.toLowerCase() === cmd)) return;
+      if (customCmds.some(c => c.command.trim().toLowerCase() === cmd)) return;
       customCmds.push({ command: cmd, prompt });
       controls.customCommands = customCmds;
       save('controls', controls);

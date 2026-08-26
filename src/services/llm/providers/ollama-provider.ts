@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatOptions, LlmProvider } from '../llm-provider.interface.js';
 import type { OllamaOptions } from '../llm-types.js';
+import { linkAbortSignals, throwIfAborted } from '../../../core/abort-utils.js';
 
 export class OllamaProvider implements LlmProvider {
   readonly id = 'ollama';
@@ -10,15 +11,29 @@ export class OllamaProvider implements LlmProvider {
     private options?: OllamaOptions,
   ) {}
 
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(signal?: AbortSignal): Promise<boolean> {
+    const controller = new AbortController();
+    const linked = linkAbortSignals(signal, controller.signal);
+    const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
-      const res = await fetch(`${this.baseUrl}/api/tags`);
+      const res = await fetch(`${this.baseUrl}/api/tags`, { signal: linked.signal });
       if (!res.ok) return false;
       const data = (await res.json()) as { models: { name: string }[] };
-      const base = this.model.split(':')[0];
-      return data.models.some((m) => m.name.split(':')[0] === base);
+      const requested = this.model.toLowerCase();
+      const hasExplicitTag = requested.includes(':');
+      const requestedBase = requested.split(':')[0];
+      return data.models.some((entry) => {
+        const available = entry.name.toLowerCase();
+        return hasExplicitTag
+          ? available === requested
+          : available.split(':')[0] === requestedBase;
+      });
     } catch {
+      throwIfAborted(signal);
       return false;
+    } finally {
+      clearTimeout(timeout);
+      linked.dispose();
     }
   }
 

@@ -7,8 +7,14 @@ import type { TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
 import type { AudioManager } from './audio-manager.js';
 import type { HotkeyManager } from './hotkey-manager.js';
+import {
+  CHAT_UNAVAILABLE_MESSAGE,
+  STT_UNAVAILABLE_MESSAGE,
+  isChatAvailable,
+} from '../../core/chat-availability.js';
 import { SentenceBuffer } from './sentence-buffer.js';
 import { TtsQueue } from './tts-queue.js';
+import { throwIfAborted } from '../../core/abort-utils.js';
 import {
   type VoiceState,
   type VoiceMode,
@@ -104,8 +110,19 @@ export class VoiceService implements SarahService {
   }
 
   private capabilities = { stt: false, tts: false };
+  private initPromise: Promise<void> | null = null;
 
-  async init(): Promise<void> {
+  get capabilitySnapshot(): Readonly<{ stt: boolean; tts: boolean }> {
+    return { ...this.capabilities };
+  }
+
+  init(signal?: AbortSignal): Promise<void> {
+    if (!this.initPromise) this.initPromise = this.doInit(signal);
+    return this.initPromise;
+  }
+
+  private async doInit(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
     const { controls } = this.context.parsedConfig;
     const rawMode = controls.voiceMode;
     // keyword mode is non-functional — treat as off
@@ -115,19 +132,36 @@ export class VoiceService implements SarahService {
     // STT and TTS are independent capabilities (A5): one failing must not
     // silently kill the other — degrade instead of dying.
     try {
-      await this.stt.init();
+      await this.stt.init(signal);
       this.capabilities.stt = true;
+      this.context.lifecycle?.setCapability('stt', 'ready');
     } catch (err) {
+      await this.cleanupFailedProvider('STT', () => this.stt.destroy());
+      throwIfAborted(signal);
       console.error('[VoiceService] STT init failed:', err);
+      this.context.lifecycle?.setCapability(
+        'stt',
+        'unavailable',
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
     try {
-      await this.tts.init();
+      await this.tts.init(signal);
       this.capabilities.tts = true;
+      this.context.lifecycle?.setCapability('tts', 'ready');
     } catch (err) {
+      await this.cleanupFailedProvider('TTS', () => this.tts.destroy());
+      throwIfAborted(signal);
       console.error('[VoiceService] TTS init failed:', err);
+      this.context.lifecycle?.setCapability(
+        'tts',
+        'unavailable',
+        err instanceof Error ? err.message : String(err),
+      );
     }
 
+    throwIfAborted(signal);
     this.setupMode();
 
     if (this.capabilities.tts) {
@@ -160,10 +194,19 @@ export class VoiceService implements SarahService {
     this.status = this.capabilities.stt || this.capabilities.tts ? 'running' : 'error';
   }
 
-  async destroy(): Promise<void> {
-    this.playbackUnsub?.();
+  async destroy(signal?: AbortSignal): Promise<void> {
+    const syncFailures: unknown[] = [];
+    const attempt = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (value) {
+        syncFailures.push(value);
+      }
+    };
+
+    attempt(() => this.playbackUnsub?.());
     this.playbackUnsub = null;
-    this.ttsQueue?.stop();
+    attempt(() => this.ttsQueue?.stop());
     this.ttsQueue = null;
     this.sentenceBuffer.reset();
     this.llmStreaming = false;
@@ -172,21 +215,40 @@ export class VoiceService implements SarahService {
     this.transitioning = false;
     this.clearConversationTimer();
     this.clearSilenceTimer();
-    this.hotkey.unregister();
-    this.wakeWord.stop();
+    attempt(() => this.hotkey.destroy());
+    attempt(() => this.wakeWord.stop());
 
     if (this.audio.isRecording) {
-      this.audio.stopRecording();
+      attempt(() => { this.audio.stopRecording(); });
     }
 
-    await this.stt.destroy();
-    await this.tts.destroy();
-    await this.wakeWord.destroy();
-    await this.audio.destroy();
+    const cleanupResults = await Promise.allSettled([
+      Promise.resolve().then(() => this.stt.destroy(signal)),
+      Promise.resolve().then(() => this.tts.destroy(signal)),
+      Promise.resolve().then(() => this.wakeWord.destroy(signal)),
+      Promise.resolve().then(() => this.audio.destroy()),
+    ]);
 
     this.setState('idle');
     this.conversationActive = false;
     this.status = 'stopped';
+    const failures = cleanupResults.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (syncFailures.length > 0 || failures.length > 0) {
+      throw new AggregateError(
+        [...syncFailures, ...failures.map((failure) => failure.reason)],
+        'Voice provider cleanup failed',
+      );
+    }
+  }
+
+  private async cleanupFailedProvider(label: string, cleanup: () => Promise<void>): Promise<void> {
+    try {
+      await cleanup();
+    } catch (error) {
+      console.warn(`[VoiceService] ${label} partial-init cleanup failed:`, error);
+    }
   }
 
   /** Feed an audio chunk from the renderer. Called by IPC handler. */
@@ -328,14 +390,31 @@ export class VoiceService implements SarahService {
     if (this._voiceState === 'speaking') {
       this.interrupt();
       this.transitioning = false;
+      if (!this.canAcceptConversation()) {
+        this.rejectUnavailableConversation();
+        return;
+      }
+      if (!this.capabilities.stt) {
+        this.rejectUnavailableVoiceInput();
+        return;
+      }
       this.startListening();
       return;
     }
     if (this.transitioning) return;
+    if (!this.canAcceptConversation()) {
+      this.rejectUnavailableConversation();
+      return;
+    }
+    if (!this.capabilities.stt) {
+      this.rejectUnavailableVoiceInput();
+      return;
+    }
     this.startListening();
   }
 
   onPttUp(): void {
+    if (this._voiceState !== 'listening') return;
     this.transition(() => this.stopListeningAndProcess()).catch(() => {
       this.context.bus.emit(this.id, 'voice:error', { message: 'Processing failed' });
     });
@@ -348,6 +427,16 @@ export class VoiceService implements SarahService {
 
     if (this._voiceState === 'speaking') {
       this.interrupt();
+    }
+
+    if (!this.canAcceptConversation()) {
+      this.rejectUnavailableConversation();
+      return;
+    }
+
+    if (!this.capabilities.stt) {
+      this.rejectUnavailableVoiceInput();
+      return;
     }
 
     this.wakeWord.stop();
@@ -399,6 +488,11 @@ export class VoiceService implements SarahService {
 
     this.context.bus.emit(this.id, 'voice:transcript', { text: transcript });
 
+    if (!this.canAcceptConversation()) {
+      this.context.bus.emit(this.id, 'llm:error', { message: CHAT_UNAVAILABLE_MESSAGE });
+      return;
+    }
+
     if (isAbortPhrase(transcript)) {
       this.endConversation();
       return;
@@ -411,6 +505,23 @@ export class VoiceService implements SarahService {
 
     // Emit chat message for LLM processing
     this.context.bus.emit(this.id, 'chat:message', { text: transcript, mode: 'voice' });
+  }
+
+  private canAcceptConversation(): boolean {
+    return this.context.lifecycle ? isChatAvailable(this.context.lifecycle.snapshot) : true;
+  }
+
+  private rejectUnavailableConversation(): void {
+    this.setState('idle');
+    this.context.bus.emit(this.id, 'llm:error', { message: CHAT_UNAVAILABLE_MESSAGE });
+  }
+
+  private rejectUnavailableVoiceInput(): void {
+    this.setState('idle');
+    this.context.bus.emit(this.id, 'voice:error', { message: STT_UNAVAILABLE_MESSAGE });
+    if (this.capabilities.tts && this.interactionMode !== 'chat') {
+      this.ttsQueue?.enqueue(STT_UNAVAILABLE_MESSAGE);
+    }
   }
 
   private interrupt(): void {

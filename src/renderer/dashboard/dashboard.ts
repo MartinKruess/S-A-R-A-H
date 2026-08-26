@@ -6,6 +6,13 @@ import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
+import {
+  CHAT_UNAVAILABLE_MESSAGE,
+  STT_UNAVAILABLE_MESSAGE,
+  TTS_UNAVAILABLE_MESSAGE,
+  WORKER_UNAVAILABLE_MESSAGE,
+  isChatAvailable,
+} from '../../core/chat-availability.js';
 
 declare const sarah: SarahApi;
 
@@ -36,6 +43,69 @@ const sarahArea = document.getElementById('sarah-area')!;
 const chatMessages = document.getElementById('chat-messages')!;
 const chatInput = document.getElementById('chat-input') as HTMLInputElement;
 const chatModeToggle = document.getElementById('chat-mode-toggle')!;
+let runtimeErrorBubble: HTMLElement | null = null;
+let workerWarningBubble: HTMLElement | null = null;
+let sttWarningBubble: HTMLElement | null = null;
+let ttsWarningBubble: HTMLElement | null = null;
+
+function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeStatus']>>): void {
+  const available = isChatAvailable(snapshot);
+  chatInput.disabled = !available;
+  chatInput.placeholder = chatInput.disabled
+    ? 'Sarah ist derzeit nicht verfügbar'
+    : 'Nachricht an Sarah...';
+
+  const router = snapshot.capabilities.router;
+  const routerFailed = router && ['degraded', 'unavailable', 'error'].includes(router.state);
+  if (!available && routerFailed) {
+    const detail = router.message ? ` ${router.message}` : '';
+    const message = `${CHAT_UNAVAILABLE_MESSAGE}${detail}`;
+    if (!runtimeErrorBubble) runtimeErrorBubble = addBubble('error', message);
+    else runtimeErrorBubble.textContent = message;
+  } else if (runtimeErrorBubble) {
+    runtimeErrorBubble.remove();
+    runtimeErrorBubble = null;
+  }
+
+  const worker = snapshot.capabilities.local_worker;
+  const workerFailed = worker && ['degraded', 'unavailable', 'error'].includes(worker.state);
+  if (available && workerFailed) {
+    if (!workerWarningBubble) {
+      workerWarningBubble = addBubble('error', WORKER_UNAVAILABLE_MESSAGE);
+    }
+  } else if (workerWarningBubble) {
+    workerWarningBubble.remove();
+    workerWarningBubble = null;
+  }
+
+  const stt = snapshot.capabilities.stt;
+  const sttFailed = stt && ['degraded', 'unavailable', 'error'].includes(stt.state);
+  if (available && sttFailed) {
+    if (!sttWarningBubble) {
+      sttWarningBubble = addBubble('error', STT_UNAVAILABLE_MESSAGE);
+    }
+  } else if (sttWarningBubble) {
+    sttWarningBubble.remove();
+    sttWarningBubble = null;
+  }
+
+  const tts = snapshot.capabilities.tts;
+  const ttsFailed = tts && ['degraded', 'unavailable', 'error'].includes(tts.state);
+  if (available && ttsFailed) {
+    if (!ttsWarningBubble) {
+      ttsWarningBubble = addBubble('error', TTS_UNAVAILABLE_MESSAGE);
+    }
+  } else if (ttsWarningBubble) {
+    ttsWarningBubble.remove();
+    ttsWarningBubble = null;
+  }
+}
+
+void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
+  console.warn('[Dashboard] Runtime status unavailable:', error);
+  chatInput.disabled = true;
+});
+sarah.onRuntimeStatus(applyRuntimeStatus);
 
 let chatMode = false;
 let currentBubble: HTMLElement | null = null;
@@ -104,6 +174,14 @@ sarah.onStorageDegraded((data) => {
 sarah.voice.onTranscript((data) => {
   addBubble('user', data.text);
   currentBubble = addBubble('assistant', '');
+});
+
+sarah.voice.onError((data) => {
+  if (data.message === STT_UNAVAILABLE_MESSAGE && sttWarningBubble) {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return;
+  }
+  addBubble('error', data.message);
 });
 
 // ── Voice Audio Bridge ──

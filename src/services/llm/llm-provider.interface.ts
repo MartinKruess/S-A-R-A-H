@@ -18,7 +18,7 @@ export interface LlmProvider {
   readonly id: string;
 
   /** Check if the provider is reachable and the model is available */
-  isAvailable(): Promise<boolean>;
+  isAvailable(signal?: AbortSignal): Promise<boolean>;
 
   /**
    * Send messages to the LLM and stream the response.

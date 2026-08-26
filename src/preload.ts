@@ -3,6 +3,7 @@ import type { SarahApi, BootStatus } from './core/sarah-api.js';
 import type { SystemMetrics, VoiceLevel } from './core/ipc-contract.js';
 import type { AudioConfig } from './core/config-schema.js';
 import type { VoiceState } from './services/voice/voice-types.js';
+import type { RuntimeSnapshot } from './core/app-lifecycle-controller.js';
 
 const api: SarahApi = {
   version: process.versions.electron,
@@ -40,6 +41,12 @@ const api: SarahApi = {
     return () => ipcRenderer.removeListener('audio-config-changed', handler);
   },
   getConfig: () => ipcRenderer.invoke('get-config'),
+  getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),
+  onRuntimeStatus: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: RuntimeSnapshot) => callback(data);
+    ipcRenderer.on('runtime-status', handler);
+    return () => ipcRenderer.removeListener('runtime-status', handler);
+  },
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),

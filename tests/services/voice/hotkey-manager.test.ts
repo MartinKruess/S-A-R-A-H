@@ -6,6 +6,7 @@ const mockUIOhook = vi.hoisted(() => ({
   on: vi.fn(),
   off: vi.fn(),
   start: vi.fn(),
+  stop: vi.fn(),
 }));
 
 vi.mock('uiohook-napi', () => ({
@@ -144,5 +145,15 @@ describe('HotkeyManager', () => {
 
   it('is safe to unregister when nothing registered', () => {
     expect(() => manager.unregister()).not.toThrow();
+  });
+
+  it('destroy stops the native hook and allows a later clean start', () => {
+    manager.register('F9', vi.fn(), vi.fn());
+
+    manager.destroy();
+    manager.register('F10', vi.fn(), vi.fn());
+
+    expect(mockUIOhook.stop).toHaveBeenCalledOnce();
+    expect(mockUIOhook.start).toHaveBeenCalledTimes(2);
   });
 });

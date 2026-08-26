@@ -99,7 +99,7 @@ describe('ProgramLauncher.launch', () => {
     const launcher2 = new ProgramLauncher(vi.fn().mockReturnValue(child), vi.fn());
     const resultP = launcher2.launch('epic', PROGRAMS);
     setTimeout(() => child.emit('spawn'), 5);
-    expect((await resultP).speak).toBe('Ich starte den Launcher von Epic Games Launcher.');
+    expect(await resultP).toEqual({ ok: true });
   });
 
   it('appx: ignores a non-zero explorer exit when the process is actually running (the false-negative bug)', async () => {
@@ -120,6 +120,19 @@ describe('ProgramLauncher.launch', () => {
     const result = await launcher.launch('spotify', PROGRAMS);
     expect(result.ok).toBe(false);
     expect(result.speak).toContain('Spotify');
+  });
+
+  it('aborts AppX verification during application shutdown', async () => {
+    const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) => cb(null));
+    const verify = vi.fn().mockResolvedValue(true);
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 10_000);
+    const controller = new AbortController();
+
+    const launching = launcher.launch('spotify', PROGRAMS, controller.signal);
+    controller.abort();
+
+    await expect(launching).rejects.toMatchObject({ name: 'AbortError' });
+    expect(verify).not.toHaveBeenCalled();
   });
 
   it('appx without a known process name stays optimistic instead of a false failure', async () => {

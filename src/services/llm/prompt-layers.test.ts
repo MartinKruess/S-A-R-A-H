@@ -96,3 +96,21 @@ describe('buildCoreUser with linkPreferences', () => {
     expect(out).not.toContain('desc-49');
   });
 });
+
+describe('buildCoreUser authoritative profile', () => {
+  it('uses a structured profile and fixed informal German address', () => {
+    const out = buildCoreUser(baseProfile);
+
+    expect(out).toContain('[AUTHORITATIVE_USER_PROFILE]');
+    expect(out).toContain('preferred_name: Martin');
+    expect(out).toContain('german_address_style: informal_du');
+    expect(out).toContain('always use informal du/dir/dein');
+    expect(out).toContain('never formal Sie/Ihnen/Ihr');
+  });
+
+  it('marks a missing preferred name explicitly', () => {
+    const out = buildCoreUser({ ...baseProfile, displayName: '' });
+
+    expect(out).toContain('preferred_name: not_provided');
+  });
+});

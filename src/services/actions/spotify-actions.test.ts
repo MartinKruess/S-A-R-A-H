@@ -60,6 +60,19 @@ describe('SpotifyActions.setVolume', () => {
     const spotify = new SpotifyActions(fakeOAuth('tok'), fetchFn);
     expect(await spotify.setVolume(30)).toEqual({ ok: false, speak: 'Das hat bei Spotify gerade nicht geklappt.' });
   });
+
+  it('propagates shutdown abort instead of converting it into a Spotify error', async () => {
+    const fetchFn = vi.fn<FetchFn>().mockImplementation((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('fetch aborted')), { once: true });
+    }));
+    const spotify = new SpotifyActions(fakeOAuth('tok'), fetchFn);
+    const controller = new AbortController();
+
+    const running = spotify.setVolume(30, controller.signal);
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+  });
 });
 
 describe('SpotifyActions.adjustVolume', () => {
