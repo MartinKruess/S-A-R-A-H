@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach dem Layer-1-Abschlussreview:** 708 Prüfpunkte — 160 🟢, 86 🟡, 444 🔴, 18 ⚪
+**Aktueller Zählstand nach dem Layer-1-Abschlussreview:** 704 Prüfpunkte — 159 🟢, 85 🟡, 443 🔴, 17 ⚪
 
 ---
 
