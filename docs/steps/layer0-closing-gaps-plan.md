@@ -1,6 +1,6 @@
 # Layer 0: Abschluss der Lifecycle-Luecken
 
-**Status:** Implementiert und automatisiert abgenommen; praktische Windows-Matrix aus dem Hauptplan offen
+**Status:** Implementiert sowie automatisiert und praktisch abgenommen
 
 **Bezug:** Zweiter Abschlussaudit vom 25.08.2026
 
@@ -102,7 +102,7 @@ Die praktische Matrix bleibt unverändert im Hauptplan dokumentiert. Tests ohne 
 
 ---
 
-## 6. Ergebnis vom 25.08.2026
+## 6. Ergebnis vom 26.08.2026
 
 - Service-Starts erhalten einen gemeinsamen Abbruchkontext. Der Shutdown bricht Starts zuerst ab und wartet auf nicht kooperative Initialisierungen nur begrenzt.
 - Search-, Browser-, Container-, Modell- und Voice-Startpfade reichen den Abbruch bis zu ihren blockierenden Operationen weiter.
@@ -118,9 +118,9 @@ Die praktische Matrix bleibt unverändert im Hauptplan dokumentiert. Tests ohne 
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 72 Testdateien mit 737 Tests erfolgreich, einschließlich eines vollständigen Laufs ohne Docker.
+- 72 Testdateien mit 738 Tests erfolgreich, einschließlich eines vollständigen Laufs ohne Docker.
 - `git diff --check` ohne Whitespace-Fehler; die ausgegebenen Hinweise betreffen nur die bestehende LF-/CRLF-Konfiguration.
 
-### Verbleibende Grenze
+### Abschluss
 
-Die technische Implementierung von Layer 0 ist damit geschlossen. Normaler Fensterschluss, direkter Quit, Router-/Worker-/Search-Ablauf, Idle-Rückkehr, Neustartvertrag sowie reale Docker- und Worker-Ausfälle sind praktisch bestanden. Die Gesamtbewertung bleibt bis zu den zwei übrigen Kästen der Windows-Matrix aus dem Hauptplan gelb: STT- und TTS-Teilausfall. Diese Tests verändern lokale Voice-Ressourcen und werden deshalb gesondert kontrolliert abgenommen.
+Die technische Implementierung und die praktische Windows-Matrix von Layer 0 sind geschlossen. Normaler Fensterschluss, direkter Quit, Router-/Worker-/Search-Ablauf, Idle-Rückkehr, Neustartvertrag sowie Docker-, Worker-, STT- und TTS-Ausfälle sind praktisch bestanden. Die Voice-Teilausfälle wurden ausschließlich über die ignorierte generierte Build-Datei simuliert; produktive Voice-Ressourcen und gespeicherte Konfiguration blieben unverändert. Layer 0 ist damit **grün**.

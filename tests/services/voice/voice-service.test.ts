@@ -8,6 +8,7 @@ import type { TtsProvider } from '../../../src/services/voice/tts-provider.inter
 import type { WakeWordProvider } from '../../../src/services/voice/wake-word-provider.interface.js';
 import type { AudioManager } from '../../../src/services/voice/audio-manager.js';
 import type { HotkeyManager } from '../../../src/services/voice/hotkey-manager.js';
+import { STT_UNAVAILABLE_MESSAGE } from '../../../src/core/chat-availability.js';
 
 function createMockStt(): SttProvider {
   return {
@@ -798,6 +799,33 @@ describe('VoiceService partial failure (voice:capability)', () => {
     expect(emitted).toHaveLength(1);
     expect(emitted[0].data).toEqual({ stt: true, tts: false });
     expect(tts.destroy).toHaveBeenCalledOnce();
+    await service.destroy();
+  });
+
+  it('rejects push-to-talk immediately and audibly when STT init fails', async () => {
+    const bus = new MessageBus();
+    const context = createMockContext(bus, 'push-to-talk');
+    const stt = createMockStt();
+    const tts = createMockTts();
+    const audio = createMockAudio();
+    const hotkey = createMockHotkey();
+    (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('whisper broken'));
+    const service = new VoiceService(context, stt, tts, createMockWakeWord(), audio, hotkey);
+    const voiceError = vi.fn();
+    bus.on('voice:error', voiceError);
+
+    await service.init();
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    onDown();
+    await flush();
+
+    expect(service.voiceState).toBe('idle');
+    expect(audio.startRecording).not.toHaveBeenCalled();
+    expect(stt.transcribe).not.toHaveBeenCalled();
+    expect(voiceError).toHaveBeenCalledOnce();
+    expect(voiceError.mock.calls[0][0].data.message).toBe(STT_UNAVAILABLE_MESSAGE);
+    expect(tts.speak).toHaveBeenCalledWith(STT_UNAVAILABLE_MESSAGE);
     await service.destroy();
   });
 

@@ -6,6 +6,12 @@ export const CHAT_UNAVAILABLE_MESSAGE =
 export const WORKER_UNAVAILABLE_MESSAGE =
   'Auf meine tieferen Gedanken kann ich gerade nicht zugreifen. Einfache Befehle funktionieren weiterhin.';
 
+export const STT_UNAVAILABLE_MESSAGE =
+  'Meine Spracherkennung ist gerade nicht verfügbar. Du kannst mir weiterhin im Chat schreiben.';
+
+export const TTS_UNAVAILABLE_MESSAGE =
+  'Meine Sprachausgabe ist gerade nicht verfügbar. Textantworten und Spracheingabe funktionieren weiterhin.';
+
 /**
  * @param snapshot - Aktueller, zentral veröffentlichter Laufzeitstatus.
  *

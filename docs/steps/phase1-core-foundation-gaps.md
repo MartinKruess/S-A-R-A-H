@@ -20,14 +20,14 @@ Ein grüner Produktpunkt kann für den Prototyp ausreichend sein und trotzdem au
 - **P1:** vor Features stabilisieren, die diesen Bereich verwenden
 - **P2:** vor der vollständigen Phase-1-Abnahme schließen
 
-## Snapshot nach Prompt-/Router-Fundament und Layer 0 (25.08.2026)
+## Snapshot nach Prompt-/Router-Fundament und Layer 0 (26.08.2026)
 
 - 117 bewertete Core-Aussagen im Abschnitt `Aktueller Stand`
 - 19 🟢 ausreichend tragfähig
 - 40 🟡 vorhanden, aber noch nicht belastbar genug
 - 58 🔴 technisch offen
 - Prompt-/Router-Fundament und Layer 0 sind automatisiert umgesetzt.
-- Die verbleibende praktische Windows-Matrix hält die betroffenen Runtime-Aussagen bis zur realen Abnahme auf 🟡.
+- Die praktische Windows-Matrix ist vollständig bestanden; Layer 0 ist damit 🟢.
 
 Diese Zahlen sind eine Bestandsaufnahme des Fundaments und ausdrücklich **kein** zusätzlicher Produktfortschrittszähler neben den 704 Checkpunkten.
 
@@ -443,11 +443,11 @@ Beschädigte oder mit einem falschen Schlüssel gelesene Daten dürfen niemals a
 ## Aktueller Stand
 
 - 🟢 Services können zentral registriert und grundsätzlich in umgekehrter Reihenfolge beendet werden.
-- 🟡 Router, Whisper und Piper schützen ihre Initialisierungspfade per Single-Flight gegen Doppelstart; die reale Mehrfachstart-Matrix steht noch aus.
-- 🟡 `ServiceRegistry` behandelt Teilfehler, initialisiert unabhängige Services weiter und bereinigt fehlgeschlagene Teilinitialisierungen; reale Degraded-Starts stehen noch aus.
-- 🟡 Splash und Renderer erhalten einen technisch abgeleiteten Ready-/Degraded-Snapshot statt zeitgesteuerter Erfolgsmeldungen; die sichtbare praktische Abnahme steht noch aus.
-- 🟡 Cleanup-Fehler werden gesammelt, während nachfolgende Services und registrierte externe Ressourcen weiter begrenzt bereinigt werden; die reale Prozesskontrolle steht noch aus.
-- 🟡 Fenster-Schließen, direkter Quit, fataler Bootstrap und Teilinitialisierung verwenden einen gemeinsamen idempotenten Shutdown-Orchestrator; die praktische Windows-Matrix steht noch aus.
+- 🟢 Router, Whisper und Piper schützen ihre Initialisierungspfade per Single-Flight gegen Doppelstart; wiederholte Starts und Shutdowns hinterließen keine doppelten Listener oder Prozesse.
+- 🟢 `ServiceRegistry` behandelt Teilfehler, initialisiert unabhängige Services weiter und bereinigt fehlgeschlagene Teilinitialisierungen; Router-, Worker-, STT- und TTS-Degraded-Starts sind praktisch bestätigt.
+- 🟢 Splash und Renderer erhalten einen technisch abgeleiteten Ready-/Degraded-Snapshot; die sichtbaren Ready-, Router-, Worker-, STT- und TTS-Zustände sind praktisch bestätigt.
+- 🟢 Cleanup-Fehler werden gesammelt, während nachfolgende Services und registrierte externe Ressourcen weiter begrenzt bereinigt werden; die Prozesskontrolle ist automatisiert und über sämtliche praktischen Shutdown-Wege bestätigt.
+- 🟢 Fenster-Schließen, direkter Quit, fataler Bootstrap und Teilinitialisierung verwenden einen gemeinsamen idempotenten Shutdown-Orchestrator; die Windows-Matrix ist bestanden.
 
 ## Fundamentlücke
 
@@ -537,9 +537,9 @@ Die Anwendung besitzt mehrere technisch ähnliche, aber getrennt gepflegte Vertr
 
 # Empfohlene Bearbeitungsreihenfolge
 
-1. **Automatisiert umgesetzt, praktisch offen:** tag-only Router, Worker-only Browser-Zusammenfassung, feste Action-Rückmeldungen, Namensantwort und Custom-Command-Makros praktisch abnehmen.
-2. **Automatisiert umgesetzt, praktisch offen:** App-/Service-Lifecycle und wahrheitsgemäße Ready-/Degraded-Zustände mit der Windows-Matrix abnehmen.
-3. IPC-/Event-Verträge, Turn-IDs und Listener-Fehlerisolation als gemeinsame Systemgrenzen festziehen.
+1. **Teilweise praktisch abgeschlossen:** tag-only Router, Worker-only Browser-Zusammenfassung, feste Action-Rückmeldungen und Namensantwort sind abgenommen; Custom-Command-Makros bleiben praktisch offen.
+2. **Abgeschlossen:** App-/Service-Lifecycle und wahrheitsgemäße Ready-/Degraded-Zustände haben die Windows-Matrix bestanden.
+3. Als nächsten Fundament-Layer IPC-/Event-Verträge, Turn-IDs und Listener-Fehlerisolation als gemeinsame Systemgrenzen festziehen.
 4. Turn-Steuerung, einheitliche Eingangsschicht und Unterbrechung als vollständigen End-to-End-Abbruch stabilisieren.
 5. Mikrofon-Aktivierungsgrenze, Persistence-Policy, `memoryAllowed` und echten Inkognito-Modus umsetzen.
 6. Gemeinsamen Action-Ergebnisvertrag, frühe Parameterprüfung, Request-Deduplizierung und Runtime-State aufbauen.

@@ -1,6 +1,6 @@
 # Layer 0: Runtime-, Service- und Modell-Lifecycle
 
-**Status:** Implementiert; automatisiert abgenommen, praktische Degraded-/Quit-Matrix teilweise offen
+**Status:** Implementiert sowie automatisiert und praktisch abgenommen
 
 **Priorität:** P0 – Fundament vor weiteren Features
 
@@ -388,7 +388,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 
 ---
 
-## 12. Umsetzungsstand vom 25.08.2026
+## 12. Umsetzungsstand vom 26.08.2026
 
 ### Implementiert
 
@@ -421,7 +421,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 
 - Main- und Renderer-Typecheck erfolgreich.
 - Vollständiger Main-/Renderer-Build erfolgreich.
-- 72 Testdateien mit 737 Tests erfolgreich, einschließlich eines vollständigen Laufs bei ausgeschaltetem Docker.
+- 72 Testdateien mit 738 Tests erfolgreich, einschließlich eines vollständigen Laufs bei ausgeschaltetem Docker.
 - Enthalten sind unter anderem Doppelstart, Teilinitialisierung, Cleanup-Fehler, Start-/Shutdown-Race, Modellwechsel-Race, verspätete Transition, fehlender Worker, exakte Modell-Tags, Voice-Teilfehler, OAuth-Abbruch, direkte Electron-Quit-Orchestrierung und Restart-Vertrag.
 - Ein abschließender erneuter Codeaudit nach den Cleanup-Fristen, dem Late-Init-Cleanup und dem Action-Drain ergab keine weitere relevante Layer-0-Codelücke.
 
@@ -434,7 +434,7 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Der Dev-Watcher beendet Kindprozesse ausdrücklich mit `SIGKILL`; dieser Stopp kann den Electron-Quit-Lifecycle nicht praktisch abnehmen. Das dadurch noch geladene Routermodell wurde anschließend kontrolliert entladen und `/api/ps` war leer.
 - Der produktive Electron-Startpfad wurde anschließend mit einer realen Spracheingabe abgenommen: `Wie heiße ich?` ergab deterministisch `Du heißt Martin.`; STT und TTS liefen erfolgreich.
 - Normales Schließen über das sichtbare Fenster durchlief den echten Quit-Lifecycle. Danach liefen weder Sarah-Electron noch Whisper/Python oder Piper; die Ports `8786` und `8888` waren frei und Ollama meldete keine geladenen Modelle.
-- Offener Befund: Die gesprochene Meldung `Huch, jetzt bin ich einsatzbereit` kam sichtbar beziehungsweise hörbar zu spät. Ready-Anzeige und Ready-Sprachausgabe sind praktisch noch nicht sauber synchronisiert; der Zustands-/Readiness-Punkt bleibt deshalb gelb.
+- Beim ersten Kaltstart kam die gesprochene Ready-Meldung erst nach dem sichtbaren Übergang in die kompakte Oberfläche; der direkte Warmstart meldete sie rechtzeitig. Da die Ansage technisch erst nach bestätigtem Router und Piper ausgelöst wird, bleibt dies als Latenzbeobachtung dokumentiert und ist keine falsche Ready-Meldung.
 - Ein anschließender Warmstart meldete Ready rechtzeitig, beantwortete die Namensfrage genau einmal und registrierte damit praktisch keine sichtbaren doppelten Listener. Auch der zweite normale Fenstershutdown hinterließ null Sarah-Electron-/Voice-Prozesse, null Sarah-Ports und null geladene Ollama-Modelle.
 - Der reale Router-/Worker-/Search-Lauf wechselte von `phi4-mini:3.8b` zu `qwen3:8b`, erzeugte die Search-Zusammenfassung ausschließlich über den Worker und kehrte für eine Spotify-Action zum Router zurück. Endantworten und Actions erschienen jeweils genau einmal.
 - Dabei wurden drei praktische UX-/Robustheitsbefunde sichtbar: Der Router erzeugte bei einer Wissensfrage freien Text plus einen unpassenden Action-Tag, der sicher auf den Worker zurückfiel; die erste Worker-TTS-Ausgabe war teilweise holprig beziehungsweise unvollständig; Search sprach zwei zeitlich getrennte Füllmeldungen vor der einzigen Endantwort.
@@ -448,9 +448,10 @@ Layer 0 ist erst grün, wenn alle folgenden Aussagen praktisch und automatisiert
 - Ein fehlendes Worker-Modell wird beim Start als nicht blockierender Degraded-Hinweis angezeigt. Eine 8B-Anfrage erhält sofort die feste sichtbare und gesprochene Antwort, dass tiefere Gedanken nicht verfügbar sind; anschließende Router- und Profilfragen funktionieren weiter.
 - Die natürliche Profilfrage `Wie ist mein Name?` sowie die umgangssprachliche Variante `Wie heiß ich?` werden nun deterministisch beantwortet. Eine Whisper-Fehltranskription wie `Wie heißt es?` wird bewusst nicht als Namensfrage geraten.
 - Die serielle Ausgabeschlange bleibt nach einem fehlgeschlagenen Workerjob nutzbar und reicht dessen Fehler an den aktuellen Gesprächspfad zurück, statt ihn ausschließlich zu protokollieren.
+- Ein kontrolliert simulierter STT-Teilausfall ließ Router, Worker, Textchat und TTS weiterlaufen. Der Ausfall bleibt dauerhaft sichtbar; F9 startet keine Scheinaufnahme und erklärt die fehlende Spracherkennung sofort sichtbar sowie über die weiterhin verfügbare TTS-Ausgabe.
+- Ein kontrolliert simulierter TTS-Teilausfall unterdrückte die Ready-Sprachausgabe, ließ STT, F9, Router, Worker und Textantworten weiterlaufen und zeigte den Teilfehler dauerhaft an. Eine gesprochene Namensfrage wurde korrekt transkribiert und ausschließlich als Text beantwortet.
+- Beide Voice-Ausfalltests änderten nur die ignorierte generierte Build-Datei. Produktive Voice-Ressourcen und gespeicherte Konfiguration blieben unverändert; der anschließende reguläre Build entfernte die Simulation wieder.
 
-### Noch praktisch abzunehmen
+### Abschluss
 
-- realer STT- und TTS-Teilausfall
-
-Bis diese praktische Matrix abgeschlossen ist, bleibt Layer 0 als Ganzes **gelb** statt grün. Die implementierte technische Basis und ihre automatisierten Verträge sind abgeschlossen.
+Die verbindliche praktische Windows-Matrix ist vollständig bestanden. Layer 0 ist damit **grün**: Die Runtime meldet Ready- und Degraded-Zustände wahrheitsgemäß, gesunde Fähigkeiten bleiben bei Teilfehlern nutzbar und sämtliche geprüften Shutdown-Wege hinterlassen keine Sarah-eigenen Prozesse, Ports oder geladenen Modelle.

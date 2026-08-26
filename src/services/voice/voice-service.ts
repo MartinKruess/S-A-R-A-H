@@ -7,7 +7,11 @@ import type { TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
 import type { AudioManager } from './audio-manager.js';
 import type { HotkeyManager } from './hotkey-manager.js';
-import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../../core/chat-availability.js';
+import {
+  CHAT_UNAVAILABLE_MESSAGE,
+  STT_UNAVAILABLE_MESSAGE,
+  isChatAvailable,
+} from '../../core/chat-availability.js';
 import { SentenceBuffer } from './sentence-buffer.js';
 import { TtsQueue } from './tts-queue.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
@@ -390,12 +394,20 @@ export class VoiceService implements SarahService {
         this.rejectUnavailableConversation();
         return;
       }
+      if (!this.capabilities.stt) {
+        this.rejectUnavailableVoiceInput();
+        return;
+      }
       this.startListening();
       return;
     }
     if (this.transitioning) return;
     if (!this.canAcceptConversation()) {
       this.rejectUnavailableConversation();
+      return;
+    }
+    if (!this.capabilities.stt) {
+      this.rejectUnavailableVoiceInput();
       return;
     }
     this.startListening();
@@ -419,6 +431,11 @@ export class VoiceService implements SarahService {
 
     if (!this.canAcceptConversation()) {
       this.rejectUnavailableConversation();
+      return;
+    }
+
+    if (!this.capabilities.stt) {
+      this.rejectUnavailableVoiceInput();
       return;
     }
 
@@ -497,6 +514,14 @@ export class VoiceService implements SarahService {
   private rejectUnavailableConversation(): void {
     this.setState('idle');
     this.context.bus.emit(this.id, 'llm:error', { message: CHAT_UNAVAILABLE_MESSAGE });
+  }
+
+  private rejectUnavailableVoiceInput(): void {
+    this.setState('idle');
+    this.context.bus.emit(this.id, 'voice:error', { message: STT_UNAVAILABLE_MESSAGE });
+    if (this.capabilities.tts && this.interactionMode !== 'chat') {
+      this.ttsQueue?.enqueue(STT_UNAVAILABLE_MESSAGE);
+    }
   }
 
   private interrupt(): void {

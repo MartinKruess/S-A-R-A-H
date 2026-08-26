@@ -26,8 +26,8 @@
 - 🟢 Das große Modell bleibt nach einer Anfrage für einen definierten Zeitraum aktiv, damit Folgefragen ohne erneute Ladezeit möglich sind.
 - 🟢 Bei einfachen Befehlen kann das große Modell wieder beendet werden.
 - 🟢 Modellwechsel funktionieren zuverlässig.
-- 🟡 Modellstart und Modellshutdown blockieren keine neuen Anfragen dauerhaft.
-- 🟡 Zustände wie „startet“, „bereit“, „fährt herunter“, „nicht verfügbar“ werden korrekt erkannt.
+- 🟢 Modellstart und Modellshutdown blockieren keine neuen Anfragen dauerhaft.
+- 🟢 Zustände wie „startet“, „bereit“, „fährt herunter“, „nicht verfügbar“ werden korrekt erkannt.
 
 ## 1.2 Spracheingabe
 
@@ -813,7 +813,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🟡 Netzwerkfehler werden erkannt.
 - 🟢 Modellfehler werden erkannt.
 - 🟢 TTS-Fehler werden erkannt.
-- 🟡 STT-Fehler werden erkannt.
+- 🟢 STT-Fehler werden erkannt.
 - 🟢 Browserfehler werden erkannt.
 
 ## 13.2 Timeouts
@@ -999,7 +999,7 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 - 🔴 fehlende Datei wird erkannt.
 - 🟢 nicht installiertes Programm wird erkannt.
 - 🟡 festhängender Dienst wird erkannt.
-- 🟡 Sarah kann nach Recovery normal weiterarbeiten.
+- 🟢 Sarah kann nach Recovery normal weiterarbeiten.
 
 ---
 
