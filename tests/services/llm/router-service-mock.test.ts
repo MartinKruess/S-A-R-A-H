@@ -464,6 +464,205 @@ describe('RouterService', () => {
       expect(workerProvider.chat).toHaveBeenCalledOnce();
     });
 
+    it('accepts an external barge-in terminal without logging the expected abort or emitting a duplicate', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+          new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          })
+        ),
+      );
+      const terminals: Array<{ turnId: string; status: string }> = [];
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:terminal', (message) => {
+        terminals.push(message.data);
+        service.onMessage(message);
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const active = service.handleChatMessage('Lange Workerantwort', 'chat');
+        await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+        bus.emit('voice', 'turn:terminal', { turnId, status: 'canceled' });
+        await active;
+
+        expect(terminals).toEqual([{ turnId, status: 'canceled' }]);
+        expect(warn).not.toHaveBeenCalledWith(
+          '[Router] Output job failed:',
+          expect.objectContaining({ name: 'AbortError' }),
+        );
+        expect(warn).not.toHaveBeenCalledWith(
+          '[MessageBus] terminal event for unknown turn refused:',
+          turnId,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('keeps the interrupted user question as follow-up context without persisting partial assistant output', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) {
+            onChunk('Unvollständige Teilantwort');
+            return new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+            });
+          }
+          followUpMessages = messages;
+          onChunk('Fortsetzung zur letzten Frage.');
+          return 'Fortsetzung zur letzten Frage.';
+        },
+      );
+      let interruptedTurnId = '';
+      bus.on('turn:accepted', (message) => {
+        if (!interruptedTurnId) interruptedTurnId = message.data.turnId;
+      });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+      bus.on('turn:terminal', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage('Erkläre die Relativitätstheorie ausführlich', 'chat');
+      await vi.waitFor(() => expect(workerCall).toBe(1));
+      bus.emit('voice', 'turn:cancel', {
+        turnId: interruptedTurnId,
+        reason: 'Voice interruption',
+      });
+      bus.emit('voice', 'turn:terminal', {
+        turnId: interruptedTurnId,
+        status: 'canceled',
+      });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+
+      await service.handleChatMessage('Erzähl mir mehr dazu', 'chat');
+
+      expect(followUpMessages).toContainEqual({
+        role: 'user',
+        content: 'Erkläre die Relativitätstheorie ausführlich',
+      });
+      expect(followUpMessages).toContainEqual({ role: 'user', content: 'Erzähl mir mehr dazu' });
+      expect(followUpMessages).not.toContainEqual({
+        role: 'assistant',
+        content: 'Unvollständige Teilantwort',
+      });
+      const allWrites = vi.mocked(context.db.insertTurnMessages).mock.calls.flatMap((call) => call[1]);
+      expect(allWrites).not.toContainEqual({
+        role: 'user',
+        content: 'Erkläre die Relativitätstheorie ausführlich',
+      });
+      expect(allWrites).not.toContainEqual({
+        role: 'assistant',
+        content: 'Unvollständige Teilantwort',
+      });
+    });
+
+    it('does not retain a worker turn canceled before its first output chunk', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) return new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          });
+          followUpMessages = messages;
+          onChunk('Neue Antwort');
+          return 'Neue Antwort';
+        },
+      );
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage('Noch nicht beantwortete Frage', 'chat');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      bus.emit('voice', 'turn:cancel', { turnId, reason: 'Voice interruption' });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+      await service.handleChatMessage('Unabhängige Folgefrage', 'chat');
+      expect(followUpMessages).not.toContainEqual({
+        role: 'user',
+        content: 'Noch nicht beantwortete Frage',
+      });
+    });
+
+    it.each([
+      {
+        label: 'memory disabled',
+        configure: (target: AppContext) => { target.parsedConfig.trust.memoryAllowed = false; },
+        question: 'Meine nicht gespeicherte Frage',
+        expectedHistory: 'Meine nicht gespeicherte Frage',
+      },
+      {
+        label: 'anonymous mode',
+        configure: (target: AppContext) => { target.parsedConfig.trust.anonymousEnabled = true; },
+        question: '/anonymous Mein Codename ist Eule',
+        expectedHistory: 'Mein Codename ist Eule',
+      },
+      {
+        label: 'memory exclusion',
+        configure: (target: AppContext) => { target.parsedConfig.trust.memoryExclusions = ['Finanzen']; },
+        question: 'Meine Finanzen betreffen dieses Thema',
+        expectedHistory: 'Meine Finanzen betreffen dieses Thema',
+      },
+    ])('keeps interrupted user context transient with $label', async ({
+      configure,
+      question,
+      expectedHistory,
+    }) => {
+      configure(context);
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) {
+            onChunk('Verworfene Teilantwort');
+            return new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+            });
+          }
+          followUpMessages = messages;
+          onChunk('Private Folgeantwort');
+          return 'Private Folgeantwort';
+        },
+      );
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage(question, 'chat');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      bus.emit('voice', 'turn:cancel', { turnId, reason: 'Voice interruption' });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+      await service.handleChatMessage('Erzähl mir mehr dazu', 'chat');
+      expect(followUpMessages).toContainEqual({
+        role: 'user',
+        content: expectedHistory,
+      });
+      expect(followUpMessages).not.toContainEqual({
+        role: 'assistant',
+        content: 'Verworfene Teilantwort',
+      });
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+    });
+
     it('emits llm:error when provider throws', async () => {
       await service.init();
       (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));

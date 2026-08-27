@@ -346,6 +346,19 @@ export class ModelRuntime implements ModelRuntimePort {
           || (operationError instanceof Error && operationError.name === 'AbortError');
         if (
           restoreRouter
+          && operationWasAborted
+          && transitionCompleted
+          && generation === this.generation
+          && !this.shuttingDown
+          && !this.destroyed
+          && !this.runtimeAbort.signal.aborted
+          && this.current.activeRole === 'local_worker'
+        ) {
+          this.scheduleRouterRestore();
+        }
+        if (
+          restoreRouter
+          && (!operationWasAborted || !transitionCompleted)
           && generation === this.generation
           && !this.shuttingDown
           && !this.destroyed

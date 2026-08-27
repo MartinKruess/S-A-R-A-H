@@ -808,12 +808,15 @@ describe('VoiceService', () => {
 
   // --- Additional edge cases ---
 
-  it('returns to idle when stopRecording returns empty buffer', async () => {
+  it('accepts and terminalizes an empty F9 capture exactly once', async () => {
     (audio.stopRecording as ReturnType<typeof vi.fn>).mockReturnValue(new Float32Array(0));
 
     await service.init();
 
+    const acceptedListener = vi.fn();
     const terminalListener = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    bus.on('turn:accepted', acceptedListener);
     bus.on('turn:terminal', terminalListener);
 
     const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -826,8 +829,17 @@ describe('VoiceService', () => {
 
     expect(stt.transcribe).not.toHaveBeenCalled();
     expect(service.voiceState).toBe('idle');
+    expect(acceptedListener).toHaveBeenCalledOnce();
     expect(terminalListener).toHaveBeenCalledOnce();
     expect(terminalListener.mock.calls[0][0].data.status).toBe('canceled');
+    expect(terminalListener.mock.calls[0][0].data.turnId).toBe(
+      acceptedListener.mock.calls[0][0].data.turnId,
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      '[MessageBus] terminal event for unknown turn refused:',
+      expect.any(String),
+    );
+    warn.mockRestore();
   });
 
   // --- 12. applyConfig re-reads config and re-registers hotkey ---

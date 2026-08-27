@@ -1098,13 +1098,16 @@ describe('RouterService (action layer)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
-  it('stops an active worker when another owner terminalizes the turn', async () => {
+  it('stops an active worker without duplicate terminal or failure log when another owner terminalizes it', async () => {
     const worker = new BlockingProvider();
     router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
     await router.init();
     router.activeModel = '9b';
     const chunks: string[] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     ctx.bus.on('llm:chunk', (message) => chunks.push(message.data.text));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
     const request: TurnRequest = {
       turnId: '88888888-8888-4888-8888-888888888888',
       source: 'chat',
@@ -1123,7 +1126,21 @@ describe('RouterService (action layer)', () => {
     await active;
 
     expect(chunks).not.toContain('late-after-abort');
+    expect(terminals.filter((terminal) => terminal.turnId === request.turnId)).toEqual([{
+      turnId: request.turnId,
+      status: 'error',
+      message: 'Runtime stopped the turn',
+    }]);
+    expect(warn).not.toHaveBeenCalledWith(
+      '[Router] Output job failed:',
+      expect.objectContaining({ name: 'AbortError' }),
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      '[MessageBus] terminal event for unknown turn refused:',
+      request.turnId,
+    );
     expect(await ctx.db.query('messages')).toHaveLength(0);
+    warn.mockRestore();
   });
 
   it('cancels active and queued turns as soon as lifecycle shutdown starts', async () => {

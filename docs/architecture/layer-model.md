@@ -53,7 +53,7 @@ Ein Layer kann nach einer Integration wieder von Grün auf Gelb wechseln. Ein fr
 ## 4. Layer 0 – Runtime-, Service- und Modell-Lifecycle
 
 **Leitfrage:** Ist S.A.R.A.H. technisch betriebsbereit und sagt sie darüber die Wahrheit?
-**Aktueller Stand:** 🟡 – umfassend umgesetzt und in seiner damaligen Windows-Matrix praktisch abgenommen; alle bis Audit 11 gefundenen Runtime-, Recovery- und Boot-Lücken sind behoben, die aktualisierte praktische Gesamtmatrix steht noch aus.
+**Aktueller Stand:** 🟢 – die aktuell benötigten Runtime-, Recovery-, Modell- und Shutdown-Garantien sind automatisiert sowie in der aktualisierten Windows-Matrix praktisch belegt. Höhere Layer können gezielte neue Regressionen erforderlich machen.
 
 ### Gehört zu Layer 0
 
@@ -79,9 +79,8 @@ Ein Layer kann nach einer Integration wieder von Grün auf Gelb wechseln. Ein fr
 - Provider-Start, -Stop und mehrere Recovery-Pfade
 - praktisch bestandene Windows-Lifecycle-Matrix des damaligen Abnahmestands
 
-### Aktuell bekannte offene Verantwortungen
+### Weitere Regression bei neuen Anforderungen
 
-- aktualisierte praktische Windows-Gesamtmatrix nach den jüngsten Layer-1-getriebenen Runtime-Korrekturen
 - gezielte Regression der unteren Verträge, wenn höhere Layer neue Lifecycle-, Provider- oder Ressourcenanforderungen ergänzen
 
 Verbindliche Detailpläne:
@@ -92,7 +91,7 @@ Verbindliche Detailpläne:
 ## 5. Layer 1 – Turn-, IPC- und Ereignis-Orchestrierung
 
 **Leitfrage:** Welche Verarbeitung gehört zu welcher Eingabe, wer besitzt sie gerade und wie wird sie sicher beendet?
-**Aktueller Stand:** 🟡 – die zentrale Architektur ist nach elf vollständigen Audits und 145 vollständig umgesetzten Befunden code-seitig weitgehend stabil; die abschließende praktische Matrix und die Integration mit Layer 2 stehen noch aus.
+**Aktueller Stand:** 🟢 – die zentrale Architektur ist nach elf vollständigen Audits, 153 umgesetzten Befunden und der aktualisierten praktischen Windows-Matrix für den aktuellen Layer-1-Scope tragfähig. Die kommende Layer-2-Integration wird gezielt gegen diese Verträge regressionsgeprüft.
 
 ### Gehört zu Layer 1
 
@@ -119,9 +118,8 @@ Verbindliche Detailpläne:
 - korrelierte Audio-Capture- und Playback-Lifecycles
 - zahlreiche Regressionstests für Konkurrenz, Abbruch und verspätete Ereignisse
 
-### Aktuell bekannte offene Verantwortungen
+### Weitere Regression bei neuen Anforderungen
 
-- praktische Windows-Matrix für Chat, Voice, Unterbrechung, Ausfälle, Recovery und Renderer-Lifecycle auf dem aktuellen Stand
 - Layer-2-Verträge für Kontext, Persistenz, Regeln und Bestätigungen end-to-end gegen Turn-, Abort- und Terminalverhalten prüfen
 - neue Anforderungen höherer Layer gezielt bis zu ihrer tatsächlichen Ursache regressionsprüfen, ohne abgeschlossene untere Layer pauschal neu zu auditieren
 

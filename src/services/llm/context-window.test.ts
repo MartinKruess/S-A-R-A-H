@@ -121,6 +121,40 @@ describe('buildContextWindow', () => {
     ]);
   });
 
+  it('keeps an interrupted user-only turn as context for the current follow-up', () => {
+    const result = buildContextWindow({
+      systemPrompt: 'SYS',
+      startContext: [],
+      history: [
+        msg('user', 'Erkläre die Relativitätstheorie ausführlich'),
+        msg('user', 'Erzähl mir mehr dazu'),
+      ],
+      numPredict: 100,
+      numCtx: 2048,
+    });
+
+    expect(result).toEqual([
+      msg('system', 'SYS'),
+      msg('user', 'Erkläre die Relativitätstheorie ausführlich'),
+      msg('user', 'Erzähl mir mehr dazu'),
+    ]);
+  });
+
+  it('does not promote an incomplete persisted start-context turn into live context', () => {
+    const result = buildContextWindow({
+      systemPrompt: 'SYS',
+      startContext: [msg('user', 'Unbeantwortete Frage aus alter Sitzung')],
+      history: [msg('user', 'Aktuelle Frage')],
+      numPredict: 100,
+      numCtx: 2048,
+    });
+
+    expect(result).toEqual([
+      msg('system', 'SYS'),
+      msg('user', 'Aktuelle Frage'),
+    ]);
+  });
+
   it('keeps an over-budget current message whole when it fits the guarantee floor', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // budget 10 < message (100 tokens), but 100 ≤ MIN_CURRENT_MESSAGE_TOKENS → kept whole

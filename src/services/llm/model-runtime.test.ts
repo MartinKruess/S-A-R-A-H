@@ -3,6 +3,7 @@ import type { LlmConfig } from '../../core/config-schema.js';
 import type { ChatMessage, ChatOptions, LlmProvider } from './llm-provider.interface.js';
 import { ModelRuntime } from './model-runtime.js';
 import type { VramManager } from './vram-manager.js';
+import { abortError } from '../../core/abort-utils.js';
 
 const config: LlmConfig = {
   baseUrl: 'http://ollama.test',
@@ -332,6 +333,61 @@ describe('ModelRuntime', () => {
     expect(runtime.snapshot.activeRole).toBe('router');
     expect(runtime.snapshot.roles.router.residency).toBe('loaded');
     expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+  });
+
+  it('keeps an interrupted worker warm until the normal idle restore', async () => {
+    vi.useFakeTimers();
+    try {
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const worker = provider('worker');
+      (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
+        _messages: ChatMessage[],
+        _onChunk: (text: string) => void,
+        options?: ChatOptions,
+      ) => {
+        if (options?.num_predict === 1) return 'ok';
+        markStarted();
+        return new Promise<string>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(options.signal?.reason);
+          }, { once: true });
+        });
+      });
+      const memory = vram();
+      const runtime = new ModelRuntime({
+        config,
+        routerProvider: provider('router'),
+        workerProvider: worker,
+        vramManager: memory,
+        idleTimeoutMs: 300_000,
+      });
+      await runtime.init();
+      const controller = new AbortController();
+
+      const running = runtime.streamWorker(
+        [{ role: 'user', content: 'Lange Antwort' }],
+        'kurz',
+        () => {},
+        controller.signal,
+      );
+      await started;
+      controller.abort(abortError('Voice interruption'));
+      await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+      expect(runtime.snapshot.roles.local_worker.residency).toBe('loaded');
+      expect(memory.unloadModel).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(runtime.snapshot.activeRole).toBe('router'));
+      expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+      await runtime.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('marks a blocked idle router restore unavailable and recovers it through recheck', async () => {

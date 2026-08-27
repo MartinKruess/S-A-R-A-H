@@ -29,22 +29,28 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
-function groupCompleteTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
+function groupLiveTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
   const turns: ChatMessage[][] = [];
   let current: ChatMessage[] | null = null;
   for (const message of messages) {
     if (message.role === 'user') {
-      if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+      if (current) turns.push(current);
       current = [message];
     } else if (message.role === 'assistant' && current) {
       current.push(message);
     }
   }
-  if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+  if (current) turns.push(current);
   return turns;
 }
 
-function keepNewestCompleteTurns(turns: readonly ChatMessage[][], budget: number): ChatMessage[] {
+function groupCompleteTurns(messages: readonly ChatMessage[]): ChatMessage[][] {
+  return groupLiveTurns(messages).filter((turn) => (
+    turn.some((message) => message.role === 'assistant')
+  ));
+}
+
+function keepNewestTurns(turns: readonly ChatMessage[][], budget: number): ChatMessage[] {
   const kept: ChatMessage[][] = [];
   let remaining = budget;
   for (let index = turns.length - 1; index >= 0; index -= 1) {
@@ -71,7 +77,7 @@ export function buildContextWindow(input: ContextWindowInput): ChatMessage[] {
 
   const current = history[history.length - 1];
   if (!current) return [system];
-  const olderTurns = groupCompleteTurns(history.slice(0, -1));
+  const olderTurns = groupLiveTurns(history.slice(0, -1));
 
   const currentTokens = estimateTokens(current.content);
   if (currentTokens > budget) {
@@ -92,14 +98,14 @@ export function buildContextWindow(input: ContextWindowInput): ChatMessage[] {
 
   // Live history has priority over start context: fill newest-first, stop at the
   // first message that does not fit (whole messages only — no holes).
-  const keptHistory = keepNewestCompleteTurns(olderTurns, budget);
+  const keptHistory = keepNewestTurns(olderTurns, budget);
   budget -= keptHistory.reduce((sum, message) => sum + estimateTokens(message.content), 0);
 
   // Whatever remains goes to the start context (trimmed oldest-first), header included.
   const keptStart: ChatMessage[] = [];
   if (startContext.length > 0) {
     let startBudget = budget - estimateTokens(START_CONTEXT_HEADER);
-    keptStart.push(...keepNewestCompleteTurns(groupCompleteTurns(startContext), startBudget));
+    keptStart.push(...keepNewestTurns(groupCompleteTurns(startContext), startBudget));
   }
 
   const startBlock: ChatMessage[] =

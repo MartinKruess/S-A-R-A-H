@@ -81,6 +81,7 @@ export class RouterService implements SarahService {
     persistence: TurnPersistencePolicy;
     inheritedTransient: boolean;
     externalData: boolean;
+    workerOutputStarted: boolean;
   }>();
   private pendingActions = new Map<string, {
     turnId: TurnId;
@@ -192,6 +193,7 @@ export class RouterService implements SarahService {
       this.coordinator.cancel(msg.data.turnId, msg.data.reason);
     } else if (msg.topic === 'turn:terminal') {
       if (msg.source !== this.id) {
+        this.rememberTerminal(msg.data.turnId);
         this.coordinator.cancel(msg.data.turnId, msg.data.message ?? `Turn ${msg.data.status}`);
       }
     } else if (msg.topic === 'action:result') {
@@ -304,6 +306,7 @@ export class RouterService implements SarahService {
       },
       inheritedTransient: false,
       externalData: false,
+      workerOutputStarted: false,
     });
     try {
       throwIfAborted(signal);
@@ -328,11 +331,17 @@ export class RouterService implements SarahService {
       await this.commitTurn(envelope.turnId);
       this.emitTerminal(envelope.turnId, 'done');
     } catch (error) {
-      this.turnDrafts.delete(envelope.turnId);
       if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        const draft = this.turnDrafts.get(envelope.turnId);
+        if (draft?.workerOutputStarted) {
+          this.retainInterruptedUserContext(envelope.turnId);
+        } else {
+          this.turnDrafts.delete(envelope.turnId);
+        }
         this.emitTerminal(envelope.turnId, 'canceled');
         return;
       }
+      this.turnDrafts.delete(envelope.turnId);
       const message = error instanceof Error && error.name === 'TimeoutError'
         ? ERROR_MESSAGES.timeout
         : ERROR_MESSAGES.connection;
@@ -432,6 +441,8 @@ export class RouterService implements SarahService {
     try {
       await this.runWorker(envelope, signal, () => {
         outputStarted = true;
+        const draft = this.turnDrafts.get(envelope.turnId);
+        if (draft) draft.workerOutputStarted = true;
       });
     } catch (error) {
       throwIfAborted(signal);
@@ -479,6 +490,7 @@ export class RouterService implements SarahService {
   private enqueueOutput(job: () => Promise<void>): Promise<void> {
     const currentJob = this.outputQueue.then(job);
     this.outputQueue = currentJob.catch((err) => {
+      if (err instanceof Error && err.name === 'AbortError') return;
       console.warn('[Router] Output job failed:', err);
     });
     return currentJob;
@@ -749,6 +761,23 @@ export class RouterService implements SarahService {
     ]);
   }
 
+  /** Retain only the user's live-session context after an interrupted worker response. */
+  private retainInterruptedUserContext(turnId: TurnId): void {
+    const draft = this.turnDrafts.get(turnId);
+    if (!draft) return;
+    this.turnDrafts.delete(turnId);
+    const transient = draft.inheritedTransient || draft.externalData || mustKeepTurnTransient(
+      [draft.persistedUser, draft.historyUser],
+      draft.persistence,
+    );
+    this.history.push({
+      role: 'user',
+      content: draft.historyUser,
+      transient,
+      externalData: false,
+    });
+  }
+
   private async persistTurn(messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>): Promise<void> {
     if (this.conversationId === FALLBACK_CONVERSATION_ID) {
       this.warnPersistenceOnce();
@@ -783,7 +812,16 @@ export class RouterService implements SarahService {
   }
 
   private emitTerminal(turnId: TurnId, status: TurnTerminalStatus, message?: string): void {
-    if (this.terminalTurns.has(turnId)) return;
+    if (this.context.bus.isTurnTerminal(turnId)) {
+      this.rememberTerminal(turnId);
+      return;
+    }
+    if (!this.rememberTerminal(turnId)) return;
+    this.context.bus.emit(this.id, 'turn:terminal', { turnId, status, ...(message ? { message } : {}) });
+  }
+
+  private rememberTerminal(turnId: TurnId): boolean {
+    if (this.terminalTurns.has(turnId)) return false;
     this.terminalTurns.add(turnId);
     this.terminalTurnOrder.push(turnId);
     if (this.terminalTurnOrder.length > 2_000) {
@@ -793,7 +831,7 @@ export class RouterService implements SarahService {
         this.errorTurns.delete(expired);
       }
     }
-    this.context.bus.emit(this.id, 'turn:terminal', { turnId, status, ...(message ? { message } : {}) });
+    return true;
   }
 
   private isWorkerUnavailable(): boolean {

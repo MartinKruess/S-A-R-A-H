@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach dem Layer-1-Abschlussreview:** 704 Prüfpunkte — 159 🟢, 85 🟡, 443 🔴, 17 ⚪
+**Aktueller Zählstand nach der abgeschlossenen Layer-0/1-Windows-Matrix:** 704 Prüfpunkte — 167 🟢, 77 🟡, 443 🔴, 17 ⚪
 
 ---
 
@@ -59,7 +59,7 @@
 
 - 🟢 Folgefragen funktionieren ohne erneute vollständige Initialisierung.
 - 🟢 Sarah erkennt den Kontext vorheriger Nachrichten innerhalb einer Session.
-- 🟡 Sarah lässt sich während ihrer Sprachausgabe zuverlässig unterbrechen.
+- 🟢 Sarah lässt sich während ihrer Sprachausgabe zuverlässig unterbrechen.
 - 🟢 Nach einer Unterbrechung kann das Gespräch normal fortgesetzt werden.
 - 🟢 Sarah antwortet standardmäßig in natürlicher Gesprächssprache.
 - 🟢 Sarah duzt den Nutzer standardmäßig.
@@ -766,7 +766,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🔴 `/code` kann den vorgesehenen Coding-Modus direkt aufrufen.
 - 🔴 weitere Systemcommands können definiert werden.
 - 🟢 Erkannte benutzerdefinierte Slash-Commands umgehen unnötige Router-Interpretation und verwenden den zentralen Command-, Turn- und Security-Vertrag.
-- 🟡 Slash-Commands können technisch über den PC-Eingabepfad verwendet werden; die praktische Abnahme fehlt noch.
+- 🟢 Slash-Commands können über den PC-Eingabepfad verwendet werden.
 - ⚪ Slash-Commands sind für spätere Mobile-Nutzung vorgesehen.
 
 ## 12.2 Eigene Commands
@@ -823,7 +823,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🔴 länger dauernde Programmstarts besitzen definierte Timeout-Stufen.
 - 🔴 Sarah meldet Zwischenstände bei ungewöhnlich langer Dauer.
 - 🟡 ein endgültiger Timeout führt zu einer klaren Fehlermeldung.
-- 🟡 Timeouts blockieren das System nicht dauerhaft.
+- 🟢 Timeouts blockieren das System nicht dauerhaft.
 
 ## 13.3 Retry
 
@@ -842,12 +842,12 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 ## 13.5 Selbstdiagnose
 
-- 🟡 Sarah kann prüfen, ob ihre eigenen Dienste laufen.
+- 🟢 Sarah kann prüfen, ob ihre eigenen Dienste laufen.
 - 🔴 Sarah kann relevante Prozesse prüfen.
 - 🔴 Sarah kann Ressourcenengpässe erkennen.
 - 🔴 Sarah kann Netzwerkprobleme eingrenzen.
-- 🟡 Sarah kann erklären, welcher Teil einer Verarbeitung fehlgeschlagen ist.
-- 🟡 Sarah unterscheidet „Ich weiß es nicht“ von „Ein technischer Dienst ist ausgefallen“.
+- 🟢 Sarah kann erklären, welcher Teil einer Verarbeitung fehlgeschlagen ist.
+- 🟢 Sarah unterscheidet „Ich weiß es nicht“ von „Ein technischer Dienst ist ausgefallen“.
 - 🟢 Sarah kann einfache Recovery-Aktionen selbst durchführen.
 - 🔴 riskante Recovery-Aktionen benötigen eine Bestätigung.
 
@@ -880,7 +880,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 - 🟡 Sarah kann mehrere Stunden ohne Neustart laufen.
 - 🔴 Memory wächst nicht unkontrolliert.
-- 🟡 Prozesse bleiben nicht unnötig als Zombies bestehen.
+- 🟢 Prozesse bleiben nicht unnötig als Zombies bestehen.
 - 🟡 wiederholte Modellstarts verursachen keine zunehmenden Fehler.
 - 🟡 wiederholte TTS-Aufrufe bleiben stabil.
 - 🟡 wiederholte Browser-Aufrufe bleiben stabil.
@@ -920,7 +920,7 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 - 🟢 Mehrminütiges natürliches Gespräch mit Folgefragen.
 - 🟢 Sarah berücksichtigt relevante Nutzerpräferenzen.
 - 🟢 Sarah vermeidet unnötige Profilreferenzen.
-- 🟡 Unterbrechen funktioniert.
+- 🟢 Unterbrechen funktioniert.
 - 🟢 Session-Kontext funktioniert.
 - 🟡 Neustart und anschließende relevante Langzeiterinnerung funktionieren.
 - 🔴 Inkognito-Gespräch hinterlässt keine unerwünschte Langzeiterinnerung.
