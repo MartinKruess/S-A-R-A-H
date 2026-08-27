@@ -5,6 +5,8 @@ import type { SarahService } from './service.interface.js';
 import type { BusTopic } from './bus-events.js';
 import type { TypedBusMessage, ServiceStatus } from './types.js';
 
+const transcript = { turnId: 'turn-1', captureId: 'capture-1', text: 'hello' };
+
 function createMockService(id: string, subs: BusTopic[] = []): SarahService {
   return {
     id,
@@ -47,7 +49,7 @@ describe('ServiceRegistry', () => {
     const [firstReport, secondReport] = await Promise.all([first, second]);
 
     await registry.initAll();
-    bus.emit('voice', 'voice:transcript', { text: 'hello' });
+    bus.emit('voice', 'voice:transcript', transcript);
 
     expect(svc.init).toHaveBeenCalledOnce();
     expect(svc.onMessage).toHaveBeenCalledOnce();
@@ -59,7 +61,7 @@ describe('ServiceRegistry', () => {
     registry.register(svc);
     await registry.initAll();
 
-    bus.emit('voice', 'voice:transcript', { text: 'hello' });
+    bus.emit('voice', 'voice:transcript', transcript);
 
     expect(svc.onMessage).toHaveBeenCalledOnce();
     expect(svc.onMessage).toHaveBeenCalledWith(
@@ -90,7 +92,7 @@ describe('ServiceRegistry', () => {
     registry.register(healthy);
 
     const report = await registry.initAll();
-    bus.emit('voice', 'voice:transcript', { text: 'ignored' });
+    bus.emit('voice', 'voice:transcript', { ...transcript, text: 'ignored' });
 
     expect(report.ok).toBe(false);
     expect(report.services).toEqual([

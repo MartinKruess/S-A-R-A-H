@@ -1,24 +1,32 @@
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { BrowserWindow, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
 import type { OllamaContainerManager } from '../services/llm/ollama-container-manager.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
-import { forwardToRenderers } from './forward-to-renderers.js';
-import { isValidChatMessage } from './ipc-validation.js';
+import { forwardToRenderers, sendToRendererSafely } from './forward-to-renderers.js';
+import { isValidChatInput, isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
 import { CHAT_UNAVAILABLE_MESSAGE, isChatAvailable } from '../core/chat-availability.js';
+import { runWithTimeout } from '../core/abort-utils.js';
 
 export interface BootSequenceDeps {
   getMainWindow: () => BrowserWindow | null;
   getAppContext: () => AppContext;
   piperProvider: PiperProvider;
   containerManager: OllamaContainerManager;
+  /** Splash completion captured before slow bootstrap/config dialogs finish. */
+  splashDone?: Promise<void>;
 }
 
 type BootSeverity = 'info' | 'warning' | 'error';
+const SPLASH_TTS_EXPIRY_MS = 8_000;
+const ROUTER_CAPABILITY_TIMEOUT_MS = 150_000;
+const GPU_PROBE_TIMEOUT_MS = 5_000;
+const LIFECYCLE_BOOT_TIMEOUT_MS = 330_000;
 
 /**
  * Register the splash, chat and boot bridge for the current main-process run.
@@ -37,6 +45,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   let transitionInterval: ReturnType<typeof setInterval> | null = null;
   let revealTimeout: ReturnType<typeof setTimeout> | null = null;
   let revealResolver: (() => void) | null = null;
+  let activeSplashTts: {
+    controller: AbortController;
+    expiry: ReturnType<typeof setTimeout>;
+  } | null = null;
   const pendingDelays = new Set<{
     timer: ReturnType<typeof setTimeout>;
     resolve: () => void;
@@ -45,9 +57,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   const send = (step: string, message?: string, severity: BootSeverity = 'info'): void => {
     if (stopped) return;
     const win = getMainWindow();
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('boot-status', { step, message, severity });
-    }
+    sendToRendererSafely(win, 'boot-status', { step, message, severity });
   };
 
   const delay = (ms: number): Promise<void> => new Promise((resolve) => {
@@ -85,17 +95,27 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     ctx: AppContext,
     name: string,
     startPromise: Promise<unknown>,
-  ): Promise<CapabilitySnapshot | undefined> => new Promise((resolve) => {
+    signal?: AbortSignal,
+  ): Promise<CapabilitySnapshot | undefined> => new Promise((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
     let unsubscribeAfterRegistration = false;
     let settled = false;
     const finish = (capability?: CapabilitySnapshot): void => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener('abort', onAbort);
       if (unsubscribe) unsubscribe();
       else unsubscribeAfterRegistration = true;
       resolve(capability);
     };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      if (unsubscribe) unsubscribe();
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : new Error('Capability wait aborted'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
     unsubscribe = ctx.lifecycle.subscribe((snapshot) => {
       const capability = snapshot.capabilities[name];
       if (capability && !['registered', 'starting'].includes(capability.state)) {
@@ -116,11 +136,19 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
 
     try {
       const lifecycleStart = ctx.lifecycle.start();
-      const router = await waitForCapability(ctx, 'router', lifecycleStart);
+      const router = await runWithTimeout(
+        (signal) => waitForCapability(ctx, 'router', lifecycleStart, signal),
+        ROUTER_CAPABILITY_TIMEOUT_MS,
+        'Sarah-Protokoll konnte nicht rechtzeitig aktiviert werden.',
+      );
       const routerStep = deriveBootCapabilitySteps(router, { stt: false, tts: false }).router;
 
       if (routerStep === 'router-ready') {
-        const gpu = await containerManager.checkGpu();
+        const gpu = await runWithTimeout(
+          (signal) => containerManager.checkGpu(signal),
+          GPU_PROBE_TIMEOUT_MS,
+          'GPU-Status konnte nicht rechtzeitig geprüft werden.',
+        ).catch(() => 'unknown' as const);
         if (gpu === 'cpu') {
           send(
             'router',
@@ -140,10 +168,31 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       }
 
       const reveal = waitForReveal();
-      await lifecycleStart;
+      await runWithTimeout(
+        () => lifecycleStart,
+        LIFECYCLE_BOOT_TIMEOUT_MS,
+        'Sarah-Dienste konnten nicht rechtzeitig aktiviert werden.',
+      );
+      const currentRouter = ctx.lifecycle.snapshot.capabilities.router;
+      const currentRouterStep = deriveBootCapabilitySteps(
+        currentRouter,
+        { stt: false, tts: false },
+      ).router;
+      if (currentRouterStep !== routerStep) {
+        if (currentRouterStep === 'router-ready') {
+          send(currentRouterStep);
+        } else {
+          send(
+            currentRouterStep,
+            currentRouter?.message
+              ?? 'Sarah-Protokoll ist nicht verfügbar. Text- und Spracheingaben bleiben deaktiviert.',
+            'error',
+          );
+        }
+      }
       const voice = ctx.registry.get('voice') as VoiceService | undefined;
       const voiceCapabilities = voice?.capabilitySnapshot ?? { stt: false, tts: false };
-      const steps = deriveBootCapabilitySteps(router, voiceCapabilities);
+      const steps = deriveBootCapabilitySteps(currentRouter, voiceCapabilities);
 
       send(
         steps.stt,
@@ -175,22 +224,37 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   const onBootReady = (): void => { void runBoot(); };
   ipcMain.once('boot-ready', onBootReady);
 
+  const cancelSplashTts = (): void => {
+    const request = activeSplashTts;
+    if (!request) return;
+    activeSplashTts = null;
+    clearTimeout(request.expiry);
+    request.controller.abort();
+  };
+
   ipcMain.handle('splash-tts', async (_event, text: string) => {
     if (!isValidChatMessage(text)) {
       console.warn('[IPC] invalid payload for splash-tts');
-      return;
+      return null;
     }
+    cancelSplashTts();
+    const controller = new AbortController();
+    const request = {
+      controller,
+      expiry: setTimeout(() => controller.abort(), SPLASH_TTS_EXPIRY_MS),
+    };
+    request.expiry.unref?.();
+    activeSplashTts = request;
     try {
-      const audio = await piperProvider.speak(text);
-      const mainWindow = getMainWindow();
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('voice:play-audio', {
-          audio: Array.from(audio),
-          sampleRate: 22050,
-        });
-      }
+      const audio = await piperProvider.speak(text, controller.signal);
+      if (stopped || controller.signal.aborted || activeSplashTts !== request) return null;
+      return { audio: Array.from(audio), sampleRate: 22050 };
     } catch (err) {
-      console.error('[Boot] Splash TTS failed:', err);
+      if (!controller.signal.aborted) console.error('[Boot] Splash TTS failed:', err);
+      return null;
+    } finally {
+      clearTimeout(request.expiry);
+      if (activeSplashTts === request) activeSplashTts = null;
     }
   });
 
@@ -210,7 +274,13 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       void mainWindow.loadFile(path.join(__dirname, '..', '..', 'wizard.html'));
     }
   };
-  ipcMain.on('splash-done', onSplashDone);
+  if (deps.splashDone) {
+    void deps.splashDone.then(() => {
+      if (!stopped) onSplashDone();
+    });
+  } else {
+    ipcMain.on('splash-done', onSplashDone);
+  }
 
   const onWizardDone = (): void => {
     const mainWindow = getMainWindow();
@@ -226,23 +296,43 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
   };
   ipcMain.on('wizard-done', onWizardDone);
 
-  ipcMain.handle('chat-message', async (_event, text: string) => {
-    if (!isValidChatMessage(text)) {
+  ipcMain.handle('chat-message', async (_event, input: unknown) => {
+    if (!isValidChatInput(input)) {
       console.warn('[IPC] invalid payload for chat-message');
-      return;
+      return { accepted: false, turnId: randomUUID() };
     }
+    const { turnId, message, mode } = input;
     const ctx = getAppContext();
+    if (ctx.bus.isTurnKnown(turnId)) {
+      console.warn('[IPC] duplicate turnId for chat-message refused:', turnId);
+      return { accepted: false, turnId };
+    }
+    const accepted = ctx.bus.emit('runtime', 'turn:accepted', {
+      turnId,
+      source: 'chat',
+      mode,
+    });
+    if (!accepted) return { accepted: false, turnId };
     if (!isChatAvailable(ctx.lifecycle.snapshot)) {
       ctx.bus.emit('runtime', 'llm:error', {
+        turnId,
         message: CHAT_UNAVAILABLE_MESSAGE,
       });
-      return;
+      ctx.bus.emit('runtime', 'turn:terminal', {
+        turnId,
+        status: 'error',
+        message: CHAT_UNAVAILABLE_MESSAGE,
+      });
+      return { accepted: false, turnId };
     }
-    const voiceService = ctx.registry.get('voice') as VoiceService | undefined;
-    if (voiceService && voiceService.voiceState === 'idle' && voiceService.status === 'running') {
-      voiceService.setChatSpeak();
-    }
-    ctx.bus.emit('renderer', 'chat:message', { text, mode: 'chat' });
+    const published = ctx.bus.emit('renderer', 'chat:message', {
+      turnId,
+      source: 'chat',
+      mode,
+      originalText: message,
+      createdAt: new Date().toISOString(),
+    });
+    return { accepted: published, turnId };
   });
   ipcMain.handle('get-runtime-status', () => getAppContext().lifecycle.snapshot);
 
@@ -251,39 +341,88 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     forwardToRenderers(bus, 'llm:chunk'),
     forwardToRenderers(bus, 'llm:done'),
     forwardToRenderers(bus, 'llm:error'),
+    forwardToRenderers(bus, 'turn:terminal'),
     forwardToRenderers(bus, 'storage:degraded'),
   ];
 
   const runtimeUnsubscribe = getAppContext().lifecycle.subscribe((snapshot) => {
-    const win = getMainWindow();
-    if (win && !win.isDestroyed()) win.webContents.send('runtime-status', snapshot);
+    sendToRendererSafely(getMainWindow(), 'runtime-status', snapshot);
   });
 
-  let perfStart = 0;
-  let perfData: Record<string, unknown> = {};
+  const perfByTurn = new Map<string, {
+    startedAt: number;
+    data: Record<string, unknown>;
+    terminal: boolean;
+    voiceExpected: boolean;
+    voiceDone: boolean;
+    fallback: ReturnType<typeof setTimeout> | null;
+  }>();
   unsubscribers.push(bus.on('perf:timing', (msg) => {
-    const { label, ms, meta } = msg.data;
-    if (!perfStart) perfStart = Date.now();
-    perfData[`${label}Ms`] = ms;
-    if (meta) Object.assign(perfData, meta);
-    if (label === 'router') perfData.usedWorker = false;
-    if (label === 'worker') perfData.usedWorker = true;
+    const { turnId, label, ms, meta } = msg.data;
+    if (!turnId) return;
+    const existing = perfByTurn.get(turnId);
+    if (!existing && bus.isTurnTerminal(turnId)) return;
+    const current = existing ?? {
+      startedAt: Date.now(),
+      data: {},
+      terminal: false,
+      voiceExpected: false,
+      voiceDone: false,
+      fallback: null,
+    };
+    current.data[`${label}Ms`] = ms;
+    if (meta) Object.assign(current.data, meta);
+    if (label === 'router') current.data.usedWorker = false;
+    if (label === 'worker') current.data.usedWorker = true;
+    perfByTurn.set(turnId, current);
   }));
 
-  const logPerf = (): void => {
-    if (!perfStart) return;
-    const msKeys = Object.keys(perfData).filter((key) => key.endsWith('Ms'));
-    const totalMs = msKeys.reduce((sum, key) => sum + (perfData[key] as number), 0);
-    console.log('\n[Performance]', JSON.stringify({ totalMs, ...perfData }, null, 2));
-    perfStart = 0;
-    perfData = {};
+  const logPerf = (turnId: string): void => {
+    const current = perfByTurn.get(turnId);
+    if (!current) return;
+    if (current.fallback) clearTimeout(current.fallback);
+    const msKeys = Object.keys(current.data).filter((key) => key.endsWith('Ms'));
+    const totalMs = msKeys.reduce((sum, key) => sum + (current.data[key] as number), 0);
+    console.log('\n[Performance]', JSON.stringify({
+      turnId,
+      wallMs: Date.now() - current.startedAt,
+      totalMs,
+      ...current.data,
+    }, null, 2));
+    perfByTurn.delete(turnId);
   };
-  unsubscribers.push(bus.on('voice:done', logPerf));
-  unsubscribers.push(bus.on('llm:done', () => {
-    if (!perfData.whisperMs) logPerf();
+  unsubscribers.push(bus.on('voice:speaking', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId) ?? {
+      startedAt: Date.now(),
+      data: {},
+      terminal: false,
+      voiceExpected: false,
+      voiceDone: false,
+      fallback: null,
+    };
+    current.voiceExpected = true;
+    perfByTurn.set(msg.data.turnId, current);
+  }));
+  unsubscribers.push(bus.on('voice:done', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId);
+    if (!current) return;
+    current.voiceDone = true;
+    if (current.terminal) logPerf(msg.data.turnId);
+  }));
+  unsubscribers.push(bus.on('turn:terminal', (msg) => {
+    const current = perfByTurn.get(msg.data.turnId);
+    if (!current) return;
+    current.terminal = true;
+    if (!current.voiceExpected || current.voiceDone) {
+      logPerf(msg.data.turnId);
+      return;
+    }
+    current.fallback = setTimeout(() => logPerf(msg.data.turnId), 30_000);
+    current.fallback.unref?.();
   }));
 
   const onBootDone = (): void => {
+    cancelSplashTts();
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
@@ -292,7 +431,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     const targetH = Math.round(screenH * 0.33);
     const startBounds = mainWindow.getBounds();
     const startTime = Date.now();
-    mainWindow.webContents.send('transition-start');
+    sendToRendererSafely(mainWindow, 'transition-start');
 
     transitionInterval = setInterval(() => {
       const win = getMainWindow();
@@ -331,13 +470,18 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       pending.resolve();
     }
     pendingDelays.clear();
+    cancelSplashTts();
     ipcMain.removeListener('boot-ready', onBootReady);
-    ipcMain.removeListener('splash-done', onSplashDone);
+    if (!deps.splashDone) ipcMain.removeListener('splash-done', onSplashDone);
     ipcMain.removeListener('wizard-done', onWizardDone);
     ipcMain.removeListener('boot-done', onBootDone);
     ipcMain.removeHandler('splash-tts');
     ipcMain.removeHandler('chat-message');
     ipcMain.removeHandler('get-runtime-status');
+    for (const perf of perfByTurn.values()) {
+      if (perf.fallback) clearTimeout(perf.fallback);
+    }
+    perfByTurn.clear();
     for (const unsubscribe of unsubscribers) unsubscribe();
     runtimeUnsubscribe();
   };

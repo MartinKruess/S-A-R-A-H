@@ -19,6 +19,9 @@ export class WorkerService {
     const numPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
     const start = performance.now();
     const fullText = await chatWithTimeout(this.provider, messages, onChunk, { num_predict: numPredict, signal });
+    if (fullText.trim().length === 0) {
+      throw new Error('Worker returned an empty response');
+    }
     const tookMs = Math.round(performance.now() - start);
     return { fullText, tookMs };
   }

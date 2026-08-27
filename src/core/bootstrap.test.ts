@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { AppContext, bootstrap } from './bootstrap.js';
+import { AppContext, bootstrap, repairInvalidConfig } from './bootstrap.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -49,6 +49,45 @@ describe('bootstrap', () => {
 
   it('shutdown cleans up without errors', async () => {
     await expect(ctx.shutdown()).resolves.not.toThrow();
+  });
+
+  it('persistently removes reserved custom-command collisions from an existing config', async () => {
+    await ctx.config.set('root', {
+      controls: {
+        customCommands: [
+          { command: ' /CONFIRM ', prompt: 'Kollision' },
+          { command: '/meincommand', prompt: 'Bleibt erhalten' },
+        ],
+      },
+    });
+    await ctx.shutdown();
+
+    ctx = await bootstrap(tmpDir);
+
+    expect(ctx.parsedConfig.controls.customCommands).toEqual([
+      { command: '/meincommand', prompt: 'Bleibt erhalten' },
+    ]);
+    const persisted = await ctx.config.get<{
+      controls: { customCommands: Array<{ command: string; prompt: string }> };
+    }>('root');
+    expect(persisted?.controls.customCommands).toEqual([
+      { command: '/meincommand', prompt: 'Bleibt erhalten' },
+    ]);
+  });
+
+  it('persists validated defaults after an invalid config is accepted', async () => {
+    await ctx.config.set('root', { controls: { voiceMode: 'invalid' } });
+    await ctx.shutdown();
+    ctx = await bootstrap(tmpDir);
+    expect(ctx.configErrors).not.toBeNull();
+
+    await repairInvalidConfig(ctx);
+    expect(ctx.configErrors).toBeNull();
+    expect(await ctx.config.get('root')).toEqual(ctx.parsedConfig);
+
+    await ctx.shutdown();
+    ctx = await bootstrap(tmpDir);
+    expect(ctx.configErrors).toBeNull();
   });
 
   it('shutdown is safe when called repeatedly', async () => {

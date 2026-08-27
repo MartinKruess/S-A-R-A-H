@@ -3,12 +3,14 @@ import * as os from 'os';
 import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
-import type { SarahConfig } from '../core/config-schema.js';
+import type { SarahConfigPatch } from '../core/config-schema.js';
 import { isAudioConfigEqual } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 import { isValidOptionalTitle } from './ipc-validation.js';
 import { getLlmRestartReasons, type SaveConfigResult } from '../core/config-apply.js';
+import { removeReservedCustomCommandCollisions } from '../services/commands/builtin-commands.js';
+import { sendToRendererSafely } from './forward-to-renderers.js';
 
 export interface ConfigHandlerDeps {
   getAppContext: () => AppContext;
@@ -19,6 +21,9 @@ export interface ConfigHandlerDeps {
 export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps): void {
   const { getAppContext, getMainWindow, dialogWindows } = deps;
   let saveQueue: Promise<void> = Promise.resolve();
+  // ModelRuntime is immutable for the lifetime of this process. Keep that
+  // boot contract separate from the mutable persisted config snapshot.
+  const bootLlm = structuredClone(getAppContext().parsedConfig.llm);
 
   ipcMain.handle('get-system-info', async () => {
     const cpus = os.cpus();
@@ -50,32 +55,79 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
 
   ipcMain.handle(
     'save-config',
-    (_event, config: Partial<SarahConfig>): Promise<SaveConfigResult> => {
+    (_event, config: SarahConfigPatch): Promise<SaveConfigResult> => {
       const operation = saveQueue.then(async () => {
         const ctx = getAppContext();
         const existing = (await ctx.config.get<Record<string, unknown>>('root')) ?? {};
         const previousAudio = ctx.parsedConfig.audio;
-        const previousLlm = ctx.parsedConfig.llm;
-        const merged = { ...existing, ...config };
+        const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
+        const previousPushToTalkKey = ctx.parsedConfig.controls.pushToTalkKey;
+        const merged = {
+          ...existing,
+          ...config,
+          ...(
+            config.audio
+              ? { audio: { ...ctx.parsedConfig.audio, ...config.audio } }
+              : {}
+          ),
+        };
 
         const { SarahConfigSchema } = await import('../core/config-schema.js');
-        const parsed = SarahConfigSchema.parse(merged);
+        let parsed = SarahConfigSchema.parse(merged);
+        const customCommands = removeReservedCustomCommandCollisions(parsed.controls.customCommands);
+        if (customCommands.length !== parsed.controls.customCommands.length) {
+          parsed = {
+            ...parsed,
+            controls: { ...parsed.controls, customCommands },
+          };
+        }
 
-        await ctx.config.set('root', merged);
+        const mergedControls = merged.controls && typeof merged.controls === 'object'
+          ? merged.controls as Record<string, unknown>
+          : {};
+        await ctx.config.set('root', {
+          ...merged,
+          controls: { ...mergedControls, customCommands },
+        });
         ctx.parsedConfig = parsed;
 
-        if ('controls' in config) {
-          await getService<VoiceService>(ctx, 'voice').applyConfig();
+        const inputDeviceChanged = previousAudio.inputDeviceId !== parsed.audio.inputDeviceId;
+        const voiceModeChanged = previousVoiceMode !== parsed.controls.voiceMode;
+        const pushToTalkKeyChanged = previousPushToTalkKey !== parsed.controls.pushToTalkKey;
+        const voiceConfigChanged = voiceModeChanged || pushToTalkKeyChanged;
+        const voiceService = voiceConfigChanged || inputDeviceChanged
+          ? getService<VoiceService>(ctx, 'voice')
+          : null;
+        if (voiceService && (voiceModeChanged || inputDeviceChanged)) {
+          // Invalidate readiness synchronously in main before the renderer event
+          // crosses the process boundary. Otherwise an off -> PTT switch has a
+          // brief window in which the old readiness could register the hotkey.
+          voiceService.setRendererCaptureReady(false);
+        }
+        if (voiceModeChanged) {
+          // Renderer capture ownership should move before the main-process
+          // hotkey is reconfigured. Delivery failure must not strand the
+          // already-persisted config between disk and VoiceService, though.
+          sendToRendererSafely(getMainWindow(), 'voice-input-config-changed', {
+            voiceMode: parsed.controls.voiceMode,
+          });
+        }
+
+        if (voiceConfigChanged && voiceService) {
+          await voiceService.applyConfig();
         }
 
         if (!isAudioConfigEqual(previousAudio, parsed.audio)) {
-          const win = getMainWindow();
-          if (win && !win.isDestroyed()) {
-            win.webContents.send('audio-config-changed', parsed.audio);
+          const recipients = new Set<BrowserWindow>();
+          const mainWindow = getMainWindow();
+          if (mainWindow) recipients.add(mainWindow);
+          for (const dialogWindow of dialogWindows.values()) recipients.add(dialogWindow);
+          for (const win of recipients) {
+            sendToRendererSafely(win, 'audio-config-changed', parsed.audio);
           }
         }
 
-        const restartReasons = getLlmRestartReasons(previousLlm, parsed.llm);
+        const restartReasons = getLlmRestartReasons(bootLlm, parsed.llm);
         return {
           config: ctx.parsedConfig,
           restartRequired: restartReasons.length > 0,

@@ -1,4 +1,4 @@
-import type { SarahConfig } from '../../core/config-schema.js';
+import type { AudioConfig, SarahConfig } from '../../core/config-schema.js';
 import type { SaveConfigResult } from '../../core/config-apply.js';
 import { getSarah } from './window-global.js';
 
@@ -57,6 +57,13 @@ export function save(
 ): Promise<SaveConfigResult> {
   latestSave = getSarah().saveConfig({ [key]: value } as Partial<SarahConfig>);
   // Attach an observer even where a section intentionally has no visual feedback.
+  void latestSave.catch((error) => console.warn('[Settings] save failed:', error));
+  return latestSave;
+}
+
+/** Persist an audio partial without widening it to the full AudioConfig. */
+export function saveAudio(value: Partial<AudioConfig>): Promise<SaveConfigResult> {
+  latestSave = getSarah().saveConfig({ audio: value });
   void latestSave.catch((error) => console.warn('[Settings] save failed:', error));
   return latestSave;
 }

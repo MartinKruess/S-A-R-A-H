@@ -9,7 +9,10 @@
  * that the renderer will play.
  */
 export class AudioManager {
+  static readonly MAX_RECORDING_SAMPLES = 16_000 * 60;
   private recordingChunks: Float32Array[] = [];
+  private recordingSamples = 0;
+  private captureId: string | null = null;
   private _isRecording = false;
   private _isPlaying = false;
   private onChunkCallback: ((chunk: Float32Array) => void) | null = null;
@@ -26,9 +29,11 @@ export class AudioManager {
    * Start a recording session. The renderer will send audio chunks via IPC.
    * @param onChunk — called with each PCM chunk for real-time analysis (e.g. VAD)
    */
-  startRecording(onChunk?: (chunk: Float32Array) => void): void {
+  startRecording(captureId: string, onChunk?: (chunk: Float32Array) => void): void {
     if (this._isRecording) return;
     this.recordingChunks = [];
+    this.recordingSamples = 0;
+    this.captureId = captureId;
     this.onChunkCallback = onChunk ?? null;
     this._isRecording = true;
   }
@@ -36,19 +41,33 @@ export class AudioManager {
   /**
    * Feed a PCM chunk from the renderer. Called by IPC handler.
    */
-  feedChunk(chunk: Float32Array): void {
-    if (!this._isRecording) return;
+  feedChunk(captureId: string, chunk: Float32Array): {
+    accepted: boolean;
+    limitReached: boolean;
+  } {
+    if (!this._isRecording || this.captureId !== captureId) {
+      return { accepted: false, limitReached: false };
+    }
+    if (this.recordingSamples + chunk.length > AudioManager.MAX_RECORDING_SAMPLES) {
+      return { accepted: false, limitReached: true };
+    }
     this.recordingChunks.push(new Float32Array(chunk));
+    this.recordingSamples += chunk.length;
     this.onChunkCallback?.(chunk);
+    return {
+      accepted: true,
+      limitReached: this.recordingSamples >= AudioManager.MAX_RECORDING_SAMPLES,
+    };
   }
 
   /**
    * Stop recording and return the complete audio buffer.
    */
-  stopRecording(): Float32Array {
+  stopRecording(captureId?: string): Float32Array {
     if (!this._isRecording) {
       return new Float32Array(0);
     }
+    if (captureId && this.captureId !== captureId) return new Float32Array(0);
     this._isRecording = false;
 
     const totalLength = this.recordingChunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -59,6 +78,8 @@ export class AudioManager {
       offset += chunk.length;
     }
     this.recordingChunks = [];
+    this.recordingSamples = 0;
+    this.captureId = null;
     this.onChunkCallback = null;
     return combined;
   }
@@ -77,6 +98,8 @@ export class AudioManager {
     this._isRecording = false;
     this._isPlaying = false;
     this.recordingChunks = [];
+    this.recordingSamples = 0;
+    this.captureId = null;
     this.onChunkCallback = null;
   }
 }

@@ -93,5 +93,17 @@ describe('EncryptedStorage', () => {
       expect(rows[0].role).toBe('user');
       expect(rows[0].conversation_id).toBe(1);
     });
+
+    it('encrypts every message written through the atomic turn operation', async () => {
+      await storage.insertTurnMessages(1, [
+        { role: 'user', content: 'private Frage' },
+        { role: 'assistant', content: 'private Antwort' },
+      ]);
+
+      const rawRows = await rawStorage.queryMessagesPage({ excludeConversationId: 99, limit: 10 });
+      expect(rawRows.every((row) => !row.content.includes('private'))).toBe(true);
+      const rows = await storage.queryMessagesPage({ excludeConversationId: 99, limit: 10 });
+      expect(rows.map((row) => row.content).reverse()).toEqual(['private Frage', 'private Antwort']);
+    });
   });
 });

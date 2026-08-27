@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { bootstrap, AppContext } from './core/bootstrap.js';
+import { bootstrap, repairInvalidConfig, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
 import { ModelRuntime } from './services/llm/model-runtime.js';
@@ -27,6 +27,7 @@ import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
 import { registerElectronShutdown } from './main/electron-shutdown.js';
+import { registerVoiceRendererLifecycle } from './main/voice-renderer-lifecycle.js';
 
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
@@ -39,6 +40,11 @@ let systemActions: SystemActions | null = null;
 let oauth: OAuthConnectionService | null = null;
 
 const electronShutdown = registerElectronShutdown(app, () => appContext);
+let resolveSplashDone!: () => void;
+const splashDone = new Promise<void>((resolve) => {
+  resolveSplashDone = resolve;
+});
+ipcMain.once('splash-done', resolveSplashDone);
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -124,6 +130,7 @@ app.whenReady().then(async () => {
       app.quit();
       return;
     }
+    await repairInvalidConfig(appContext);
   }
 
   // --- Preload: create providers (fast, no activation) ---
@@ -198,6 +205,8 @@ app.whenReady().then(async () => {
     system: systemActions,
     spotify: spotifyActions,
     media: mediaController,
+    confirmationGate: appContext.actionConfirmations,
+    getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before
@@ -228,6 +237,14 @@ app.whenReady().then(async () => {
     hotkeyManager,
   );
   appContext.registry.register(voiceService);
+  if (mainWindow) {
+    const stopVoiceRendererLifecycle = registerVoiceRendererLifecycle(mainWindow, voiceService);
+    appContext.lifecycle.registerCleanup(
+      'voice-renderer-lifecycle',
+      stopVoiceRendererLifecycle,
+      'before_services',
+    );
+  }
 
   // --- Shared dependency getters (avoid stale refs in modules) ---
   const getMainWindow = () => mainWindow;
@@ -254,16 +271,18 @@ app.whenReady().then(async () => {
     stopVoiceLevel = null;
   }, 'before_services');
 
-  registerVoiceHandlers(ipcMain, {
+  const stopVoiceHandlers = registerVoiceHandlers(ipcMain, {
     getAppContext,
     onChunk: voiceLevel.onChunk,
   });
+  appContext.lifecycle.registerCleanup('voice-ipc-handlers', stopVoiceHandlers, 'before_services');
 
   const stopBootHandlers = registerBootHandlers({
     getMainWindow,
     getAppContext,
     piperProvider,
     containerManager,
+    splashDone,
   });
   appContext.lifecycle.registerCleanup('boot-handlers', stopBootHandlers, 'before_services');
 

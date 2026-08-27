@@ -3,12 +3,16 @@ import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahButton } from '../../../components/sarah-button.js';
 import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
 import type { SarahConfig, CustomCommand } from '../../../../core/config-schema.js';
+import { BUILTIN_COMMANDS, RESERVED_BUILTIN_COMMANDS } from '../../../../services/commands/builtin-commands.js';
 
-const BUILTIN_COMMANDS = [
-  { command: '/anonymous', description: 'Nachricht wird nach der Session vergessen' },
-  { command: '/showcontext', description: 'Zeigt alles was Sarah über dich weiß' },
-  { command: '/quietmode', description: 'Ruhemodus ein/aus' },
-];
+const ALLOWED_PTT_KEYS = [
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
+  'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+] as const;
+
+function isAllowedPttKey(key: string): key is typeof ALLOWED_PTT_KEYS[number] {
+  return ALLOWED_PTT_KEYS.some((candidate) => candidate === key);
+}
 
 function createCommandRow(cmd: { command: string; description: string }, deletable: boolean, onDelete?: () => void): HTMLElement {
   const row = document.createElement('div');
@@ -70,11 +74,10 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
 
   // Configure hotkey capture via public API
   hotkeyWrapper.setReadOnly(true);
-  const ALLOWED_KEYS = ['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'];
   hotkeyWrapper.onKeydown((e: KeyboardEvent) => {
     e.preventDefault();
     const key = e.key;
-    if (!ALLOWED_KEYS.includes(key)) return;
+    if (!isAllowedPttKey(key)) return;
     hotkeyWrapper.value = key;
     save('controls', { ...controls, pushToTalkKey: key });
     showSaved(feedback);
@@ -180,7 +183,7 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
       if (!cmd.startsWith('/')) cmd = '/' + cmd;
       cmd = cmd.toLowerCase();
       if (!/^\/[a-z0-9_-]{1,50}$/i.test(cmd)) return;
-      if (BUILTIN_COMMANDS.some(b => b.command.toLowerCase() === cmd)) return;
+      if (RESERVED_BUILTIN_COMMANDS.has(cmd)) return;
       if (customCmds.some(c => c.command.trim().toLowerCase() === cmd)) return;
       customCmds.push({ command: cmd, prompt });
       controls.customCommands = customCmds;

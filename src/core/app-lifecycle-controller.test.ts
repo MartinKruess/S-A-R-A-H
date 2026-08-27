@@ -48,6 +48,50 @@ describe('AppLifecycleController', () => {
     expect(snapshot.capabilities.actions.state).toBe('ready');
   });
 
+  it('preserves a provider error published by a recovery-capable service until recovery', async () => {
+    const registry = new ServiceRegistry(new MessageBus());
+    let lifecycle!: AppLifecycleController;
+    const router = service('router');
+    router.init = vi.fn(async () => {
+      lifecycle.setCapability('router', 'error', 'Ollama offline');
+    });
+    registry.register(router);
+    lifecycle = new AppLifecycleController(registry);
+
+    const initial = await lifecycle.start();
+
+    expect(initial.state).toBe('degraded');
+    expect(initial.capabilities.router).toEqual({ state: 'error', message: 'Ollama offline' });
+
+    lifecycle.setCapability('router', 'starting');
+    expect(lifecycle.snapshot.state).toBe('starting');
+    lifecycle.setCapability('router', 'ready');
+    expect(lifecycle.snapshot.state).toBe('ready');
+    expect(lifecycle.snapshot.capabilities.router).toEqual({ state: 'ready' });
+  });
+
+  it('preserves a recovery state published during successful service initialization', async () => {
+    const registry = new ServiceRegistry(new MessageBus());
+    let lifecycle!: AppLifecycleController;
+    const router = service('router');
+    router.init = vi.fn(async () => {
+      lifecycle.setCapability('router', 'starting', 'Ollama wird erneut geprüft');
+    });
+    registry.register(router);
+    lifecycle = new AppLifecycleController(registry);
+
+    const initial = await lifecycle.start();
+
+    expect(initial.state).toBe('starting');
+    expect(initial.capabilities.router).toEqual({
+      state: 'starting',
+      message: 'Ollama wird erneut geprüft',
+    });
+
+    lifecycle.setCapability('router', 'ready');
+    expect(lifecycle.snapshot.state).toBe('ready');
+  });
+
   it('publishes a completed service capability while later services are still starting', async () => {
     let releaseVoice!: () => void;
     const voiceGate = new Promise<void>((resolve) => { releaseVoice = resolve; });

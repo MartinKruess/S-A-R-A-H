@@ -1,4 +1,5 @@
 import type { StorageProvider, MessageRow } from './storage.interface.js';
+import { mustKeepTurnTransient } from '../memory-policy.js';
 
 /** Sentinel conversationId when the session row could not be created (in-memory mode). */
 export const FALLBACK_CONVERSATION_ID = -1;
@@ -16,6 +17,11 @@ export interface ConversationBoot {
   degraded: boolean;
 }
 
+export interface ConversationBootPolicy {
+  memoryAllowed: boolean;
+  memoryExclusions: readonly string[];
+}
+
 /**
  * Owns the conversation-session lifecycle: legacy repair, one session per boot,
  * and loading the start context (last N messages from previous sessions).
@@ -24,13 +30,15 @@ export interface ConversationBoot {
 export class ConversationStore {
   constructor(private db: StorageProvider) {}
 
-  async boot(): Promise<ConversationBoot> {
+  async boot(policy: ConversationBootPolicy = { memoryAllowed: true, memoryExclusions: [] }): Promise<ConversationBoot> {
     // Order matters (Spec B, H1): repair must run before the session insert.
     // On a fresh conversations table the new session would otherwise take id 1,
     // and the exclusion filter would hide exactly the legacy messages.
     await this.repairLegacy();
     const conversationId = await this.createSession();
-    const startContext = await this.loadStartContext(conversationId);
+    const startContext = policy.memoryAllowed
+      ? await this.loadStartContext(conversationId, policy.memoryExclusions)
+      : [];
     return {
       conversationId,
       startContext,
@@ -60,13 +68,48 @@ export class ConversationStore {
     }
   }
 
-  private async loadStartContext(conversationId: number): Promise<MessageRow[]> {
+  private async loadStartContext(
+    conversationId: number,
+    memoryExclusions: readonly string[],
+  ): Promise<MessageRow[]> {
     try {
       const rows = await this.db.queryMessagesPage({
         excludeConversationId: conversationId,
-        limit: START_CONTEXT_LIMIT,
+        // Read enough headroom to recover the user half when the 20-message
+        // boundary lands in the middle of a multi-message turn.
+        limit: 100,
       });
-      return rows.reverse(); // DESC (newest first) → chronological
+      const excludedConversationIds = new Set(
+        rows
+          .filter((row) => mustKeepTurnTransient([row.content], {
+            allowed: true,
+            exclusions: memoryExclusions,
+          }))
+          .map((row) => row.conversation_id),
+      );
+      const chronological = rows
+        .filter((row) => !excludedConversationIds.has(row.conversation_id))
+        .reverse(); // DESC (newest first) → chronological
+      const turns: MessageRow[][] = [];
+      let current: MessageRow[] | null = null;
+      for (const row of chronological) {
+        if (row.role === 'user') {
+          if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+          current = [row];
+        } else if (row.role === 'assistant' && current && row.conversation_id === current[0].conversation_id) {
+          current.push(row);
+        }
+      }
+      if (current && current.some((entry) => entry.role === 'assistant')) turns.push(current);
+
+      const kept: MessageRow[][] = [];
+      let count = 0;
+      for (let index = turns.length - 1; index >= 0; index -= 1) {
+        if (count + turns[index].length > START_CONTEXT_LIMIT) break;
+        kept.unshift(turns[index]);
+        count += turns[index].length;
+      }
+      return kept.flat();
     } catch (err) {
       console.warn('[ConversationStore] Start-context load failed — starting empty:', err);
       return [];

@@ -108,7 +108,10 @@ export const PersonalizationSchema = z.object({
 
 export const ControlsSchema = z.object({
   voiceMode: z.enum(['keyword', 'push-to-talk', 'off']).default('off'),
-  pushToTalkKey: z.string().default('F9'),
+  pushToTalkKey: z.enum([
+    'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
+    'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+  ]).default('F9'),
   quietModeDuration: z.number().default(30),
   customCommands: z.array(CustomCommandSchema).default([]),
 });
@@ -235,6 +238,9 @@ export const SarahConfigSchema = z.preprocess(
 // ── Inferred Types ──
 
 export type SarahConfig = z.infer<typeof SarahConfigSchema>;
+export type SarahConfigPatch = Omit<Partial<SarahConfig>, 'audio'> & {
+  audio?: Partial<AudioConfig>;
+};
 export type Profile = z.infer<typeof ProfileSchema>;
 export type LinkPreference = z.infer<typeof LinkPreferenceSchema>;
 export type Skills = z.infer<typeof SkillsSchema>;

@@ -1,10 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   isValidChatMessage,
+  isValidChatInput,
   isValidAudioChunk,
   isValidInteractionMode,
+  isValidCaptureFailureInput,
+  isValidPlaybackFailureInput,
   MAX_CHAT_MESSAGE_LENGTH,
   MAX_AUDIO_CHUNK_SAMPLES,
+  MAX_VOICE_ERROR_LENGTH,
 } from '../../src/main/ipc-validation';
 
 describe('ipc payload validation', () => {
@@ -41,6 +45,34 @@ describe('ipc payload validation', () => {
     expect(isValidInteractionMode('keyword')).toBe(false);
     expect(isValidInteractionMode(1)).toBe(false);
     expect(isValidInteractionMode(null)).toBe(false);
+  });
+
+  it('requires a correlated turn and an explicit interaction mode for chat input', () => {
+    const turnId = '11111111-1111-4111-8111-111111111111';
+    expect(isValidChatInput({ turnId, message: 'Hallo Sarah', mode: 'chat' })).toBe(true);
+    expect(isValidChatInput({ turnId, message: 'Hallo Sarah', mode: 'voice' })).toBe(true);
+    expect(isValidChatInput({ turnId, message: 'Hallo Sarah' })).toBe(false);
+    expect(isValidChatInput({ turnId, message: 'Hallo Sarah', mode: 'ambient' })).toBe(false);
+  });
+
+  it('validates renderer capture failures with an optional correlated captureId', () => {
+    const captureId = '33333333-3333-4333-8333-333333333333';
+    expect(isValidCaptureFailureInput({ captureId, message: 'Mikrofon nicht verfügbar.' })).toBe(true);
+    expect(isValidCaptureFailureInput({ message: 'Mikrofon nicht verfügbar.' })).toBe(true);
+    expect(isValidCaptureFailureInput({ captureId: 'stale', message: 'Fehler' })).toBe(false);
+    expect(isValidCaptureFailureInput({ captureId, message: '' })).toBe(false);
+    expect(isValidCaptureFailureInput({
+      captureId,
+      message: 'x'.repeat(MAX_VOICE_ERROR_LENGTH + 1),
+    })).toBe(false);
+  });
+
+  it('validates correlated renderer playback failures', () => {
+    const turnId = '11111111-1111-4111-8111-111111111111';
+    const playbackId = '22222222-2222-4222-8222-222222222222';
+    expect(isValidPlaybackFailureInput({ turnId, playbackId, message: 'Audioausgabe fehlgeschlagen.' })).toBe(true);
+    expect(isValidPlaybackFailureInput({ turnId, playbackId: 'stale', message: 'Fehler' })).toBe(false);
+    expect(isValidPlaybackFailureInput({ turnId, playbackId, message: '' })).toBe(false);
   });
 
   it('accepts optional short strings for dialog titles', async () => {

@@ -4,15 +4,11 @@ declare var sarah: {
   bootReady(): void;
   revealDone(): void;
   bootDone(): void;
-  splashTts(text: string): Promise<void>;
+  splashTts(text: string): Promise<{ audio: number[]; sampleRate: number } | null>;
   getConfig(): Promise<{ onboarding: { firstStart: boolean; setupComplete: boolean } }>;
   saveConfig(config: Record<string, unknown>): Promise<unknown>;
   onBootStatus(cb: (data: BootStatus) => void): () => void;
   onTransitionStart(cb: () => void): () => void;
-  voice: {
-    onPlayAudio(cb: (data: { audio: number[]; sampleRate: number }) => void): () => void;
-    playbackDone(): Promise<void>;
-  };
 };
 
 interface BootStatus {
@@ -87,23 +83,73 @@ function hideBubble(): void {
 // ============================================================
 let audioContext: AudioContext | null = null;
 
-function playTtsAudio(audioData: number[], sampleRate: number): Promise<void> {
-  return new Promise((resolve) => {
-    if (!audioContext) audioContext = new AudioContext({ sampleRate });
-    const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
-    const channel = buffer.getChannelData(0);
-    for (let i = 0; i < audioData.length; i++) {
-      channel[i] = audioData[i]!;
-    }
-    const source = audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.destination);
-    source.onended = () => {
-      sarah.voice.playbackDone();
-      resolve();
-    };
-    source.start();
+interface BootAudioPlayback {
+  done: Promise<void>;
+  stop(): void;
+}
+
+export function playTtsAudio(
+  audioData: number[],
+  sampleRate: number,
+): BootAudioPlayback {
+  if (!audioContext) audioContext = new AudioContext({ sampleRate });
+  const buffer = audioContext.createBuffer(1, audioData.length, sampleRate);
+  const channel = buffer.getChannelData(0);
+  for (let i = 0; i < audioData.length; i++) {
+    channel[i] = audioData[i]!;
+  }
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+  let settled = false;
+  let started = false;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+  let resolveDone!: () => void;
+  const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
   });
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = null;
+    source.onended = null;
+    resolveDone();
+  };
+  source.onended = finish;
+  watchdog = setTimeout(() => {
+    try {
+      source.stop();
+    } catch {
+      // A suspended context may never have started the source.
+    }
+    finish();
+  }, SPLASH_PLAYBACK_WATCHDOG_MS);
+  void (async () => {
+    try {
+      if (audioContext?.state === 'suspended') await audioContext.resume();
+      if (settled) return;
+      source.start();
+      started = true;
+    } catch (error) {
+      console.warn('[Boot] Splash speech context could not resume:', error);
+      finish();
+    }
+  })();
+  return {
+    done,
+    stop: () => {
+      if (settled) return;
+      if (started) {
+        try {
+          source.stop();
+        } catch {
+          // The source may already have ended between the ownership check and stop().
+        }
+      }
+      finish();
+    },
+  };
 }
 
 /** Play an audio file from a URL, returns a promise that resolves when done. */
@@ -145,6 +191,18 @@ let ttsTriggered = false;
 let ttsAudioReady = false;
 let pendingTtsPlay: (() => void) | null = null;
 let ttsAudioResolve: (() => void) | null = null;
+let ttsRequestStartedAt: number | null = null;
+let pendingTtsPlayTimer: ReturnType<typeof setTimeout> | null = null;
+let bootDoneTimer: ReturnType<typeof setTimeout> | null = null;
+let activeTtsPlayback: BootAudioPlayback | null = null;
+
+// Main owns a bounded 330-second service lifecycle because a cold Whisper
+// startup may take up to five minutes. Keep the renderer waiting for Piper's
+// authoritative ready/unavailable result beyond that boundary, while retaining
+// a final watchdog in case the terminal boot event is lost entirely.
+const PIPER_TERMINAL_WAIT_MS = 340_000;
+const SPLASH_TTS_REQUEST_WAIT_MS = 8_000;
+const SPLASH_PLAYBACK_WATCHDOG_MS = 15_000;
 
 // Genesis state
 let genesisAudioPlaying = false;
@@ -259,10 +317,12 @@ function tick(): void {
         hideStatus();
 
         // Save firstStart = false (safe merge to preserve setupComplete)
-        sarah.getConfig().then((config) => {
-          sarah.saveConfig({
+        void sarah.getConfig().then((config) => {
+          return sarah.saveConfig({
             onboarding: { ...config.onboarding, firstStart: false },
           });
+        }).catch((error) => {
+          console.warn('[Boot] Genesis completion could not be persisted:', error);
         });
       }
 
@@ -288,12 +348,42 @@ function tick(): void {
     }
 
     case 'boot-piper-wait': {
+      if (!ttsTriggered && elapsed() > PIPER_TERMINAL_WAIT_MS) {
+        startPhase('boot-done');
+        break;
+      }
+
       if (routerAvailable && piperTerminal && piperAvailable && !ttsTriggered) {
         ttsTriggered = true;
-        sarah.splashTts('Huch, jetzt bin ich einsatzbereit!');
+        ttsRequestStartedAt = performance.now();
         ttsAudioResolve = () => {
-          setTimeout(() => startPhase('boot-done'), 1000);
+          bootDoneTimer = setTimeout(() => {
+            bootDoneTimer = null;
+            startPhase('boot-done');
+          }, 1000);
         };
+        void sarah.splashTts('Huch, jetzt bin ich einsatzbereit!')
+          .then((result) => {
+            if (!result || phase !== 'boot-piper-wait') return;
+            ttsAudioReady = true;
+            pendingTtsPlay = () => {
+              try {
+                const playback = playTtsAudio(result.audio, result.sampleRate);
+                activeTtsPlayback = playback;
+                void playback.done.then(() => {
+                  if (activeTtsPlayback === playback) activeTtsPlayback = null;
+                  ttsAudioResolve?.();
+                  ttsAudioResolve = null;
+                });
+              } catch (error) {
+                console.warn('[Boot] Splash speech playback failed:', error);
+                startPhase('boot-done');
+              }
+            };
+          })
+          .catch((error) => {
+            console.warn('[Boot] Splash speech request failed:', error);
+          });
       }
 
       if (piperTerminal && (!piperAvailable || !routerAvailable) && elapsed() > 1000) {
@@ -303,17 +393,35 @@ function tick(): void {
       if (ttsAudioReady && !breakTriggered) {
         breakTriggered = true;
         orb.triggerBreak(3000);
-        setTimeout(() => { pendingTtsPlay?.(); }, 200);
+        pendingTtsPlayTimer = setTimeout(() => {
+          pendingTtsPlayTimer = null;
+          if (phase === 'boot-piper-wait') pendingTtsPlay?.();
+        }, 200);
       }
 
-      // Fallback
-      if (ttsTriggered && elapsed() > 8000) {
+      // Degrade if Piper never reaches a terminal state. Once synthesis has
+      // started it gets its own deadline; active playback owns the boot until
+      // it has actually ended, so normal runtime audio can never overlap it.
+      if (
+        ttsTriggered
+        && !ttsAudioReady
+        && ttsRequestStartedAt !== null
+        && performance.now() - ttsRequestStartedAt > SPLASH_TTS_REQUEST_WAIT_MS
+      ) {
         startPhase('boot-done');
       }
       break;
     }
 
     case 'boot-done': {
+      if (pendingTtsPlayTimer) clearTimeout(pendingTtsPlayTimer);
+      pendingTtsPlayTimer = null;
+      if (bootDoneTimer) clearTimeout(bootDoneTimer);
+      bootDoneTimer = null;
+      activeTtsPlayback?.stop();
+      activeTtsPlayback = null;
+      pendingTtsPlay = null;
+      ttsAudioResolve = null;
       hideBubble();
       hideStatus();
 
@@ -343,15 +451,23 @@ function tick(): void {
 // ============================================================
 let bootDoneResolve: (() => void) | null = null;
 
-export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
-  return new Promise(async (resolve) => {
-    bootDoneResolve = resolve;
-    orb = orbInstance;
+export async function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
+  orb = orbInstance;
 
-    // Check if this is a first start
+  // Configuration is optional for the boot animation. If persistence is
+  // temporarily unavailable, use the safe returning-user path and continue
+  // until the runtime capability events provide the authoritative status.
+  try {
     const config = await sarah.getConfig();
     isFirstStart = config.onboarding.firstStart;
+  } catch (error) {
+    isFirstStart = false;
+    console.warn('[Boot] Configuration unavailable; continuing without Genesis:', error);
+    showStatus('Konfiguration konnte nicht geladen werden. Sarah startet eingeschränkt.', false, 'warning');
+  }
 
+  return new Promise((resolve) => {
+    bootDoneResolve = resolve;
     // Listen for boot status from main
     sarah.onBootStatus((data) => {
       switch (data.step) {
@@ -387,19 +503,6 @@ export function startBootSequence(orbInstance: SarahHexOrb): Promise<void> {
           if (data.message) showStatus(data.message, false, data.severity ?? 'warning');
           break;
       }
-    });
-
-    // Buffer TTS audio
-    sarah.voice.onPlayAudio(({ audio, sampleRate }) => {
-      ttsAudioReady = true;
-      pendingTtsPlay = () => {
-        playTtsAudio(audio, sampleRate).then(() => {
-          if (ttsAudioResolve) {
-            ttsAudioResolve();
-            ttsAudioResolve = null;
-          }
-        });
-      };
     });
 
     // Signal main.ts that we're ready for boot status

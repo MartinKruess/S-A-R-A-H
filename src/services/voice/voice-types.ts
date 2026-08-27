@@ -6,6 +6,14 @@ export type VoiceState = 'idle' | 'listening' | 'processing' | 'speaking';
 /** Voice control modes — mutually exclusive */
 export type VoiceMode = 'off' | 'keyword' | 'push-to-talk';
 
+/** Voice modes that currently have a complete capture/control implementation. */
+export type EffectiveVoiceMode = Exclude<VoiceMode, 'keyword'>;
+
+/** Keep the not-yet-implemented keyword mode from activating only half the voice stack. */
+export function normalizeVoiceMode(mode: VoiceMode): EffectiveVoiceMode {
+  return mode === 'keyword' ? 'off' : mode;
+}
+
 /** Interaction mode — determines whether TTS speaks responses */
 export type InteractionMode = 'chat' | 'voice' | 'chatspeak';
 

@@ -5,6 +5,8 @@ import type { LlmProvider, ChatMessage, ChatOptions } from '../../../src/service
 import type { AppContext } from '../../../src/core/bootstrap';
 import { MessageBus } from '../../../src/core/message-bus';
 import { feedbackTexts } from '../../../src/services/llm/filler-phrases';
+import type { ModelRuntimePort } from '../../../src/services/llm/model-runtime';
+import { ROUTER_DEADLINE_MS } from '../../../src/services/llm/routing-service';
 
 function createMockProvider(id: string, chatResponse: string): LlmProvider {
   return {
@@ -52,6 +54,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
         set: vi.fn(),
         query: vi.fn().mockResolvedValue([]),
         insert: vi.fn().mockResolvedValue(1),
+        insertTurnMessages: vi.fn().mockResolvedValue(undefined),
         update: vi.fn(),
         delete: vi.fn(),
         queryMessagesPage: vi.fn().mockResolvedValue([]),
@@ -74,6 +77,10 @@ describe('RouterService', () => {
   let workerProvider: LlmProvider;
   let context: AppContext;
   let bus: MessageBus;
+
+  function runtime(): ModelRuntimePort {
+    return (service as unknown as { modelRuntime: ModelRuntimePort }).modelRuntime;
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -105,16 +112,31 @@ describe('RouterService', () => {
     expect(options).toMatchObject({ num_predict: 1, keep_alive: -1 });
   });
 
-  it('does not claim readiness when router warmup fails', async () => {
+  it('keeps the recovery service running while the runtime reports a warmup error', async () => {
     (routerProvider.chat as any).mockRejectedValueOnce(new Error('ollama unreachable'));
     await service.init();
-    expect(service.status).toBe('error');
+    expect(service.status).toBe('running');
+    expect(runtime().snapshot.state).toBe('error');
   });
 
-  it('status is error after init when router provider not available', async () => {
-    (routerProvider.isAvailable as any).mockResolvedValue(false);
-    await service.init();
-    expect(service.status).toBe('error');
+  it('keeps unavailable capability observable and recovers it without rebuilding the service', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(routerProvider.isAvailable)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      await service.init();
+      expect(service.status).toBe('running');
+      expect(runtime().snapshot.roles.router.availability).toBe('unavailable');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(runtime().snapshot.roles.router.availability).toBe('available');
+      expect(runtime().snapshot.state).toBe('ready');
+      expect(service.status).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   describe('init idempotence (single-flight)', () => {
@@ -155,7 +177,7 @@ describe('RouterService', () => {
 
       // Routing event emitted
       expect(routings.length).toBe(1);
-      expect(routings[0]).toEqual({
+      expect(routings[0]).toMatchObject({
         from: 'router',
         to: 'local_worker',
       });
@@ -274,6 +296,15 @@ describe('RouterService', () => {
 
       const fillers: string[] = [];
       bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+      bus.on('action:result', (msg) => service.onMessage(msg));
+      bus.on('action:request', (msg) => {
+        bus.emit('test', 'action:result', {
+          turnId: msg.data.turnId,
+          requestId: msg.data.requestId,
+          action: msg.data.action,
+          ok: true,
+        });
+      });
 
       await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
 
@@ -295,6 +326,15 @@ describe('RouterService', () => {
 
       const fillers: string[] = [];
       bus.on('llm:filler', (msg) => fillers.push(msg.data.text));
+      bus.on('action:result', (msg) => service.onMessage(msg));
+      bus.on('action:request', (msg) => {
+        bus.emit('test', 'action:result', {
+          turnId: msg.data.turnId,
+          requestId: msg.data.requestId,
+          action: msg.data.action,
+          ok: true,
+        });
+      });
 
       // A device-command-looking message while 9B is active triggers the gate swap.
       await service.handleChatMessage('Öffne Spotify', 'voice');
@@ -340,12 +380,14 @@ describe('RouterService', () => {
       await service.handleChatMessage('Erkläre mir Quantenphysik', 'voice');
 
       const fillerText = fillers[0];
-      // Exactly two messages persisted (user + worker answer) — the filler adds none.
-      const insertCalls = (context.db.insert as any).mock.calls.filter(
-        (call: [string, Record<string, unknown>]) => call[0] === 'messages',
-      );
-      expect(insertCalls).toHaveLength(2);
-      expect(insertCalls.map((c: [string, { content: string }]) => c[1].content)).not.toContain(fillerText);
+      // The whole turn is persisted atomically; the transient filler adds no row.
+      expect(context.db.insertTurnMessages).toHaveBeenCalledOnce();
+      expect(context.db.insertTurnMessages).toHaveBeenCalledWith(1, [
+        { role: 'user', content: 'Erkläre mir Quantenphysik' },
+        { role: 'assistant', content: 'Ausführliche Antwort vom 9B Modell.' },
+      ]);
+      const persisted = vi.mocked(context.db.insertTurnMessages).mock.calls[0][1];
+      expect(persisted.map((message) => message.content)).not.toContain(fillerText);
 
       // The filler was not pushed to history: it never reaches the worker context.
       const workerMessages = (workerProvider.chat as any).mock.calls[0][0] as ChatMessage[];
@@ -354,6 +396,273 @@ describe('RouterService', () => {
   });
 
   describe('error handling', () => {
+    it('surfaces the hard router deadline as the existing timeout terminal', async () => {
+      await service.init();
+      vi.useFakeTimers();
+      try {
+        (routerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+          async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+            new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener(
+                'abort',
+                () => reject(options.signal?.reason),
+                { once: true },
+              );
+            })
+          ),
+        );
+        const errors: string[] = [];
+        const terminals: Array<{ status: string; message?: string }> = [];
+        bus.on('llm:error', (message) => errors.push(message.data.message));
+        bus.on('turn:terminal', (message) => terminals.push(message.data));
+        const turn = service.handleChatMessage('Erkläre mir den Himmel.', 'chat');
+
+        await vi.advanceTimersByTimeAsync(ROUTER_DEADLINE_MS);
+        await turn;
+
+        expect(errors).toEqual(['Sarah hat den Faden verloren... Versuch es nochmal.']);
+        expect(terminals).toEqual([{
+          status: 'error',
+          message: 'Sarah hat den Faden verloren... Versuch es nochmal.',
+          turnId: expect.any(String),
+        }]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cancels active and queued turns when lifecycle enters stopping', async () => {
+      let lifecycleListener: ((snapshot: { state: string }) => void) | null = null;
+      context.lifecycle = {
+        snapshot: { state: 'ready' },
+        subscribe: vi.fn((listener: (snapshot: { state: string }) => void) => {
+          lifecycleListener = listener;
+          listener({ state: 'ready' });
+          return vi.fn();
+        }),
+      } as unknown as AppContext['lifecycle'];
+      const shutdownAware = new RouterService(context, routerProvider, workerProvider);
+      await shutdownAware.init();
+      shutdownAware.activeModel = '9b';
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+          new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          })
+        ),
+      );
+      const terminals: string[] = [];
+      bus.on('turn:terminal', (message) => terminals.push(message.data.status));
+
+      const active = shutdownAware.handleChatMessage('Aktiv');
+      const queued = shutdownAware.handleChatMessage('Wartend');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      lifecycleListener!({ state: 'stopping' });
+      await Promise.all([active, queued]);
+
+      expect(terminals).toEqual(['canceled', 'canceled']);
+      expect(workerProvider.chat).toHaveBeenCalledOnce();
+    });
+
+    it('accepts an external barge-in terminal without logging the expected abort or emitting a duplicate', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_messages: ChatMessage[], _onChunk: (text: string) => void, options?: ChatOptions) => (
+          new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          })
+        ),
+      );
+      const terminals: Array<{ turnId: string; status: string }> = [];
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:terminal', (message) => {
+        terminals.push(message.data);
+        service.onMessage(message);
+      });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        const active = service.handleChatMessage('Lange Workerantwort', 'chat');
+        await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+        bus.emit('voice', 'turn:terminal', { turnId, status: 'canceled' });
+        await active;
+
+        expect(terminals).toEqual([{ turnId, status: 'canceled' }]);
+        expect(warn).not.toHaveBeenCalledWith(
+          '[Router] Output job failed:',
+          expect.objectContaining({ name: 'AbortError' }),
+        );
+        expect(warn).not.toHaveBeenCalledWith(
+          '[MessageBus] terminal event for unknown turn refused:',
+          turnId,
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('keeps the interrupted user question as follow-up context without persisting partial assistant output', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) {
+            onChunk('Unvollständige Teilantwort');
+            return new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+            });
+          }
+          followUpMessages = messages;
+          onChunk('Fortsetzung zur letzten Frage.');
+          return 'Fortsetzung zur letzten Frage.';
+        },
+      );
+      let interruptedTurnId = '';
+      bus.on('turn:accepted', (message) => {
+        if (!interruptedTurnId) interruptedTurnId = message.data.turnId;
+      });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+      bus.on('turn:terminal', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage('Erkläre die Relativitätstheorie ausführlich', 'chat');
+      await vi.waitFor(() => expect(workerCall).toBe(1));
+      bus.emit('voice', 'turn:cancel', {
+        turnId: interruptedTurnId,
+        reason: 'Voice interruption',
+      });
+      bus.emit('voice', 'turn:terminal', {
+        turnId: interruptedTurnId,
+        status: 'canceled',
+      });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+
+      await service.handleChatMessage('Erzähl mir mehr dazu', 'chat');
+
+      expect(followUpMessages).toContainEqual({
+        role: 'user',
+        content: 'Erkläre die Relativitätstheorie ausführlich',
+      });
+      expect(followUpMessages).toContainEqual({ role: 'user', content: 'Erzähl mir mehr dazu' });
+      expect(followUpMessages).not.toContainEqual({
+        role: 'assistant',
+        content: 'Unvollständige Teilantwort',
+      });
+      const allWrites = vi.mocked(context.db.insertTurnMessages).mock.calls.flatMap((call) => call[1]);
+      expect(allWrites).not.toContainEqual({
+        role: 'user',
+        content: 'Erkläre die Relativitätstheorie ausführlich',
+      });
+      expect(allWrites).not.toContainEqual({
+        role: 'assistant',
+        content: 'Unvollständige Teilantwort',
+      });
+    });
+
+    it('does not retain a worker turn canceled before its first output chunk', async () => {
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) return new Promise<string>((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+          });
+          followUpMessages = messages;
+          onChunk('Neue Antwort');
+          return 'Neue Antwort';
+        },
+      );
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage('Noch nicht beantwortete Frage', 'chat');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      bus.emit('voice', 'turn:cancel', { turnId, reason: 'Voice interruption' });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+      await service.handleChatMessage('Unabhängige Folgefrage', 'chat');
+      expect(followUpMessages).not.toContainEqual({
+        role: 'user',
+        content: 'Noch nicht beantwortete Frage',
+      });
+    });
+
+    it.each([
+      {
+        label: 'memory disabled',
+        configure: (target: AppContext) => { target.parsedConfig.trust.memoryAllowed = false; },
+        question: 'Meine nicht gespeicherte Frage',
+        expectedHistory: 'Meine nicht gespeicherte Frage',
+      },
+      {
+        label: 'anonymous mode',
+        configure: (target: AppContext) => { target.parsedConfig.trust.anonymousEnabled = true; },
+        question: '/anonymous Mein Codename ist Eule',
+        expectedHistory: 'Mein Codename ist Eule',
+      },
+      {
+        label: 'memory exclusion',
+        configure: (target: AppContext) => { target.parsedConfig.trust.memoryExclusions = ['Finanzen']; },
+        question: 'Meine Finanzen betreffen dieses Thema',
+        expectedHistory: 'Meine Finanzen betreffen dieses Thema',
+      },
+    ])('keeps interrupted user context transient with $label', async ({
+      configure,
+      question,
+      expectedHistory,
+    }) => {
+      configure(context);
+      await service.init();
+      service.activeModel = '9b';
+      let workerCall = 0;
+      let followUpMessages: ChatMessage[] = [];
+      (workerProvider.chat as ReturnType<typeof vi.fn>).mockImplementation(
+        async (messages: ChatMessage[], onChunk: (text: string) => void, options?: ChatOptions) => {
+          workerCall += 1;
+          if (workerCall === 1) {
+            onChunk('Verworfene Teilantwort');
+            return new Promise<string>((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(options.signal?.reason), { once: true });
+            });
+          }
+          followUpMessages = messages;
+          onChunk('Private Folgeantwort');
+          return 'Private Folgeantwort';
+        },
+      );
+      let turnId = '';
+      bus.on('turn:accepted', (message) => { turnId = message.data.turnId; });
+      bus.on('turn:cancel', (message) => service.onMessage(message));
+
+      const interrupted = service.handleChatMessage(question, 'chat');
+      await vi.waitFor(() => expect(workerProvider.chat).toHaveBeenCalledOnce());
+      bus.emit('voice', 'turn:cancel', { turnId, reason: 'Voice interruption' });
+      await interrupted;
+
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+      await service.handleChatMessage('Erzähl mir mehr dazu', 'chat');
+      expect(followUpMessages).toContainEqual({
+        role: 'user',
+        content: expectedHistory,
+      });
+      expect(followUpMessages).not.toContainEqual({
+        role: 'assistant',
+        content: 'Verworfene Teilantwort',
+      });
+      expect(context.db.insertTurnMessages).not.toHaveBeenCalled();
+    });
+
     it('emits llm:error when provider throws', async () => {
       await service.init();
       (routerProvider.chat as any).mockRejectedValue(new Error('connection lost'));

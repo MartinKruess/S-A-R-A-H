@@ -9,9 +9,41 @@ import { getSarah } from '../../shared/window-global.js';
  */
 export interface VoiceAudioSync {
   /** Persist a partial audio-config patch via `saveConfig`. */
-  persist(patch: Partial<AudioConfig>): Promise<void>;
+  persist(patch: Partial<AudioConfig>): Promise<boolean>;
   /** Unsubscribe from the audio-config echo stream. */
   dispose(): void;
+}
+
+export interface RevisionedSnapshotSync<T> {
+  applyEvent(value: T): void;
+  captureSnapshotRevision(): number;
+  applySnapshot(value: T, revision: number): void;
+}
+
+/** Keep an asynchronous initial read from overwriting a newer pushed event. */
+export function createRevisionedSnapshotSync<T>(
+  apply: (value: T) => void,
+): RevisionedSnapshotSync<T> {
+  let revision = 0;
+  return {
+    applyEvent: (value) => {
+      revision += 1;
+      apply(value);
+    },
+    captureSnapshotRevision: () => revision,
+    applySnapshot: (value, snapshotRevision) => {
+      if (revision === snapshotRevision) apply(value);
+    },
+  };
+}
+
+/** Persist one MUTE change and invoke the caller's current-state rollback on failure. */
+export async function persistMuteWithRollback(
+  audioSync: VoiceAudioSync,
+  muted: boolean,
+  rollback: () => void,
+): Promise<void> {
+  if (!await audioSync.persist({ inputMuted: muted })) rollback();
 }
 
 /**
@@ -26,21 +58,30 @@ export function createAudioSync(
 ): VoiceAudioSync {
   const sarah = getSarah();
 
-  let unsub: (() => void) | null = sarah.onAudioConfigChanged(onApply);
+  let appliedRevision = 0;
+  const applyEvent = (audio: AudioConfig): void => {
+    appliedRevision += 1;
+    onApply(audio);
+  };
+  let unsub: (() => void) | null = sarah.onAudioConfigChanged(applyEvent);
+  const snapshotRevision = appliedRevision;
 
   sarah
     .getConfig()
-    .then((cfg) => onApply(cfg.audio))
+    .then((cfg) => {
+      if (appliedRevision === snapshotRevision) onApply(cfg.audio);
+    })
     .catch((err: Error) => {
       console.warn(`[${tag}] initial audio config fetch failed:`, err);
     });
 
-  const persist = async (patch: Partial<AudioConfig>): Promise<void> => {
+  const persist = async (patch: Partial<AudioConfig>): Promise<boolean> => {
     try {
-      const cfg = await sarah.getConfig();
-      await sarah.saveConfig({ audio: { ...cfg.audio, ...patch } });
+      await sarah.saveConfig({ audio: patch });
+      return true;
     } catch (err) {
       console.warn(`[${tag}] audio persist failed:`, err);
+      return false;
     }
   };
 

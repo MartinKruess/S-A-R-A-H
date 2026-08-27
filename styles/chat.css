@@ -66,6 +66,17 @@
   color: var(--sarah-text-primary);
 }
 
+.chat-bubble.assistant.processing {
+  color: var(--sarah-text-muted);
+  font-style: italic;
+  animation: chat-processing-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-processing-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
 .chat-bubble.error {
   align-self: center;
   background: none;

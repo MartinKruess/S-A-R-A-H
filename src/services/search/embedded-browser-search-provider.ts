@@ -71,7 +71,16 @@ export function extractBing(html: string): SearchResult[] {
 
 export function detectBlockPage(html: string): 'consent' | 'captcha' | null {
   const lower = html.toLowerCase();
-  if (/\bcaptcha\b/.test(lower)) return 'captcha';
+  // A result page may legitimately contain the word "captcha" in its query,
+  // title or snippets. Require a challenge marker/structure instead of the
+  // bare word so searches about CAPTCHA remain usable.
+  const isCaptchaWall =
+    /class="[^"]*(?:g-recaptcha|h-captcha)[^"]*"/.test(lower) ||
+    /<(?:iframe|script)[^>]+(?:recaptcha|hcaptcha)[^>]*>/.test(lower) ||
+    /<(?:input|textarea)[^>]+(?:name|id)="[^"]*captcha[^"]*"/.test(lower) ||
+    lower.includes('verify you are human') ||
+    lower.includes('bestätigen sie, dass sie ein mensch sind');
+  if (isCaptchaWall) return 'captcha';
   // Only a real consent interstitial should block — not the bare word "consent"
   // (privacy footers, cookie scripts) that appears on perfectly good result pages.
   const isConsentWall =

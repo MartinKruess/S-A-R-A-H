@@ -3,6 +3,7 @@ import type { LlmConfig } from '../../core/config-schema.js';
 import type { ChatMessage, ChatOptions, LlmProvider } from './llm-provider.interface.js';
 import { ModelRuntime } from './model-runtime.js';
 import type { VramManager } from './vram-manager.js';
+import { abortError } from '../../core/abort-utils.js';
 
 const config: LlmConfig = {
   baseUrl: 'http://ollama.test',
@@ -166,6 +167,149 @@ describe('ModelRuntime', () => {
     expect(runtime.snapshot.activeRole).toBe('router');
   });
 
+  it('lets an aborted queued turn reject immediately and releases the queue after a transition deadline', async () => {
+    const memory = vram();
+    (memory.unloadModel as ReturnType<typeof vi.fn>)
+      .mockImplementationOnce(async () => new Promise<boolean>(() => {}))
+      .mockResolvedValue(true);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: memory,
+      transitionTimeoutMs: 20,
+      runtimeRecheckDelayMs: 60_000,
+    });
+    await runtime.init();
+
+    const blocked = runtime.generateWorkerText('blocked');
+    await vi.waitFor(() => expect(memory.unloadModel).toHaveBeenCalledTimes(1));
+    const controller = new AbortController();
+    const queued = runtime.route('queued', controller.signal);
+    controller.abort();
+
+    await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(blocked).rejects.toMatchObject({ name: 'TimeoutError' });
+    await expect(runtime.route('after deadline')).resolves.toMatchObject({
+      parsed: { kind: 'route' },
+    });
+    await runtime.destroy();
+  });
+
+  it('publishes a runtime outage and recovers capability through one controlled recheck', async () => {
+    const router = provider('router');
+    (router.chat as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('ok')
+      .mockRejectedValueOnce(new Error('Ollama connection lost'))
+      .mockResolvedValue('ok');
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: router,
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      onCapability: capability,
+      runtimeRecheckDelayMs: 5,
+    });
+    await runtime.init();
+
+    await expect(runtime.route('hello')).rejects.toThrow('Ollama connection lost');
+    expect(capability).toHaveBeenCalledWith('router', 'error', 'Ollama connection lost');
+    await vi.waitFor(() => {
+      expect(router.isAvailable).toHaveBeenCalledTimes(2);
+      expect(capability).toHaveBeenCalledWith('router', 'ready');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
+  it('keeps retrying after initial runtime failures until the router becomes available', async () => {
+    const router = provider('router');
+    (router.isAvailable as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: router,
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      runtimeRecheckDelayMs: 5,
+    });
+
+    await expect(runtime.init()).rejects.toThrow('Router model unavailable');
+    await vi.waitFor(() => {
+      expect(router.isAvailable).toHaveBeenCalledTimes(3);
+      expect(runtime.snapshot.roles.router.availability).toBe('available');
+      expect(runtime.snapshot.activeRole).toBe('router');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
+  it('keeps rechecking an initially missing worker without taking the router offline', async () => {
+    const worker = provider('worker');
+    (worker.isAvailable as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+      onCapability: capability,
+      runtimeRecheckDelayMs: 5,
+    });
+
+    const initial = await runtime.init();
+    expect(initial.state).toBe('degraded');
+    expect(initial.activeRole).toBe('router');
+    await vi.waitFor(() => {
+      expect(worker.isAvailable).toHaveBeenCalledTimes(3);
+      expect(runtime.snapshot.roles.local_worker.availability).toBe('available');
+    });
+    expect(runtime.snapshot.state).toBe('ready');
+    const routerStates = capability.mock.calls
+      .filter(([role]) => role === 'router')
+      .map(([, state]) => state);
+    expect(routerStates.at(-1)).toBe('ready');
+    await runtime.destroy();
+  });
+
+  it('degrades availability and rechecks after an eager-load connection failure', async () => {
+    const worker = provider('worker');
+    (worker.chat as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:11434'))
+      .mockResolvedValue('ok');
+    const capability = vi.fn();
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+      onCapability: capability,
+      runtimeRecheckDelayMs: 5,
+    });
+    await runtime.init();
+
+    await expect(runtime.generateWorkerText('question')).rejects.toThrow('ECONNREFUSED');
+    expect(runtime.snapshot.roles.local_worker.availability).toBe('error');
+    expect(capability).toHaveBeenCalledWith(
+      'local_worker',
+      'error',
+      'connect ECONNREFUSED 127.0.0.1:11434',
+    );
+    await vi.waitFor(() => {
+      expect(worker.isAvailable).toHaveBeenCalledTimes(2);
+      expect(capability).toHaveBeenCalledWith('local_worker', 'ready', undefined);
+    });
+    expect(runtime.snapshot.roles.local_worker.availability).toBe('available');
+    expect(runtime.snapshot.state).toBe('ready');
+    await runtime.destroy();
+  });
+
   it('restores the router immediately when worker inference fails', async () => {
     const worker = provider('worker');
     (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
@@ -189,6 +333,107 @@ describe('ModelRuntime', () => {
     expect(runtime.snapshot.activeRole).toBe('router');
     expect(runtime.snapshot.roles.router.residency).toBe('loaded');
     expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+  });
+
+  it('keeps an interrupted worker warm until the normal idle restore', async () => {
+    vi.useFakeTimers();
+    try {
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const worker = provider('worker');
+      (worker.chat as ReturnType<typeof vi.fn>).mockImplementation(async (
+        _messages: ChatMessage[],
+        _onChunk: (text: string) => void,
+        options?: ChatOptions,
+      ) => {
+        if (options?.num_predict === 1) return 'ok';
+        markStarted();
+        return new Promise<string>((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => {
+            reject(options.signal?.reason);
+          }, { once: true });
+        });
+      });
+      const memory = vram();
+      const runtime = new ModelRuntime({
+        config,
+        routerProvider: provider('router'),
+        workerProvider: worker,
+        vramManager: memory,
+        idleTimeoutMs: 300_000,
+      });
+      await runtime.init();
+      const controller = new AbortController();
+
+      const running = runtime.streamWorker(
+        [{ role: 'user', content: 'Lange Antwort' }],
+        'kurz',
+        () => {},
+        controller.signal,
+      );
+      await started;
+      controller.abort(abortError('Voice interruption'));
+      await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+      expect(runtime.snapshot.roles.local_worker.residency).toBe('loaded');
+      expect(memory.unloadModel).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => expect(runtime.snapshot.activeRole).toBe('router'));
+      expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');
+      await runtime.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('marks a blocked idle router restore unavailable and recovers it through recheck', async () => {
+    vi.useFakeTimers();
+    try {
+      const memory = vram();
+      (memory.unloadModel as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValue(true);
+      const capability = vi.fn();
+      const runtime = new ModelRuntime({
+        config,
+        routerProvider: provider('router'),
+        workerProvider: provider('worker'),
+        vramManager: memory,
+        onCapability: capability,
+        idleTimeoutMs: 5,
+        runtimeRecheckDelayMs: 5,
+      });
+      await runtime.init();
+
+      await runtime.generateWorkerText('question');
+      expect(runtime.snapshot.activeRole).toBe('local_worker');
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.waitFor(() => {
+        expect(runtime.snapshot.roles.router.availability).toBe('error');
+      });
+      expect(capability).toHaveBeenCalledWith(
+        'router',
+        'error',
+        expect.stringContaining('worker:9b'),
+      );
+
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.waitFor(() => {
+        expect(runtime.snapshot.activeRole).toBe('router');
+        expect(runtime.snapshot.roles.router.residency).toBe('loaded');
+        expect(runtime.snapshot.roles.router.availability).toBe('available');
+      });
+      expect(capability).toHaveBeenLastCalledWith('router', 'ready');
+      await runtime.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('refuses to load the next role and restores the current role when it cannot be unloaded', async () => {
@@ -386,7 +631,7 @@ describe('ModelRuntime', () => {
     await runtime.destroy();
     releaseWorkerWarmup();
 
-    await expect(running).rejects.toThrow(/stale during shutdown/);
+    await expect(running).rejects.toThrow(/aborted|stale/i);
     expect(runtime.snapshot.state).toBe('stopped');
     expect(runtime.snapshot.activeRole).toBeNull();
     expect(runtime.snapshot.roles.local_worker.residency).toBe('unloaded');

@@ -7,6 +7,8 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
+**Aktueller Zählstand nach der abgeschlossenen Layer-0/1-Windows-Matrix:** 704 Prüfpunkte — 167 🟢, 77 🟡, 443 🔴, 17 ⚪
+
 ---
 
 # 1. Kernsystem & Gespräch
@@ -20,7 +22,7 @@
 - 🟢 Der Router erkennt einfache Befehle, die ohne großes LLM ausgeführt werden können.
 - 🟢 Der Router erkennt Anfragen, die das große LLM benötigen.
 - 🟡 Der Router erkennt Research-Anfragen.
-- 🟡 Der Router kann benutzerdefinierte Slash-Commands deterministisch vor dem Modellrouting auflösen; Built-ins und praktische Abnahme fehlen noch.
+- 🟡 Der Router kann benutzerdefinierte Slash-Commands deterministisch vor dem Modellrouting auflösen; die praktische Abnahme fehlt noch.
 - 🟢 Das große LLM wird nur bei Bedarf gestartet.
 - 🟢 Das kleine Modell bzw. der Router wird beim Start des großen Modells korrekt behandelt.
 - 🟢 Das große Modell bleibt nach einer Anfrage für einen definierten Zeitraum aktiv, damit Folgefragen ohne erneute Ladezeit möglich sind.
@@ -57,7 +59,7 @@
 
 - 🟢 Folgefragen funktionieren ohne erneute vollständige Initialisierung.
 - 🟢 Sarah erkennt den Kontext vorheriger Nachrichten innerhalb einer Session.
-- 🟡 Sarah lässt sich während ihrer Sprachausgabe zuverlässig unterbrechen.
+- 🟢 Sarah lässt sich während ihrer Sprachausgabe zuverlässig unterbrechen.
 - 🟢 Nach einer Unterbrechung kann das Gespräch normal fortgesetzt werden.
 - 🟢 Sarah antwortet standardmäßig in natürlicher Gesprächssprache.
 - 🟢 Sarah duzt den Nutzer standardmäßig.
@@ -186,7 +188,7 @@
 - 🔴 Registrierungen benötigen eine finale Bestätigung.
 - 🔴 Überweisungen benötigen eine finale Bestätigung.
 - 🔴 kostenpflichtige Aktionen benötigen eine finale Bestätigung.
-- 🔴 die finale Bestätigung muss nachvollziehbar einer konkreten Aktion zugeordnet sein.
+- 🟡 die finale Bestätigung ist technisch einer konkreten Action samt validiertem Parameter zugeordnet; vollständige Risikoklassen und Praxisabnahme fehlen noch.
 - 🔴 eine frühere allgemeine Aussage wie „klingt gut“ gilt nicht als finale Freigabe.
 - 🔴 vor einer finalen Freigabe zeigt Sarah Preis, Leistung und relevante Zusatzkosten.
 - 🔴 eine zeitversetzte verbindliche Aktion benötigt eine explizite Beauftragung mit Zeitpunkt.
@@ -218,7 +220,7 @@
 
 - 🟡 relevante Aktionen werden protokolliert.
 - 🔴 sicherheitsrelevante Aktionen werden protokolliert.
-- 🔴 Bestätigungen werden mit der jeweiligen Aktion verknüpft.
+- 🟡 Bestätigungen werden technisch mit der jeweiligen Aktion verknüpft; eine vollständige persistente und nutzerseitig einsehbare Auditspur fehlt noch.
 - 🟡 Fehler und fehlgeschlagene Aktionen werden protokolliert.
 - 🔴 der Nutzer kann nachvollziehen, was Sarah wann ausgeführt hat.
 
@@ -759,12 +761,12 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 ## 12.1 Slash-Commands
 
-- 🟡 Benutzerdefinierte Slash-Commands werden deterministisch erkannt und genau einmal expandiert; Built-ins und praktische Abnahme fehlen noch.
+- 🟡 Benutzerdefinierte Slash-Commands werden deterministisch erkannt und genau einmal expandiert; die praktische Abnahme fehlt noch.
 - 🔴 `/research` kann Research direkt aufrufen.
 - 🔴 `/code` kann den vorgesehenen Coding-Modus direkt aufrufen.
 - 🔴 weitere Systemcommands können definiert werden.
-- 🟡 Erkannte benutzerdefinierte Slash-Commands umgehen unnötige Router-Interpretation; der vollständige Command-Vertrag fehlt noch.
-- 🟡 Slash-Commands können technisch über den PC-Eingabepfad verwendet werden; die praktische Abnahme fehlt noch.
+- 🟢 Erkannte benutzerdefinierte Slash-Commands umgehen unnötige Router-Interpretation und verwenden den zentralen Command-, Turn- und Security-Vertrag.
+- 🟢 Slash-Commands können über den PC-Eingabepfad verwendet werden.
 - ⚪ Slash-Commands sind für spätere Mobile-Nutzung vorgesehen.
 
 ## 12.2 Eigene Commands
@@ -821,7 +823,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🔴 länger dauernde Programmstarts besitzen definierte Timeout-Stufen.
 - 🔴 Sarah meldet Zwischenstände bei ungewöhnlich langer Dauer.
 - 🟡 ein endgültiger Timeout führt zu einer klaren Fehlermeldung.
-- 🟡 Timeouts blockieren das System nicht dauerhaft.
+- 🟢 Timeouts blockieren das System nicht dauerhaft.
 
 ## 13.3 Retry
 
@@ -840,12 +842,12 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 ## 13.5 Selbstdiagnose
 
-- 🟡 Sarah kann prüfen, ob ihre eigenen Dienste laufen.
+- 🟢 Sarah kann prüfen, ob ihre eigenen Dienste laufen.
 - 🔴 Sarah kann relevante Prozesse prüfen.
 - 🔴 Sarah kann Ressourcenengpässe erkennen.
 - 🔴 Sarah kann Netzwerkprobleme eingrenzen.
-- 🟡 Sarah kann erklären, welcher Teil einer Verarbeitung fehlgeschlagen ist.
-- 🟡 Sarah unterscheidet „Ich weiß es nicht“ von „Ein technischer Dienst ist ausgefallen“.
+- 🟢 Sarah kann erklären, welcher Teil einer Verarbeitung fehlgeschlagen ist.
+- 🟢 Sarah unterscheidet „Ich weiß es nicht“ von „Ein technischer Dienst ist ausgefallen“.
 - 🟢 Sarah kann einfache Recovery-Aktionen selbst durchführen.
 - 🔴 riskante Recovery-Aktionen benötigen eine Bestätigung.
 
@@ -860,7 +862,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🟢 LLM-Latenz wird gemessen.
 - 🔴 Tool-Latenz wird gemessen.
 - 🟢 TTS-Latenz wird gemessen.
-- 🟡 Gesamtantwortzeit wird gemessen.
+- 🟢 Gesamtantwortzeit wird turnbezogen bis zum terminalen Abschluss gemessen.
 - 🔴 Durchschnittswerte werden gespeichert.
 - 🔴 auffällige Performance-Verschlechterungen können erkannt werden.
 
@@ -878,7 +880,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 - 🟡 Sarah kann mehrere Stunden ohne Neustart laufen.
 - 🔴 Memory wächst nicht unkontrolliert.
-- 🟡 Prozesse bleiben nicht unnötig als Zombies bestehen.
+- 🟢 Prozesse bleiben nicht unnötig als Zombies bestehen.
 - 🟡 wiederholte Modellstarts verursachen keine zunehmenden Fehler.
 - 🟡 wiederholte TTS-Aufrufe bleiben stabil.
 - 🟡 wiederholte Browser-Aufrufe bleiben stabil.
@@ -918,7 +920,7 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 - 🟢 Mehrminütiges natürliches Gespräch mit Folgefragen.
 - 🟢 Sarah berücksichtigt relevante Nutzerpräferenzen.
 - 🟢 Sarah vermeidet unnötige Profilreferenzen.
-- 🟡 Unterbrechen funktioniert.
+- 🟢 Unterbrechen funktioniert.
 - 🟢 Session-Kontext funktioniert.
 - 🟡 Neustart und anschließende relevante Langzeiterinnerung funktionieren.
 - 🔴 Inkognito-Gespräch hinterlässt keine unerwünschte Langzeiterinnerung.

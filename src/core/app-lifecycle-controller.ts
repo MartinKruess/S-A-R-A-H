@@ -69,6 +69,7 @@ export class AppLifecycleController {
   private cleanups: Array<{ label: string; cleanup: Cleanup; phase: CleanupPhase }> = [];
   private listeners = new Set<SnapshotListener>();
   private startPromise: Promise<RuntimeSnapshot> | null = null;
+  private startCompleted = false;
   private shutdownPromise: Promise<AppShutdownReport> | null = null;
   private readonly cleanupTimeoutMs: number;
 
@@ -119,7 +120,10 @@ export class AppLifecycleController {
   setCapability(name: string, state: RuntimeState, message?: string): void {
     if (this.state === 'stopping' || this.state === 'stopped') return;
     this.capabilities.set(name, message ? { state, message } : { state });
-    if (this.state !== 'registered' && this.state !== 'starting') {
+    if (
+      this.state !== 'registered'
+      && (this.state !== 'starting' || this.startCompleted)
+    ) {
       this.state = this.deriveRunningState();
     }
     this.publish();
@@ -158,6 +162,7 @@ export class AppLifecycleController {
       return this.snapshot;
     }
     this.applyServiceReport(report);
+    this.startCompleted = true;
     this.state = this.deriveRunningState();
     this.publish();
     return this.snapshot;
@@ -169,6 +174,16 @@ export class AppLifecycleController {
 
   private applyServiceResult(service: ServiceInitReport['services'][number]): void {
     const existing = this.capabilities.get(service.id);
+    if (
+      service.ok
+      && existing
+      && existing.state !== 'registered'
+    ) {
+      // A service may stay registered specifically to recover a degraded
+      // capability in the background. Successful service initialization must
+      // not overwrite that more precise provider/runtime state with `ready`.
+      return;
+    }
     this.capabilities.set(
       service.id,
       service.ok

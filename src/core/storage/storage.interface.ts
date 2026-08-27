@@ -23,6 +23,11 @@ export interface MessagesPageQuery {
   limit: number;
 }
 
+export interface TurnMessageWrite {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 /**
  * Abstract storage provider.
  * Currently backed by JSON files (config) and SQLite (rules/memory).
@@ -40,6 +45,9 @@ export interface StorageProvider {
 
   /** Insert a row into a table. Returns the inserted row's ID. */
   insert(table: string, data: Record<string, unknown>): Promise<number>;
+
+  /** Writes every message of one completed turn atomically. */
+  insertTurnMessages(conversationId: number, messages: readonly TurnMessageWrite[]): Promise<void>;
 
   /** Update rows matching filter. Returns number of affected rows. */
   update(table: string, filter: Filter, data: Record<string, unknown>): Promise<number>;

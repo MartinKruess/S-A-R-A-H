@@ -4,6 +4,15 @@ import { AudioBridge } from '../services/audio-bridge.js';
 import { startBootSequence } from './boot-sequence.js';
 import { orb } from './orb-scene.js';
 import { installSarah } from '../shared/window-global.js';
+import {
+  beginChatProcessing,
+  handleRejectedChatSubmission,
+  isChatMessageWithinLimit,
+  removeChatProcessing,
+  shouldRemoveIncompleteAssistantOutput,
+  takeChatProcessing,
+} from './chat-submission.js';
+import { synchronizeRuntimeStatus } from './runtime-status-sync.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
 import {
@@ -101,14 +110,19 @@ function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeSta
   }
 }
 
-void sarah.getRuntimeStatus().then(applyRuntimeStatus).catch((error) => {
+const stopRuntimeStatusSync = synchronizeRuntimeStatus(sarah, applyRuntimeStatus, (error) => {
   console.warn('[Dashboard] Runtime status unavailable:', error);
   chatInput.disabled = true;
 });
-sarah.onRuntimeStatus(applyRuntimeStatus);
 
 let chatMode = false;
-let currentBubble: HTMLElement | null = null;
+const outputBubbles = new Map<string, {
+  turnId: string;
+  bubble: HTMLElement;
+  nextSequence: number;
+}>();
+const pendingTurnBubbles = new Map<string, HTMLElement>();
+const terminalTurns = new Set<string>();
 
 function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElement {
   const bubble = document.createElement('div');
@@ -133,36 +147,97 @@ chatModeToggle.addEventListener('click', () => {
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && chatInput.value.trim()) {
     const text = chatInput.value.trim();
+    if (!isChatMessageWithinLimit(text)) {
+      addBubble('error', 'Die Nachricht ist zu lang. Maximal erlaubt sind 4.000 Zeichen.');
+      return;
+    }
     chatInput.value = '';
 
-    addBubble('user', text);
-    currentBubble = addBubble('assistant', '');
-    sarah.chat(text);
+    const userBubble = addBubble('user', text);
+    const turnId = crypto.randomUUID();
+    beginChatProcessing(turnId, pendingTurnBubbles, (message) => addBubble('assistant', message));
+    void sarah.chat(text, turnId, chatMode ? 'chat' : 'voice').then((result) => {
+      if (!result.accepted) {
+        removeChatProcessing(turnId, pendingTurnBubbles);
+        handleRejectedChatSubmission(turnId, terminalTurns, userBubble, (message) => {
+          addBubble('error', message);
+        });
+      }
+    }).catch((error) => {
+      terminalTurns.add(turnId);
+      removeChatProcessing(turnId, pendingTurnBubbles);
+      console.warn('[Dashboard] Chat submission failed:', error);
+      addBubble('error', 'Die Nachricht konnte nicht gesendet werden.');
+    });
   }
 });
 
 // Streaming chunks. A chunk without an open bubble is a late assistant output
 // (search summary, action error, timer notify) – it gets its own bubble (F2).
 sarah.onChatChunk((data) => {
-  if (!currentBubble) {
-    currentBubble = addBubble('assistant', '');
+  if (terminalTurns.has(data.turnId)) return;
+  let output = outputBubbles.get(data.outputId);
+  if (!output) {
+    const bubble = takeChatProcessing(data.turnId, pendingTurnBubbles)
+      ?? addBubble('assistant', '');
+    output = { turnId: data.turnId, bubble, nextSequence: 0 };
+    outputBubbles.set(data.outputId, output);
   }
-  currentBubble.textContent += data.text;
+  if (data.sequence !== output.nextSequence) {
+    if (data.sequence > output.nextSequence) {
+      console.warn('[Dashboard] Out-of-order assistant chunk discarded', data);
+    }
+    return;
+  }
+  output.bubble.textContent += data.text;
+  output.nextSequence += 1;
   chatMessages.scrollTop = chatMessages.scrollHeight;
 });
 
 // Done
-sarah.onChatDone(() => {
-  currentBubble = null;
+sarah.onChatDone((data) => {
+  if (terminalTurns.has(data.turnId)) return;
+  const output = outputBubbles.get(data.outputId);
+  if (!output) {
+    const bubble = takeChatProcessing(data.turnId, pendingTurnBubbles);
+    if (data.fullText) {
+      const completedBubble = bubble ?? addBubble('assistant', '');
+      completedBubble.textContent = data.fullText;
+    } else {
+      bubble?.remove();
+    }
+    return;
+  }
+  if (output.turnId !== data.turnId) {
+    console.warn('[Dashboard] Assistant completion owner mismatch', data);
+    return;
+  }
+  if (data.sequence !== output.nextSequence) {
+    console.warn('[Dashboard] Assistant completion sequence mismatch', data);
+    output.bubble.textContent = data.fullText;
+  }
+  outputBubbles.delete(data.outputId);
 });
 
 // Error
 sarah.onChatError((data) => {
-  if (currentBubble) {
-    currentBubble.remove();
-    currentBubble = null;
-  }
+  if (terminalTurns.has(data.turnId)) return;
+  removeChatProcessing(data.turnId, pendingTurnBubbles);
   addBubble('error', data.message);
+});
+
+sarah.onTurnTerminal((data) => {
+  terminalTurns.add(data.turnId);
+  removeChatProcessing(data.turnId, pendingTurnBubbles);
+  for (const [outputId, output] of outputBubbles) {
+    if (output.turnId !== data.turnId) continue;
+    if (shouldRemoveIncompleteAssistantOutput(data.status)) output.bubble.remove();
+    outputBubbles.delete(outputId);
+  }
+  if (terminalTurns.size > 500) {
+    const oldest = terminalTurns.values().next().value as string | undefined;
+    if (oldest) terminalTurns.delete(oldest);
+  }
 });
 
 // One-time persistence warning (storage degraded — Sarah keeps talking, RAM only)
@@ -173,7 +248,6 @@ sarah.onStorageDegraded((data) => {
 // ── Voice Transcript → Chat Bubble ──
 sarah.voice.onTranscript((data) => {
   addBubble('user', data.text);
-  currentBubble = addBubble('assistant', '');
 });
 
 sarah.voice.onError((data) => {
@@ -198,12 +272,20 @@ function startAudioBridge(): void {
 }
 
 window.addEventListener('beforeunload', () => {
-  audioBridge?.destroy();
+  stopRuntimeStatusSync();
+  void audioBridge?.destroy();
 });
 
 // ── Boot Sequence ──
 if (document.body.classList.contains('boot-mode') && orb) {
-  startBootSequence(orb).then(() => startAudioBridge());
+  void startBootSequence(orb)
+    .then(() => startAudioBridge())
+    .catch((error) => {
+      console.error('[Dashboard] Boot sequence failed; continuing in degraded mode:', error);
+      document.body.classList.remove('boot-mode');
+      sarah.bootDone();
+      startAudioBridge();
+    });
 } else {
   startAudioBridge();
 }

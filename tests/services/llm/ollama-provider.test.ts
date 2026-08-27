@@ -95,6 +95,30 @@ describe('OllamaProvider', () => {
     vi.restoreAllMocks();
   });
 
+  it('parses a terminal rest buffer without a trailing newline', async () => {
+    const line = JSON.stringify({ message: { content: 'vollständig' }, done: true });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: new Response(line).body,
+    } as Response);
+
+    await expect(provider.chat([{ role: 'user', content: 'Hi' }], () => {}))
+      .resolves.toBe('vollständig');
+    vi.restoreAllMocks();
+  });
+
+  it('rejects EOF without a terminal done frame instead of accepting partial output', async () => {
+    const line = JSON.stringify({ message: { content: 'nur teilweise' }, done: false });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: new Response(line).body,
+    } as Response);
+
+    await expect(provider.chat([{ role: 'user', content: 'Hi' }], () => {}))
+      .rejects.toThrow('terminal done frame');
+    vi.restoreAllMocks();
+  });
+
   it('chat throws on non-ok response', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
       ok: false,

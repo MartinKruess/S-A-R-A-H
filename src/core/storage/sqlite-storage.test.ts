@@ -21,6 +21,21 @@ describe('SqliteStorage', () => {
   });
 
   describe('table operations', () => {
+    it('writes a completed multi-message turn through one transactional operation', async () => {
+      await storage.insertTurnMessages(7, [
+        { role: 'user', content: 'Frage' },
+        { role: 'assistant', content: 'Zwischenstand' },
+        { role: 'assistant', content: 'Antwort' },
+      ]);
+
+      const rows = await storage.query<{ conversation_id: number; role: string; content: string }>('messages');
+      expect(rows).toEqual([
+        expect.objectContaining({ conversation_id: 7, role: 'user', content: 'Frage' }),
+        expect.objectContaining({ conversation_id: 7, role: 'assistant', content: 'Zwischenstand' }),
+        expect.objectContaining({ conversation_id: 7, role: 'assistant', content: 'Antwort' }),
+      ]);
+    });
+
     it('inserts and queries a row', async () => {
       const id = await storage.insert('persistent_rules', {
         category: 'naming',

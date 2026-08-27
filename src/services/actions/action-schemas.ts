@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import type { ConfirmationLevel } from '../../core/action-confirmation.js';
+
+const integerString = z.string().trim().regex(/^-?\d+$/u).transform(Number);
 
 /**
  * Single source of truth for V1 actions: names (allowlist) + param schemas.
@@ -9,11 +12,11 @@ export const ACTION_SCHEMAS = {
   open_program: z.string().min(1).max(100),
   web_search: z.string().min(2).max(200),
   show_browser: z.string().min(1).max(100),
-  set_volume: z.coerce.number().int().min(0).max(100),
-  spotify_volume: z.coerce.number().int().min(0).max(100),
+  set_volume: integerString.pipe(z.number().int().min(0).max(100)),
+  spotify_volume: integerString.pipe(z.number().int().min(0).max(100)),
   // Signed delta; the parser delivers e.g. "-25" for a relative change.
-  spotify_volume_adjust: z.coerce.number().int().min(-100).max(100),
-  set_timer: z.coerce.number().int().min(1).max(1440),
+  spotify_volume_adjust: integerString.pipe(z.number().int().min(-100).max(100)),
+  set_timer: integerString.pipe(z.number().int().min(1).max(1440)),
   // Parser delivers '' for a param-less tag; any non-empty param is invalid (R4-Mi3).
   lock_screen: z.literal(''),
   // Generic media transport (Schicht 1). Param = optional target: '' = active session,
@@ -26,6 +29,41 @@ export const ACTION_SCHEMAS = {
 } as const;
 
 export type ActionName = keyof typeof ACTION_SCHEMAS;
+
+type ActionConfirmationRisk = 'read' | 'change' | 'critical';
+
+const ACTION_CONFIRMATION_RISK: Record<ActionName, ActionConfirmationRisk> = {
+  open_program: 'change',
+  web_search: 'read',
+  show_browser: 'read',
+  set_volume: 'change',
+  spotify_volume: 'change',
+  spotify_volume_adjust: 'change',
+  set_timer: 'change',
+  lock_screen: 'change',
+  media_play: 'change',
+  media_pause: 'change',
+  media_toggle: 'change',
+  media_next: 'change',
+  media_previous: 'change',
+};
+
+/**
+ * @param level - Aktuell konfigurierte Bestätigungsstufe.
+ * @param action - Validierter Action-Name.
+ *
+ * - Erzwingt kritische Actions auf jeder Stufe.
+ * - Erzwingt bei `maximal` zusätzlich jede zustandsverändernde Action.
+ * - Lässt reine Suche und Ergebnisanzeige ohne Bestätigung zu.
+ *
+ * @returns Ob vor der Ausführung eine korrelierte Zustimmung erforderlich ist.
+ *
+ * @category Authorization Business Logic
+ */
+export function requiresActionConfirmation(level: ConfirmationLevel, action: ActionName): boolean {
+  const risk = ACTION_CONFIRMATION_RISK[action];
+  return risk === 'critical' || (level === 'maximal' && risk === 'change');
+}
 
 const ACTION_NAME_SET: ReadonlySet<string> = new Set(Object.keys(ACTION_SCHEMAS));
 

@@ -1,14 +1,30 @@
 // src/services/voice/stt-provider.interface.ts
 
+export interface SttAvailability {
+  available: boolean;
+  message?: string;
+}
+
 export interface SttProvider {
   /** Unique provider ID, e.g. 'whisper' */
   readonly id: string;
+
+  /** Provider owns a bounded self-retry after a transient initial failure. */
+  readonly recoversAfterInitFailure?: boolean;
 
   /** Initialize the provider (verify binary exists, load model) */
   init(signal?: AbortSignal): Promise<void>;
 
   /** Transcribe PCM audio to text. Language is a BCP-47 code like 'de' or 'en'. */
-  transcribe(audio: Float32Array, sampleRate: number, language?: string): Promise<string>;
+  transcribe(
+    audio: Float32Array,
+    sampleRate: number,
+    language?: string,
+    signal?: AbortSignal,
+  ): Promise<string>;
+
+  /** Subscribe to provider crashes and successful runtime recovery. */
+  onAvailabilityChange?(listener: (state: SttAvailability) => void): () => void;
 
   /** Clean up resources */
   destroy(signal?: AbortSignal): Promise<void>;

@@ -1,4 +1,4 @@
-import type { StorageProvider, Filter, MessageRow, MessagesPageQuery } from './storage.interface.js';
+import type { StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite } from './storage.interface.js';
 import { encrypt, decrypt } from '../crypto/crypto.js';
 
 /** Columns that should NOT be encrypted (structural, used for filtering). */
@@ -43,6 +43,16 @@ export class EncryptedStorage implements StorageProvider {
 
   async insert(table: string, data: Record<string, unknown>): Promise<number> {
     return this.inner.insert(table, this.encryptRow(data));
+  }
+
+  async insertTurnMessages(conversationId: number, messages: readonly TurnMessageWrite[]): Promise<void> {
+    await this.inner.insertTurnMessages(
+      conversationId,
+      messages.map((message) => ({
+        ...message,
+        content: encrypt(JSON.stringify(message.content), this.key),
+      })),
+    );
   }
 
   async update(table: string, filter: Filter, data: Record<string, unknown>): Promise<number> {
