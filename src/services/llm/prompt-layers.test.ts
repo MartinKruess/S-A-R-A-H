@@ -102,7 +102,7 @@ describe('buildCoreUser authoritative profile', () => {
     const out = buildCoreUser(baseProfile);
 
     expect(out).toContain('[AUTHORITATIVE_USER_PROFILE]');
-    expect(out).toContain('preferred_name: Martin');
+    expect(out).toContain('preferred_name: "Martin"');
     expect(out).toContain('german_address_style: informal_du');
     expect(out).toContain('always use informal du/dir/dein');
     expect(out).toContain('never formal Sie/Ihnen/Ihr');

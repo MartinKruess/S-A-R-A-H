@@ -26,8 +26,12 @@ import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
 import { registerSystemMetricsHandlers } from './main/ipc-system-metrics.js';
 import { registerVoiceLevelForwarder } from './main/ipc-voice-level.js';
-import { registerElectronShutdown } from './main/electron-shutdown.js';
+import {
+  registerElectronShutdown,
+  type ElectronShutdownCoordinator,
+} from './main/electron-shutdown.js';
 import { registerVoiceRendererLifecycle } from './main/voice-renderer-lifecycle.js';
+import { acquireSingleInstanceLock } from './main/single-instance.js';
 
 let mainWindow: BrowserWindow | null = null;
 let appContext: AppContext | null = null;
@@ -38,13 +42,6 @@ let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
-
-const electronShutdown = registerElectronShutdown(app, () => appContext);
-let resolveSplashDone!: () => void;
-const splashDone = new Promise<void>((resolve) => {
-  resolveSplashDone = resolve;
-});
-ipcMain.once('splash-done', resolveSplashDone);
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -71,9 +68,8 @@ function loadDevEnv(): void {
     // No .env in dev — fine, fall back to real env vars.
   }
 }
-loadDevEnv();
 
-function createWindow(): void {
+function createWindow(electronShutdown: ElectronShutdownCoordinator): void {
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
@@ -110,8 +106,17 @@ function createWindow(): void {
   });
 }
 
-app.whenReady().then(async () => {
-  createWindow();
+function startPrimaryInstance(): void {
+  const electronShutdown = registerElectronShutdown(app, () => appContext);
+  let resolveSplashDone!: () => void;
+  const splashDone = new Promise<void>((resolve) => {
+    resolveSplashDone = resolve;
+  });
+  ipcMain.once('splash-done', resolveSplashDone);
+  loadDevEnv();
+
+  app.whenReady().then(async () => {
+  createWindow(electronShutdown);
   appContext = await bootstrap(app.getPath('userData'));
 
   // Show dialog if config validation failed
@@ -121,8 +126,8 @@ app.whenReady().then(async () => {
       type: 'warning',
       title: 'Konfigurationsfehler',
       message: 'Die Konfigurationsdatei enthält ungültige Werte:',
-      detail: `${issues}\n\nMit Standard-Werten fortfahren?`,
-      buttons: ['Mit Defaults fortfahren', 'Beenden'],
+      detail: `${issues}\n\nMit den sicher reparierten Werten fortfahren?`,
+      buttons: ['Sicher repariert fortfahren', 'Beenden'],
       defaultId: 0,
       cancelId: 1,
     });
@@ -165,8 +170,11 @@ app.whenReady().then(async () => {
   });
   // Free-form summaries are a worker capability. The tag-only router is not
   // exposed to SearchService and therefore cannot accidentally generate text.
-  const summarize = (prompt: string, signal?: AbortSignal): Promise<string> => {
-    return modelRuntime.generateWorkerText(prompt, {
+  const summarize = (
+    messages: import('./services/llm/llm-provider.interface.js').ChatMessage[],
+    signal?: AbortSignal,
+  ): Promise<string> => {
+    return modelRuntime.generateWorkerMessages(messages, {
       num_predict: SUMMARY_NUM_PREDICT,
       temperature: SUMMARY_TEMPERATURE,
       signal,
@@ -207,6 +215,7 @@ app.whenReady().then(async () => {
     media: mediaController,
     confirmationGate: appContext.actionConfirmations,
     getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
+    getFileAccess: () => appContext!.parsedConfig.trust.fileAccess,
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before
@@ -251,12 +260,29 @@ app.whenReady().then(async () => {
   const getAppContext = () => appContext!;
 
   // --- Register IPC handler modules ---
-  registerProgramHandlers(ipcMain);
+  const folderScanGrant = registerProgramHandlers(ipcMain, {
+    getFileAccess: () => appContext!.parsedConfig.trust.fileAccess,
+    getAllowedFolders: () => {
+      const config = appContext!.parsedConfig;
+      return [
+        ...Object.values(config.system.folders),
+        config.skills.programmingProjectsFolder,
+        config.resources.picturesFolder,
+        config.resources.installFolder,
+        config.resources.gamesFolder,
+        config.resources.extraProgramsFolder,
+        ...config.resources.importantFolders,
+        ...config.resources.pdfCategories.map((category) => category.folder),
+      ].filter((folder) => folder.length > 0);
+    },
+  });
 
   registerConfigHandlers(ipcMain, {
     getAppContext,
     getMainWindow,
     dialogWindows,
+    onFolderSelected: folderScanGrant.grantFolderAccess,
+    onTrustChanged: folderScanGrant.invalidateFolderGrants,
   });
 
   registerConnectionHandlers(ipcMain, { getOAuth: () => oauth! });
@@ -297,7 +323,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      createWindow(electronShutdown);
     }
   });
 }).catch(async (error: unknown) => {
@@ -315,3 +341,8 @@ app.whenReady().then(async () => {
     app.quit();
   }
 });
+}
+
+if (acquireSingleInstanceLock(app, () => mainWindow)) {
+  startPrimaryInstance();
+}

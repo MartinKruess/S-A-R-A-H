@@ -5,6 +5,7 @@ import {
   randomState,
   buildAuthorizeUrl,
   exchangeCode,
+  OAuthTokenEndpointError,
   refreshTokens,
 } from './oauth-pkce.js';
 import type { OAuthProvider } from './providers.js';
@@ -98,6 +99,49 @@ describe('oauth-pkce', () => {
     await expect(
       exchangeCode(provider, { code: 'x', redirectUri: 'r', verifier: 'v' }, fetchFn),
     ).rejects.toThrow(/400.*invalid_grant/);
+  });
+
+  it.each(['invalid_grant', 'invalid_client'])(
+    'classifies OAuth error %s as a definitive rejection',
+    async (oauthError) => {
+      const fetchFn = vi.fn(async () =>
+        mockJsonResponse({ error: oauthError }, false, 400),
+      ) as unknown as typeof fetch;
+
+      await expect(refreshTokens(provider, 'refresh', fetchFn)).rejects.toMatchObject({
+        name: 'OAuthTokenEndpointError',
+        disposition: 'definitive',
+        status: 400,
+        oauthError,
+      } satisfies Partial<OAuthTokenEndpointError>);
+    },
+  );
+
+  it('classifies HTTP 5xx as retryable even when the body contains an OAuth error', async () => {
+    const fetchFn = vi.fn(async () =>
+      mockJsonResponse({ error: 'invalid_grant' }, false, 503),
+    ) as unknown as typeof fetch;
+
+    await expect(refreshTokens(provider, 'refresh', fetchFn)).rejects.toMatchObject({
+      disposition: 'retryable',
+      status: 503,
+    } satisfies Partial<OAuthTokenEndpointError>);
+  });
+
+  it.each([
+    ['missing access token', { refresh_token: 'rt', expires_in: 3600 }],
+    ['empty access token', { access_token: ' ', refresh_token: 'rt', expires_in: 3600 }],
+    ['missing expiry', { access_token: 'at', refresh_token: 'rt' }],
+    ['non-numeric expiry', { access_token: 'at', refresh_token: 'rt', expires_in: '3600' }],
+    ['non-positive expiry', { access_token: 'at', refresh_token: 'rt', expires_in: 0 }],
+    ['invalid refresh token', { access_token: 'at', refresh_token: null, expires_in: 3600 }],
+    ['invalid scope', { access_token: 'at', refresh_token: 'rt', expires_in: ['scope'] }],
+  ])('rejects a 2xx token response with %s', async (_label, body) => {
+    const fetchFn = vi.fn(async () => mockJsonResponse(body)) as unknown as typeof fetch;
+
+    await expect(
+      exchangeCode(provider, { code: 'x', redirectUri: 'r', verifier: 'v' }, fetchFn),
+    ).rejects.toThrow('invalid response');
   });
 
   it('refreshTokens: posts grant_type=refresh_token and maps fields', async () => {

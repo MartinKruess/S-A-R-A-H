@@ -3,7 +3,7 @@ import { RouterService } from './router-service.js';
 import { bootstrap } from '../../core/bootstrap.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
-import type { StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite } from '../../core/storage/storage.interface.js';
+import type { CompleteMemoryStagingInput, StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite, Layer2MemoryPurgeResult } from '../../core/storage/storage.interface.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import { START_CONTEXT_HEADER } from './context-window.js';
 import * as fs from 'fs';
@@ -19,12 +19,16 @@ import { ModelRuntime } from './model-runtime.js';
 class FakeProvider implements LlmProvider {
   readonly id = 'fake';
   lastMessages: ChatMessage[] | null = null;
-  constructor(private reply = 'Antwort von Sarah') {}
+  constructor(
+    private reply = 'Antwort von Sarah',
+    private readonly beforeReply?: () => Promise<void>,
+  ) {}
   async isAvailable(): Promise<boolean> {
     return true;
   }
   async chat(messages: ChatMessage[], onChunk: (text: string) => void): Promise<string> {
     this.lastMessages = messages;
+    await this.beforeReply?.();
     onChunk(this.reply);
     return this.reply;
   }
@@ -34,7 +38,11 @@ class FakeProvider implements LlmProvider {
 class FailingStorage implements StorageProvider {
   constructor(
     private inner: StorageProvider,
-    private opts: { failInsertTables?: string[]; failReads?: boolean } = {},
+    private opts: {
+      failInsertTables?: string[];
+      failReads?: boolean;
+      beforeQuery?: (table: string) => Promise<void>;
+    } = {},
   ) {}
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
@@ -45,6 +53,7 @@ class FailingStorage implements StorageProvider {
   }
   async query<T = Record<string, unknown>>(table: string, filter?: Filter): Promise<T[]> {
     if (this.opts.failReads) throw new Error('disk I/O error');
+    await this.opts.beforeQuery?.(table);
     return this.inner.query<T>(table, filter);
   }
   async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
@@ -55,9 +64,57 @@ class FailingStorage implements StorageProvider {
     if (this.opts.failInsertTables?.includes(table)) throw new Error('disk I/O error');
     return this.inner.insert(table, data);
   }
-  async insertTurnMessages(conversationId: number, messages: readonly TurnMessageWrite[]): Promise<void> {
+  async reserveRowIds(table: string, count: number): Promise<number[]> {
+    return this.inner.reserveRowIds(table, count);
+  }
+  async insertTurnMessages(
+    conversationId: number,
+    turnId: string,
+    messages: readonly TurnMessageWrite[],
+  ): Promise<void> {
     if (this.opts.failInsertTables?.includes('messages')) throw new Error('disk I/O error');
-    return this.inner.insertTurnMessages(conversationId, messages);
+    return this.inner.insertTurnMessages(conversationId, turnId, messages);
+  }
+  async persistTurnWithMemoryStaging(
+    conversationId: number,
+    turnId: string,
+    messages: readonly TurnMessageWrite[],
+    stagingSource: string,
+    policyTerms?: string,
+  ): Promise<number> {
+    if (this.opts.failInsertTables?.includes('messages')
+      || this.opts.failInsertTables?.includes('memory_staging')) throw new Error('disk I/O error');
+    return this.inner.persistTurnWithMemoryStaging(
+      conversationId,
+      turnId,
+      messages,
+      stagingSource,
+      policyTerms,
+    );
+  }
+  async deleteTurnMessages(conversationId: number, turnId: string): Promise<number> {
+    return this.inner.deleteTurnMessages(conversationId, turnId);
+  }
+  async completeMemoryStaging(input: CompleteMemoryStagingInput): Promise<void> {
+    return this.inner.completeMemoryStaging(input);
+  }
+  async discardMemoryStaging(stagingId: number): Promise<void> {
+    return this.inner.discardMemoryStaging(stagingId);
+  }
+  async failMemoryStaging(stagingId: number): Promise<void> {
+    return this.inner.failMemoryStaging(stagingId);
+  }
+  async purgeAllLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
+    if (this.opts.failReads) throw new Error('disk I/O error');
+    return this.inner.purgeAllLayer2Memory();
+  }
+  async purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
+    if (this.opts.failReads) throw new Error('disk I/O error');
+    return this.inner.purgeQuarantinedLayer2Memory();
+  }
+  async purgeLayer2LegacyMemory(input: Parameters<StorageProvider['purgeLayer2LegacyMemory']>[0]): Promise<number> {
+    if (this.opts.failReads) throw new Error('disk I/O error');
+    return this.inner.purgeLayer2LegacyMemory(input);
   }
   async update(table: string, filter: Filter, data: Record<string, unknown>): Promise<number> {
     return this.inner.update(table, filter, data);
@@ -78,7 +135,7 @@ describe('RouterService (history & sessions)', () => {
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-router-'));
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 94) });
     workerProvider = new FakeProvider();
     router = null;
   });
@@ -165,7 +222,7 @@ describe('RouterService (history & sessions)', () => {
 
   it('keeps history in memory but neither loads nor persists it when memory is disabled', async () => {
     await ctx.db.insert('conversations', { mode: 'ambient' });
-    await ctx.db.insert('messages', { conversation_id: 1, role: 'user', content: 'Altes Geheimnis' });
+    await ctx.db.insert('messages', { conversation_id: 1, turn_id: 'old-secret', role: 'user', content: 'Altes Geheimnis' });
     ctx.parsedConfig.trust.memoryAllowed = false;
     const r = makeRouter(ctx);
     await r.init();
@@ -176,7 +233,7 @@ describe('RouterService (history & sessions)', () => {
     const sent = workerProvider.lastMessages ?? [];
     expect(sent.some((message) => message.content === 'Altes Geheimnis')).toBe(false);
     expect(sent.some((message) => message.content === 'Erste flüchtige Frage')).toBe(true);
-    expect(await ctx.db.query('messages')).toHaveLength(1);
+    expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
   it('processes /anonymous transiently without persisting either side of the turn', async () => {
@@ -198,8 +255,169 @@ describe('RouterService (history & sessions)', () => {
     await chatTurn(r, 'Dritte unabhängige Frage');
     const thirdSent = workerProvider.lastMessages ?? [];
     expect(thirdSent.some((message) => message.content.includes('Codename ist Eule'))).toBe(false);
-    expect(thirdSent.some((message) => message.content === 'Was war meine vorige Nachricht?')).toBe(false);
+    expect(thirdSent.some((message) => message.content === 'Was war meine vorige Nachricht?')).toBe(true);
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+  });
+
+  it('blocks explicit remember intent inside a one-shot /anonymous turn', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const r = makeRouter(ctx);
+    const outputs: string[] = [];
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data.fullText));
+    await r.init();
+
+    await chatTurn(r, '/anonymous Merk dir: Mein Codename ist Eule.');
+
+    expect(outputs.at(-1)).toContain('privaten Nachricht');
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
+    expect(await ctx.db.query('messages')).toEqual([]);
+  });
+
+  it('keeps /incognito active across turns and model switches until explicit exit', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const r = makeRouter(ctx);
+    const privacyStates: boolean[] = [];
+    ctx.bus.on('privacy:incognito', (message) => privacyStates.push(message.data.active));
+    await r.init();
+
+    await chatTurn(r, '/incognito');
+    r.activeModel = '2b';
+    r.activeModel = '9b';
+    await chatTurn(r, 'Mein privater Codename ist Eule.');
+    await chatTurn(r, 'Erkläre mir mehr dazu.');
+    await chatTurn(r, 'Merk dir den Codenamen bitte.');
+
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+    expect(await ctx.db.query('memory_staging')).toHaveLength(0);
+    expect(await ctx.db.query('curated_memories')).toHaveLength(0);
+    expect(workerProvider.lastMessages?.some((message) => message.content.includes('Codename ist Eule'))).toBe(true);
+
+    await chatTurn(r, '/incognito');
+    await chatTurn(r, 'Normale Frage nach Inkognito');
+
+    expect(privacyStates).toEqual([true, false]);
+    expect(workerProvider.lastMessages?.some((message) => message.content.includes('Codename ist Eule'))).toBe(false);
     expect(await ctx.db.query('messages')).toHaveLength(2);
+  });
+
+  it('allows an active incognito section to end after the setting was disabled', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const r = makeRouter(ctx);
+    const privacyStates: boolean[] = [];
+    ctx.bus.on('privacy:incognito', (message) => privacyStates.push(message.data.active));
+    await r.init();
+
+    await chatTurn(r, '/incognito');
+    await chatTurn(r, 'Privater Inhalt');
+    ctx.parsedConfig.trust.anonymousEnabled = false;
+    await chatTurn(r, '/incognito');
+    await chatTurn(r, 'Wieder öffentlich');
+
+    expect(privacyStates).toEqual([true, false]);
+    const messages = await ctx.db.query<{ content: string }>('messages');
+    expect(messages.some((message) => message.content.includes('Privater Inhalt'))).toBe(false);
+    expect(messages.some((message) => message.content === 'Wieder öffentlich')).toBe(true);
+  });
+
+  it('discards private search sessions when the incognito section ends', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const routerProvider = new ScriptedProvider('ok', '[ACTION:web_search:private hotels]');
+    router = new RouterService(ctx, routerProvider, new ScriptedProvider('worker'));
+    const discarded: string[] = [];
+    ctx.bus.on('search:discard-session', (message) => discarded.push(message.data.requestId));
+    ctx.bus.on('action:result', (message) => router?.onMessage(message));
+    await router.init();
+
+    await chatTurn(router, '/incognito');
+    router.activeModel = '2b';
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => { requests.push(message.data); });
+    const privateTurn = router.handleChatMessage('Suche private Hotels');
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const searchRequest = requests[0];
+    if (!searchRequest) throw new Error('Expected private web search request');
+    ctx.bus.emit('test', 'action:result', {
+      turnId: searchRequest.turnId,
+      requestId: searchRequest.requestId,
+      action: 'web_search',
+      ok: true,
+      speak: 'Ein privater Treffer.',
+    });
+    await privateTurn;
+    expect(discarded).toEqual([]);
+
+    await chatTurn(router, '/incognito');
+
+    expect(discarded).toEqual([searchRequest.requestId]);
+  });
+
+  it('supports explicit memory commands and natural remember intent without persisting command text', async () => {
+    ctx.parsedConfig.trust.showContextEnabled = true;
+    const r = makeRouter(ctx);
+    const outputs: string[] = [];
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data.fullText));
+    await r.init();
+
+    await chatTurn(r, 'Merk dir: Mein Lieblingsplanet ist Saturn.');
+    const [stored] = await ctx.db.query<{ id: number; content: string }>('curated_memories');
+    expect(stored.content).toBe('Mein Lieblingsplanet ist Saturn.');
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+
+    await chatTurn(r, '/showcontext');
+    expect(outputs.at(-1)).toContain(`${stored.id} [explicit]`);
+    expect(outputs.at(-1)).toContain('Quelle: Session');
+
+    await chatTurn(r, `/correctmemory ${stored.id} Mein Lieblingsplanet ist Jupiter.`);
+    await chatTurn(r, '/exportmemory');
+    expect(outputs.at(-1)).toContain('Jupiter');
+    expect(outputs.at(-1)).toContain('source');
+
+    await chatTurn(r, `/forget ${stored.id}`);
+    const forgotten = await ctx.db.query<{ deleted_at: string | null }>('curated_memories', { id: stored.id });
+    expect(forgotten[0].deleted_at).not.toBeNull();
+    await chatTurn(r, `/deletememory ${stored.id}`);
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('does not treat a normal file-save request or meaningless pronoun as memory', async () => {
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Speichere die Datei im Dokumente-Ordner.');
+    await chatTurn(r, 'Merk dir das');
+
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('does not allow explicit memory commands to bypass configured exclusions', async () => {
+    ctx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, '/remember Meine Bank ist Beispielbank.');
+    await chatTurn(r, 'Merk dir: Meine Bank ist Beispielbank.');
+
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('does not allow direct /remember to bypass normalized env-secret labels', async () => {
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, '/remember OPENAI_API\u200B_KEY=abc-123');
+
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
+  });
+
+  it('bounds live history to the newest 24 turns', async () => {
+    const r = makeRouter(ctx);
+    await r.init();
+    for (let index = 0; index < 30; index += 1) {
+      await chatTurn(r, `Frage ${index}`);
+    }
+    expect(r.liveHistoryTurnCount).toBe(24);
   });
 
   it('keeps a complete turn transient when user text or assistant output matches an exclusion', async () => {
@@ -212,6 +430,198 @@ describe('RouterService (history & sessions)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
+  it('applies changed exclusions and memory-off retroactively without a restart', async () => {
+    const r = makeRouter(ctx);
+    await r.init();
+    await chatTurn(r, 'Mein Hobby ist Musik.');
+    await chatTurn(r, 'Meine Bank hat mein Konto gesperrt.');
+    expect(await ctx.db.query('messages')).toHaveLength(4);
+
+    await r.applyMemoryPolicy({ allowed: true, exclusions: ['Finanzen'] });
+    let messages = await ctx.db.query<{ content: string }>('messages');
+    expect(messages).toHaveLength(2);
+    expect(messages.some((message) => message.content.includes('Bank'))).toBe(false);
+
+    await r.applyMemoryPolicy({ allowed: false, exclusions: [] });
+    messages = await ctx.db.query<{ content: string }>('messages');
+    expect(messages).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('prevents an in-flight turn from committing after memory is disabled', async () => {
+    let releaseWorker!: () => void;
+    let markStarted!: () => void;
+    const workerStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseWorker = resolve; });
+    workerProvider = new FakeProvider('Späte Antwort', async () => {
+      markStarted();
+      await release;
+    });
+    const r = makeRouter(ctx);
+    await r.init();
+    r.activeModel = '9b';
+
+    const pendingTurn = r.handleChatMessage('Diese Frage läuft gerade.');
+    await workerStarted;
+    ctx.parsedConfig.trust.memoryAllowed = false;
+    await r.applyMemoryPolicy({ allowed: false, exclusions: [] });
+    releaseWorker();
+    await pendingTurn;
+
+    expect(await ctx.db.query('messages')).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
+  });
+
+  it('cancels only an active turn that already recalled content forbidden by the new policy', async () => {
+    await ctx.db.insert('conversations', { mode: 'ambient' });
+    await ctx.db.insert('curated_memories', {
+      kind: 'fact',
+      content: 'Das Bankkonto ist bei der Sparkasse.',
+      source_conversation_id: 1,
+      source_turn_id: 'old-finance-turn',
+      confidence: 1,
+    });
+    let releaseWorker!: () => void;
+    let markStarted!: () => void;
+    const workerStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseWorker = resolve; });
+    workerProvider = new FakeProvider('Verbotene späte Antwort', async () => {
+      markStarted();
+      await release;
+    });
+    const r = makeRouter(ctx);
+    const terminal: Array<{ turnId: string; status: string }> = [];
+    const completed: string[] = [];
+    ctx.bus.on('turn:terminal', (message) => terminal.push(message.data));
+    ctx.bus.on('llm:done', (message) => completed.push(message.data.turnId));
+    await r.init();
+    r.activeModel = '9b';
+    const turnId = '31313131-3131-4313-8313-313131313131';
+    const pendingTurn = r.handleTurnRequest({
+      turnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Was weißt du über mein Bankkonto?',
+      createdAt: new Date().toISOString(),
+    });
+    await workerStarted;
+    expect(workerProvider.lastMessages?.some((message) => message.content.includes('Sparkasse'))).toBe(true);
+
+    ctx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    await r.applyMemoryPolicy({ allowed: true, exclusions: ['Finanzen'] });
+
+    expect(terminal).toContainEqual({ turnId, status: 'canceled' });
+    expect(completed).not.toContain(turnId);
+    releaseWorker();
+    await pendingTurn;
+    await Promise.resolve();
+    expect(completed).not.toContain(turnId);
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('does not cancel an active recall turn whose recalled content remains allowed', async () => {
+    await ctx.db.insert('conversations', { mode: 'ambient' });
+    await ctx.db.insert('curated_memories', {
+      kind: 'preference',
+      content: 'Mein Lieblingshobby ist Astronomie.',
+      source_conversation_id: 1,
+      source_turn_id: 'old-hobby-turn',
+      confidence: 1,
+    });
+    let releaseWorker!: () => void;
+    let markStarted!: () => void;
+    const workerStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const release = new Promise<void>((resolve) => { releaseWorker = resolve; });
+    workerProvider = new FakeProvider('Astronomie ist spannend.', async () => {
+      markStarted();
+      await release;
+    });
+    const r = makeRouter(ctx);
+    const terminal: Array<{ turnId: string; status: string }> = [];
+    ctx.bus.on('turn:terminal', (message) => terminal.push(message.data));
+    await r.init();
+    r.activeModel = '9b';
+    const turnId = '32323232-3232-4323-8323-323232323232';
+    const pendingTurn = r.handleTurnRequest({
+      turnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Was weißt du über mein Lieblingshobby?',
+      createdAt: new Date().toISOString(),
+    });
+    await workerStarted;
+
+    ctx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    await r.applyMemoryPolicy({ allowed: true, exclusions: ['Finanzen'] });
+    expect(terminal.some((entry) => entry.turnId === turnId)).toBe(false);
+
+    releaseWorker();
+    await pendingTurn;
+    expect(terminal).toContainEqual({ turnId, status: 'done' });
+  });
+
+  it('holds a turn started during policy cleanup until sanitized recall is authoritative', async () => {
+    await ctx.db.insert('conversations', { mode: 'ambient' });
+    await ctx.db.insert('curated_memories', {
+      kind: 'fact',
+      content: 'Das Bankkonto ist bei der Sparkasse.',
+      source_conversation_id: 1,
+      source_turn_id: 'old-finance-turn',
+      confidence: 1,
+    });
+    let blockMessages = false;
+    let markCleanupStarted!: () => void;
+    let releaseCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => { markCleanupStarted = resolve; });
+    const cleanupRelease = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const storageOptions: {
+      beforeQuery?: (table: string) => Promise<void>;
+    } = {
+      beforeQuery: async (table) => {
+        if (!blockMessages || table !== 'messages') return;
+        blockMessages = false;
+        markCleanupStarted();
+        await cleanupRelease;
+      },
+    };
+    const guardedCtx: AppContext = { ...ctx, db: new FailingStorage(ctx.db, storageOptions) };
+    const r = makeRouter(guardedCtx);
+    await r.init();
+    r.activeModel = '9b';
+    blockMessages = true;
+    guardedCtx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    const policyApply = r.applyMemoryPolicy({ allowed: true, exclusions: ['Finanzen'] });
+    await cleanupStarted;
+
+    const pendingTurn = r.handleChatMessage('Was weißt du über mein Bankkonto?');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(workerProvider.lastMessages).toBeNull();
+
+    releaseCleanup();
+    await policyApply;
+    await pendingTurn;
+
+    expect(workerProvider.lastMessages?.some((message) => message.content.includes('Sparkasse'))).toBe(false);
+    expect(await ctx.db.query('curated_memories')).toEqual([]);
+  });
+
+  it('removes the exact incognito turns even when policy cleanup deletes earlier history', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Meine Bank hat mein Konto gesperrt.');
+    await chatTurn(r, '/incognito');
+    ctx.parsedConfig.trust.memoryExclusions = ['Finanzen'];
+    await r.applyMemoryPolicy({ allowed: true, exclusions: ['Finanzen'] });
+    await chatTurn(r, 'Mein privater Codename ist Eule.');
+    await chatTurn(r, '/incognito');
+    await chatTurn(r, 'Welche Nachricht kam vor dieser Frage?');
+
+    expect(workerProvider.lastMessages?.some((message) => message.content.includes('Codename ist Eule'))).toBe(false);
+  });
+
   it('passes the authoritative user name and fixed Du address to the worker system prompt', async () => {
     ctx.parsedConfig.profile.displayName = 'Martin';
     const r = makeRouter(ctx);
@@ -220,7 +630,7 @@ describe('RouterService (history & sessions)', () => {
     await chatTurn(r, 'Was weißt du über mich?');
 
     const systemPrompt = workerProvider.lastMessages?.[0].content;
-    expect(systemPrompt).toContain('preferred_name: Martin');
+    expect(systemPrompt).toContain('preferred_name: "Martin"');
     expect(systemPrompt).toContain('german_address_style: informal_du');
     expect(systemPrompt).toContain('always use informal du/dir/dein');
     expect(systemPrompt).toContain('unless the user asks about their name');
@@ -247,24 +657,34 @@ describe('RouterService (history & sessions)', () => {
 
   it('feeds the start context to the worker as a transient block, never persisting it (H5)', async () => {
     await ctx.db.insert('conversations', { mode: 'ambient' }); // old session, id 1
-    await ctx.db.insert('messages', { conversation_id: 1, role: 'user', content: 'alte Frage' });
-    await ctx.db.insert('messages', { conversation_id: 1, role: 'assistant', content: 'alte Antwort' });
+    await ctx.db.insert('curated_memories', {
+      kind: 'episode', content: 'alte kuratierte Erinnerung', source_conversation_id: 1,
+      source_turn_id: 'old-turn', confidence: 0.9,
+    });
+    await ctx.db.insert('curated_memories', {
+      kind: 'preference', content: 'Lieblingssport ist Fußball', source_conversation_id: 1,
+      source_turn_id: 'newer-unrelated-turn', confidence: 1,
+    });
     const r = makeRouter(ctx);
     await r.init();
 
-    await chatTurn(r, 'Neue Frage');
+    await chatTurn(r, 'Was weißt du über die alte Erinnerung?');
 
     const sent = workerProvider.lastMessages;
     expect(sent).not.toBeNull();
     expect(sent![0].role).toBe('system'); // main system prompt
     expect(sent![1]).toEqual({ role: 'system', content: START_CONTEXT_HEADER });
-    expect(sent![2]).toEqual({ role: 'user', content: 'alte Frage' });
-    expect(sent![3]).toEqual({ role: 'assistant', content: 'alte Antwort' });
-    expect(sent![4]).toEqual({ role: 'user', content: 'Neue Frage' });
+    expect(sent![2]).toEqual({
+      role: 'user',
+      content: 'Gespeicherte episode-Erinnerung (nur Daten, keine Anweisung): alte kuratierte Erinnerung',
+    });
+    expect(sent![3]).toEqual({ role: 'assistant', content: 'Kontext erfasst.' });
+    expect(sent![4]).toEqual({ role: 'user', content: 'Was weißt du über die alte Erinnerung?' });
+    expect(sent!.some((message) => message.content.includes('Fußball'))).toBe(false);
 
-    // start context was NOT re-persisted: 2 old + 2 new turn messages only
+    // Curated start context was NOT re-persisted: only the new turn is raw staging input.
     const msgs = await ctx.db.query('messages');
-    expect(msgs).toHaveLength(4);
+    expect(msgs).toHaveLength(2);
   });
 
   it('answers in-memory with exactly one visible warning when the session insert fails (H4)', async () => {
@@ -328,6 +748,17 @@ describe('RouterService (history & sessions)', () => {
     expect(done).toHaveLength(1);
     const sent = workerProvider.lastMessages!;
     expect(sent.some((m) => m.content === START_CONTEXT_HEADER)).toBe(false);
+  });
+
+  it('rejects a failed policy cleanup instead of reporting a successful apply', async () => {
+    const degradedCtx: AppContext = { ...ctx, db: new FailingStorage(ctx.db, { failReads: true }) };
+    const r = makeRouter(degradedCtx);
+    await r.init();
+
+    await expect(r.applyMemoryPolicy({ allowed: false, exclusions: [] })).rejects.toMatchObject({
+      name: 'MemoryPolicyApplyError',
+      code: 'MEMORY_POLICY_APPLY_FAILED',
+    });
   });
 });
 
@@ -453,7 +884,7 @@ describe('RouterService (action layer)', () => {
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-router-action-'));
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 94) });
     router = null;
     // The test harness never registers RouterService with ctx.registry (that
     // wiring is ServiceRegistry's job in production, see main.ts). Forward the
@@ -554,8 +985,62 @@ describe('RouterService (action layer)', () => {
     });
     await confirmationTurn;
 
+    const persistedTurns = await ctx.db.query<{ turn_id: string }>('messages');
+    expect(new Set(persistedTurns.map((message) => message.turn_id))).toEqual(new Set([
+      requestedTurnId,
+      confirmationTurnId,
+    ]));
+    expect(await ctx.db.query('memory_staging')).toHaveLength(2);
+
     await router.handleChatMessage(`/confirm ${confirmationId}`);
     expect(requests).toHaveLength(1);
+  });
+
+  it('keeps both maximal-confirmation web-search turns out of DB and staging when browser data is excluded', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'maximal';
+    ctx.parsedConfig.trust.memoryExclusions = ['Browser-Daten'];
+    const routerP = new ScriptedProvider('ok', '[ACTION:web_search:hotels kiel]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const outputs: BusEvents['llm:done'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data));
+    const requestedTurnId = '85858585-8585-4585-8585-858585858585';
+
+    await router.handleTurnRequest({
+      turnId: requestedTurnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: 'Such Hotels in Kiel',
+      createdAt: new Date().toISOString(),
+    });
+
+    const confirmationId = outputs[0].fullText.match(/\/confirm ([0-9a-f-]{36})/)?.[1];
+    expect(confirmationId).toBeDefined();
+    expect(requests).toEqual([]);
+    expect(await ctx.db.query('messages')).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
+
+    const confirmationTurnId = '86868686-8686-4686-8686-868686868686';
+    const confirmationTurn = router.handleTurnRequest({
+      turnId: confirmationTurnId,
+      source: 'chat',
+      mode: 'chat',
+      originalText: `/confirm ${confirmationId}`,
+      createdAt: new Date().toISOString(),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    ctx.bus.emit('test', 'action:result', {
+      turnId: confirmationTurnId,
+      requestId: requests[0].requestId,
+      action: 'web_search',
+      ok: true,
+    });
+    await confirmationTurn;
+
+    expect(await ctx.db.query('messages')).toEqual([]);
+    expect(await ctx.db.query('memory_staging')).toEqual([]);
   });
 
   it('keeps an action turn open after acknowledgement until its correlated result completes', async () => {
@@ -859,8 +1344,8 @@ describe('RouterService (action layer)', () => {
 
     await router.handleChatMessage('Neue unabhängige Frage');
     expect(workerP.lastMessages?.some((message) => message.content.includes('evil.example'))).toBe(false);
-    expect(workerP.lastMessages?.some((message) => message.content === 'Was stand in den Ergebnissen?')).toBe(false);
-    expect(await ctx.db.query('messages')).toHaveLength(2);
+    expect(workerP.lastMessages?.some((message) => message.content === 'Was stand in den Ergebnissen?')).toBe(true);
+    expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
   it('rejects an invalid mutating parameter before creating a confirmation', async () => {

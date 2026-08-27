@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ConfirmationLevel } from '../../core/action-confirmation.js';
+import { evaluateActionPolicy } from './action-policy.js';
 
 const integerString = z.string().trim().regex(/^-?\d+$/u).transform(Number);
 
@@ -30,39 +31,23 @@ export const ACTION_SCHEMAS = {
 
 export type ActionName = keyof typeof ACTION_SCHEMAS;
 
-type ActionConfirmationRisk = 'read' | 'change' | 'critical';
-
-const ACTION_CONFIRMATION_RISK: Record<ActionName, ActionConfirmationRisk> = {
-  open_program: 'change',
-  web_search: 'read',
-  show_browser: 'read',
-  set_volume: 'change',
-  spotify_volume: 'change',
-  spotify_volume_adjust: 'change',
-  set_timer: 'change',
-  lock_screen: 'change',
-  media_play: 'change',
-  media_pause: 'change',
-  media_toggle: 'change',
-  media_next: 'change',
-  media_previous: 'change',
-};
-
 /**
  * @param level - Aktuell konfigurierte Bestätigungsstufe.
  * @param action - Validierter Action-Name.
  *
  * - Erzwingt kritische Actions auf jeder Stufe.
- * - Erzwingt bei `maximal` zusätzlich jede zustandsverändernde Action.
- * - Lässt reine Suche und Ergebnisanzeige ohne Bestätigung zu.
+ * - Erzwingt bei `standard` sensible Actions.
+ * - Erzwingt bei `maximal` jede Action, einschließlich Suche und Anzeige.
  *
  * @returns Ob vor der Ausführung eine korrelierte Zustimmung erforderlich ist.
  *
  * @category Authorization Business Logic
  */
 export function requiresActionConfirmation(level: ConfirmationLevel, action: ActionName): boolean {
-  const risk = ACTION_CONFIRMATION_RISK[action];
-  return risk === 'critical' || (level === 'maximal' && risk === 'change');
+  return evaluateActionPolicy(action, {
+    confirmationLevel: level,
+    fileAccess: 'specific-folders',
+  }).effect === 'confirm';
 }
 
 const ACTION_NAME_SET: ReadonlySet<string> = new Set(Object.keys(ACTION_SCHEMAS));

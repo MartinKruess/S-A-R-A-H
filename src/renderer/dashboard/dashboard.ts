@@ -12,6 +12,11 @@ import {
   shouldRemoveIncompleteAssistantOutput,
   takeChatProcessing,
 } from './chat-submission.js';
+import {
+  pruneDetachedTurnBubbles,
+  removeIncognitoSection,
+  resolveIncognitoStart,
+} from './incognito-visibility.js';
 import { synchronizeRuntimeStatus } from './runtime-status-sync.js';
 
 import type { SarahApi } from '../../core/sarah-api.js';
@@ -56,6 +61,7 @@ let runtimeErrorBubble: HTMLElement | null = null;
 let workerWarningBubble: HTMLElement | null = null;
 let sttWarningBubble: HTMLElement | null = null;
 let ttsWarningBubble: HTMLElement | null = null;
+let incognitoStart: Element | null = null;
 
 function applyRuntimeStatus(snapshot: Awaited<ReturnType<SarahApi['getRuntimeStatus']>>): void {
   const available = isChatAvailable(snapshot);
@@ -122,6 +128,7 @@ const outputBubbles = new Map<string, {
   nextSequence: number;
 }>();
 const pendingTurnBubbles = new Map<string, HTMLElement>();
+const turnUserBubbles = new Map<string, HTMLElement>();
 const terminalTurns = new Set<string>();
 
 function addBubble(role: 'user' | 'assistant' | 'error', text: string): HTMLElement {
@@ -155,15 +162,18 @@ chatInput.addEventListener('keydown', (e) => {
 
     const userBubble = addBubble('user', text);
     const turnId = crypto.randomUUID();
+    turnUserBubbles.set(turnId, userBubble);
     beginChatProcessing(turnId, pendingTurnBubbles, (message) => addBubble('assistant', message));
     void sarah.chat(text, turnId, chatMode ? 'chat' : 'voice').then((result) => {
       if (!result.accepted) {
+        turnUserBubbles.delete(turnId);
         removeChatProcessing(turnId, pendingTurnBubbles);
         handleRejectedChatSubmission(turnId, terminalTurns, userBubble, (message) => {
           addBubble('error', message);
         });
       }
     }).catch((error) => {
+      turnUserBubbles.delete(turnId);
       terminalTurns.add(turnId);
       removeChatProcessing(turnId, pendingTurnBubbles);
       console.warn('[Dashboard] Chat submission failed:', error);
@@ -228,6 +238,7 @@ sarah.onChatError((data) => {
 
 sarah.onTurnTerminal((data) => {
   terminalTurns.add(data.turnId);
+  turnUserBubbles.delete(data.turnId);
   removeChatProcessing(data.turnId, pendingTurnBubbles);
   for (const [outputId, output] of outputBubbles) {
     if (output.turnId !== data.turnId) continue;
@@ -245,9 +256,36 @@ sarah.onStorageDegraded((data) => {
   addBubble('error', `⚠️ ${data.message}`);
 });
 
+sarah.onIncognitoChanged(({ active, turnId }) => {
+  if (active) {
+    const last = chatMessages.lastElementChild;
+    // Chat mode has a processing bubble after the user command; voice mode has
+    // only the transcript. Bind the privacy boundary to the owning turn instead
+    // of guessing from DOM siblings, which previously deleted an older normal
+    // conversation bubble for voice activation.
+    incognitoStart = resolveIncognitoStart(turnId, turnUserBubbles, last);
+    chatInput.dataset.incognito = 'true';
+    chatInput.placeholder = 'Inkognito – dieser Abschnitt wird nicht gespeichert';
+    return;
+  }
+  if (incognitoStart) {
+    removeIncognitoSection(incognitoStart);
+  }
+  pruneDetachedTurnBubbles(turnUserBubbles);
+  for (const [turnId, bubble] of pendingTurnBubbles) {
+    if (!bubble.isConnected) pendingTurnBubbles.delete(turnId);
+  }
+  for (const [outputId, output] of outputBubbles) {
+    if (!output.bubble.isConnected) outputBubbles.delete(outputId);
+  }
+  incognitoStart = null;
+  delete chatInput.dataset.incognito;
+  chatInput.placeholder = 'Nachricht an Sarah...';
+});
+
 // ── Voice Transcript → Chat Bubble ──
 sarah.voice.onTranscript((data) => {
-  addBubble('user', data.text);
+  turnUserBubbles.set(data.turnId, addBubble('user', data.text));
 });
 
 sarah.voice.onError((data) => {

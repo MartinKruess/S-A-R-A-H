@@ -1,7 +1,8 @@
 import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahToggle } from '../../../components/sarah-toggle.js';
 import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
-import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
+import { sarahButton } from '../../../components/sarah-button.js';
+import { showSaved, createSectionHeader, save, createSpacer, createHint, getSarah } from '../../../shared/settings-utils.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
 
 const EXCLUSION_OPTIONS = [
@@ -70,6 +71,38 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     value: trust.confirmationLevel || 'standard',
     onChange: (val) => { trust.confirmationLevel = val as typeof trust.confirmationLevel; save('trust', trust); showSaved(feedback); },
   }));
+
+  section.appendChild(createSpacer());
+  section.appendChild(createHint(
+    'Falls alte verschlüsselte Daten isoliert wurden, kannst du sie hier prüfen. Sie werden niemals automatisch wieder in Sarahs Kontext übernommen.',
+  ));
+  const recoveryStatus = document.createElement('div');
+  recoveryStatus.className = 'settings-hint';
+  const recoveryButton = sarahButton({
+    label: 'Isolierte Altwerte prüfen',
+    variant: 'secondary',
+    onClick: () => {
+      recoveryButton.setAttribute('disabled', '');
+      recoveryStatus.textContent = 'Prüfung läuft …';
+      void getSarah().reviewLegacyDbRecovery().then(async (review) => {
+        if (review.candidates.length === 0) {
+          recoveryStatus.textContent = 'Keine wiederherstellbaren Altwerte gefunden.';
+          return;
+        }
+        const result = await getSarah().restoreLegacyDbRecovery(
+          review.candidates.slice(0, 10).map((candidate) => candidate.quarantineId),
+        );
+        recoveryStatus.textContent = result
+          ? `${result.restored} Altwerte wiederhergestellt. Sicherung: ${result.backupPath}${review.candidates.length > 10 ? ' Weitere isolierte Altwerte können in einem nächsten Durchlauf geprüft werden.' : ''}`
+          : 'Wiederherstellung abgebrochen. Die Altwerte bleiben isoliert.';
+      }).catch((error) => {
+        console.warn('[Settings] legacy DB recovery failed:', error);
+        recoveryStatus.textContent = 'Altwerte konnten nicht geprüft oder wiederhergestellt werden.';
+      }).finally(() => recoveryButton.removeAttribute('disabled'));
+    },
+  });
+  section.appendChild(recoveryButton);
+  section.appendChild(recoveryStatus);
 
   return section;
 }

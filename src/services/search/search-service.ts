@@ -3,9 +3,11 @@ import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { SandboxBrowser } from '../../main/sandbox-browser.js';
 import type { LaunchResult } from '../../main/program-launcher.js';
 import type { SearchProvider, SearchResult } from './search-provider.interface.js';
-import { buildSummaryPrompt, type SummarizeFn } from './summarize-results.js';
+import { buildSafeSearchSummary, type SummarizeFn } from './summarize-results.js';
 import { linkAbortSignals, throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
+
+export type SearchBrowser = Pick<SandboxBrowser, 'show' | 'hide'>;
 
 /** Successfully summarized search result set, addressed by its source request. */
 interface ResultSession {
@@ -16,7 +18,7 @@ interface ResultSession {
 
 export class SearchService implements SarahService {
   readonly id = 'search';
-  readonly subscriptions = [] as const;
+  readonly subscriptions = ['search:discard-session'] as const;
   status: ServiceStatus = 'pending';
 
   private sessions = new Map<string, ResultSession>();
@@ -26,8 +28,10 @@ export class SearchService implements SarahService {
 
   constructor(
     private provider: SearchProvider,
-    private browser: SandboxBrowser,
-    private summarize: SummarizeFn,
+    private browser: SearchBrowser,
+    // Retained as a compatibility seam while the unsafe LLM summarizer is no
+    // longer part of the productive external-data boundary.
+    _summarize: SummarizeFn,
   ) {}
 
   async init(): Promise<void> {
@@ -44,8 +48,24 @@ export class SearchService implements SarahService {
     this.status = 'stopped';
   }
 
-  onMessage(_msg: TypedBusMessage): void {
-    // Invoked directly by ActionService — no bus subscriptions.
+  /**
+   * @param requestId - Correlated search request whose result set must no longer be observable.
+   *
+   * - Removes only the selected result session.
+   * - Leaves unrelated normal search sessions available.
+   *
+   * @returns Whether a stored result session was removed.
+   *
+   * @category Service
+   */
+  discardSession(requestId: string): boolean {
+    return this.sessions.delete(requestId);
+  }
+
+  onMessage(msg: TypedBusMessage): void {
+    if (msg.topic === 'search:discard-session') {
+      this.discardSession(msg.data.requestId);
+    }
   }
 
   async runSearch(
@@ -86,11 +106,7 @@ export class SearchService implements SarahService {
       throwIfAborted(signal);
       const results = await this.provider.search(query, signal);
       throwIfAborted(signal);
-      const summary = await this.summarize(buildSummaryPrompt(results), signal);
-      throwIfAborted(signal);
-      if (summary.trim().length === 0) {
-        throw new Error('Search summarizer returned an empty response');
-      }
+      const summary = buildSafeSearchSummary(results);
       this.sessions.set(correlation.requestId, { ...correlation, results });
       while (this.sessions.size > 8) {
         const oldest = this.sessions.keys().next().value as string | undefined;

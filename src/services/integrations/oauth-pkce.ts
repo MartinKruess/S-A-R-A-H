@@ -13,6 +13,22 @@ export type OAuthTokens = {
   scope: string;
 };
 
+export type OAuthTokenErrorDisposition = 'definitive' | 'retryable';
+
+/** Typed failure contract used to decide whether a stored refresh token is invalid. */
+export class OAuthTokenEndpointError extends Error {
+  readonly name = 'OAuthTokenEndpointError';
+
+  constructor(
+    message: string,
+    readonly disposition: OAuthTokenErrorDisposition,
+    readonly status?: number,
+    readonly oauthError?: string,
+  ) {
+    super(message);
+  }
+}
+
 type FetchFn = typeof fetch;
 
 /** base64 → base64url: `+/`→`-_`, strip `=` padding. */
@@ -49,19 +65,52 @@ export function buildAuthorizeUrl(
   return `${p.authorizationEndpoint}?${params.toString()}`;
 }
 
-/** Map a Spotify/OAuth token JSON response onto OAuthTokens. */
-function mapTokens(json: {
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-  scope?: string;
-}): OAuthTokens {
+/** Validate and map an untrusted OAuth token response. */
+function mapTokens(json: object | null): OAuthTokens {
+  if (json === null || Array.isArray(json)) {
+    throw new OAuthTokenEndpointError('Token endpoint returned an invalid response', 'retryable');
+  }
+  const candidate = json as Partial<Record<
+    'access_token' | 'refresh_token' | 'expires_in' | 'scope',
+    object | string | number | null
+  >>;
+  if (
+    typeof candidate.access_token !== 'string' ||
+    candidate.access_token.trim().length === 0 ||
+    typeof candidate.expires_in !== 'number' ||
+    !Number.isSafeInteger(candidate.expires_in) ||
+    candidate.expires_in <= 0 ||
+    candidate.expires_in > Math.floor(Number.MAX_SAFE_INTEGER / 1000) ||
+    (candidate.refresh_token !== undefined &&
+      (typeof candidate.refresh_token !== 'string' || candidate.refresh_token.trim().length === 0)) ||
+    (candidate.scope !== undefined && typeof candidate.scope !== 'string')
+  ) {
+    throw new OAuthTokenEndpointError('Token endpoint returned an invalid response', 'retryable');
+  }
   return {
-    accessToken: json.access_token,
-    refreshToken: json.refresh_token,
-    expiresIn: json.expires_in,
-    scope: json.scope ?? '',
+    accessToken: candidate.access_token,
+    refreshToken: candidate.refresh_token,
+    expiresIn: candidate.expires_in,
+    scope: candidate.scope ?? '',
   };
+}
+
+function oauthErrorCode(text: string): string | undefined {
+  try {
+    const parsed = JSON.parse(text) as object | null;
+    if (parsed === null || Array.isArray(parsed)) return undefined;
+    const candidate = parsed as Partial<Record<'error', object | string | number | null>>;
+    return typeof candidate.error === 'string' && candidate.error.trim()
+      ? candidate.error
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isDefinitiveOAuthRejection(status: number, code: string | undefined): boolean {
+  return (status === 400 || status === 401) &&
+    (code === 'invalid_grant' || code === 'invalid_client');
 }
 
 /** POST a form-encoded body to the token endpoint and parse the token JSON. */
@@ -71,17 +120,35 @@ async function postToken(
   fetchFn: FetchFn,
   signal?: AbortSignal,
 ): Promise<OAuthTokens> {
-  const res = await fetchFn(tokenEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
-    ...(signal ? { signal } : {}),
-  });
+  let res: Response;
+  try {
+    res = await fetchFn(tokenEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'unknown transport failure';
+    throw new OAuthTokenEndpointError(`Token endpoint request failed: ${detail}`, 'retryable');
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(`Token endpoint ${res.status}: ${text}`);
+    const code = oauthErrorCode(text);
+    const disposition = isDefinitiveOAuthRejection(res.status, code) ? 'definitive' : 'retryable';
+    throw new OAuthTokenEndpointError(
+      `Token endpoint ${res.status}${code ? `: ${code}` : ''}`,
+      disposition,
+      res.status,
+      code,
+    );
   }
-  return mapTokens(await res.json());
+  try {
+    return mapTokens(await res.json() as object | null);
+  } catch (error) {
+    if (error instanceof OAuthTokenEndpointError) throw error;
+    throw new OAuthTokenEndpointError('Token endpoint returned invalid JSON', 'retryable');
+  }
 }
 
 /** Exchange an authorization code for tokens (grant_type=authorization_code). */

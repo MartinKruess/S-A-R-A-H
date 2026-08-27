@@ -146,7 +146,7 @@ export function createTrustStep(data: WizardData): HTMLElement {
 
   const anonymousToggle = sarahToggle({
     label: 'Vertrauliche Nachrichten',
-    description: 'Mit /anonymous wird eine Nachricht nach der Session vergessen — Sarah reagiert darauf, merkt es sich aber nicht langfristig',
+    description: '/anonymous <Text> bleibt einmalig flüchtig. /incognito startet und beendet einen privaten Abschnitt, der nie gespeichert oder ausgewertet wird.',
     checked: data.trust.anonymousEnabled,
     onChange: (value) => { data.trust.anonymousEnabled = value; },
   });

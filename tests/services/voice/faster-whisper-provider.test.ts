@@ -5,11 +5,26 @@ import type { ChildProcess } from 'child_process';
 vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
 vi.mock('node:fs', () => ({
   existsSync: vi.fn(() => true),
+  mkdtempSync: vi.fn(() => 'C:/temp/sarah-private-stt-123-private'),
+  chmodSync: vi.fn(),
+  readdirSync: vi.fn(() => []),
+  lstatSync: vi.fn(() => ({ isDirectory: () => true, isSymbolicLink: () => false })),
+  rmSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
+  rmdirSync: vi.fn(),
 }));
 
 import { spawn } from 'node:child_process';
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { FasterWhisperProvider } from '../../../src/services/voice/providers/faster-whisper-provider.js';
 
 class MockWhisperProcess extends EventEmitter {
@@ -46,6 +61,16 @@ describe('FasterWhisperProvider runtime ownership', () => {
 
   beforeEach(() => {
     spawnMock.mockReset();
+    vi.mocked(mkdtempSync).mockReset().mockReturnValue('C:/temp/sarah-private-stt-123-private');
+    vi.mocked(readdirSync).mockReset().mockReturnValue([]);
+    vi.mocked(lstatSync).mockReset().mockReturnValue({
+      isDirectory: () => true,
+      isSymbolicLink: () => false,
+    } as ReturnType<typeof lstatSync>);
+    vi.mocked(rmSync).mockClear();
+    vi.mocked(unlinkSync).mockClear();
+    vi.mocked(writeFileSync).mockClear();
+    vi.mocked(rmdirSync).mockClear();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
@@ -67,6 +92,89 @@ describe('FasterWhisperProvider runtime ownership', () => {
     await destroying;
 
     expect(process.kill).toHaveBeenCalledOnce();
+  });
+
+  it('uses a process-owned private directory and deletes only its collision-safe WAV file', async () => {
+    const process = new MockWhisperProcess();
+    spawnMock.mockReturnValue(process as unknown as ChildProcess);
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return Promise.resolve(response(true));
+      if (url.includes('/transcribe')) return Promise.resolve(response(true, 'Privat'));
+      return Promise.reject(new Error('no previous server'));
+    });
+    const provider = new FasterWhisperProvider('C:/fake/resources');
+
+    await provider.init();
+    await expect(provider.transcribe(new Float32Array([0.2]), 16_000)).resolves.toBe('Privat');
+
+    const privatePrefix = String(vi.mocked(mkdtempSync).mock.calls[0][0]);
+    expect(privatePrefix).toMatch(/sarah-private-stt-\d+-$/u);
+    const [writtenPath, , options] = vi.mocked(writeFileSync).mock.calls[0];
+    expect(String(writtenPath)).toMatch(/[\\/]sarah-private-stt-123-private[\\/][0-9a-f-]{36}\.wav$/u);
+    expect(options).toMatchObject({ mode: 0o600, flag: 'wx' });
+    expect(unlinkSync).toHaveBeenCalledOnce();
+    expect(unlinkSync).toHaveBeenCalledWith(writtenPath);
+    await provider.destroy();
+    expect(rmdirSync).toHaveBeenCalledWith('C:/temp/sarah-private-stt-123-private');
+  });
+
+  it('removes only exact stale Sarah STT directories before creating a new provider', () => {
+    vi.mocked(readdirSync).mockReturnValue([
+      { name: 'sarah-private-stt-987654-abc123', isDirectory: () => true },
+      { name: 'sarah-private-stt-not-a-pid-abc123', isDirectory: () => true },
+      { name: 'sarah-private-stt-987654-abc123.wav', isDirectory: () => false },
+      { name: 'unrelated-private-data', isDirectory: () => true },
+    ] as ReturnType<typeof readdirSync>);
+
+    new FasterWhisperProvider('C:/fake/resources');
+
+    expect(lstatSync).toHaveBeenCalledOnce();
+    expect(lstatSync).toHaveBeenCalledWith(expect.stringMatching(/sarah-private-stt-987654-abc123$/u));
+    expect(rmSync).toHaveBeenCalledOnce();
+    expect(rmSync).toHaveBeenCalledWith(
+      expect.stringMatching(/sarah-private-stt-987654-abc123$/u),
+      { recursive: true, force: true, maxRetries: 1, retryDelay: 10 },
+    );
+  });
+
+  it('does not follow a stale-directory symlink during startup cleanup', () => {
+    vi.mocked(readdirSync).mockReturnValue([
+      { name: 'sarah-private-stt-987654-abc123', isDirectory: () => true },
+    ] as ReturnType<typeof readdirSync>);
+    vi.mocked(lstatSync).mockReturnValue({
+      isDirectory: () => true,
+      isSymbolicLink: () => true,
+    } as ReturnType<typeof lstatSync>);
+
+    new FasterWhisperProvider('C:/fake/resources');
+
+    expect(rmSync).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful transcript when deletion of its owned WAV file fails', async () => {
+    const process = new MockWhisperProcess();
+    spawnMock.mockReturnValue(process as unknown as ChildProcess);
+    vi.mocked(unlinkSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('locked'), { code: 'EPERM' });
+    });
+    const cleanupWarning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/health')) return Promise.resolve(response(true));
+      if (url.includes('/transcribe')) return Promise.resolve(response(true, 'Erfolgreich'));
+      return Promise.reject(new Error('no previous server'));
+    });
+    const provider = new FasterWhisperProvider('C:/fake/resources');
+
+    await provider.init();
+
+    await expect(provider.transcribe(new Float32Array([0.2]), 16_000)).resolves.toBe('Erfolgreich');
+    expect(cleanupWarning).toHaveBeenCalledWith(
+      '[FasterWhisper] Temporary audio cleanup failed:',
+      expect.objectContaining({ code: 'EPERM' }),
+    );
+    await provider.destroy();
   });
 
   it('degrades after a ready server crashes and recovers through one controlled restart', async () => {

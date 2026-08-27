@@ -47,6 +47,8 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
     for (const info of infos) {
       list.appendChild(createRow(info));
     }
+    const storageMessage = infos.map(toRowView).find((view) => view.errorMessage)?.errorMessage;
+    if (storageMessage) showError(storageMessage);
   }
 
   function createRow(info: ConnectionInfo): HTMLElement {
@@ -72,6 +74,7 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
         void handleAction(view.connected ? 'disconnect' : 'connect', info.id, button);
       },
     });
+    if (view.buttonDisabled) button.setAttribute('disabled', '');
     row.appendChild(button);
 
     return row;

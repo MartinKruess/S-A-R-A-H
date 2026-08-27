@@ -1,7 +1,13 @@
 export const BUILTIN_COMMANDS = [
-  { command: '/anonymous', description: 'Nachricht wird nach der Session vergessen', available: true },
+  { command: '/anonymous', description: 'Vertrauliche Nachricht oder Inkognito-Modus ein/aus', available: true },
+  { command: '/incognito', description: 'Inkognito-Modus ein/aus', available: true },
   { command: '/confirm', description: 'Bestätigt eine zuvor angefragte Aktion', available: true },
-  { command: '/showcontext', description: 'Zeigt alles was Sarah über dich weiß', available: false },
+  { command: '/showcontext', description: 'Zeigt Sarahs kuratierte Erinnerungen', available: true },
+  { command: '/remember', description: 'Speichert eine ausdrückliche Erinnerung', available: true },
+  { command: '/correctmemory', description: 'Korrigiert eine Erinnerung anhand ihrer ID', available: true },
+  { command: '/forget', description: 'Blendet eine Erinnerung anhand ihrer ID aus', available: true },
+  { command: '/deletememory', description: 'Löscht eine Erinnerung anhand ihrer ID endgültig', available: true },
+  { command: '/exportmemory', description: 'Exportiert kuratierte Erinnerungen als JSON', available: true },
   { command: '/quietmode', description: 'Ruhemodus ein/aus', available: false },
 ] as const;
 

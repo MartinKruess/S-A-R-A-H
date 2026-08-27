@@ -130,7 +130,7 @@ Verbindlicher Detailplan:
 ## 6. Layer 2 – Kontext, Memory, Regeln und Berechtigungen
 
 **Leitfrage:** Was weiß und darf S.A.R.A.H. in diesem Turn und welche Informationen dürfen danach bestehen bleiben?
-**Aktueller Stand:** ⚪/🟡 – einzelne Bestandteile existieren, der Layer wurde noch nicht als Gesamtsystem auditiert oder abgenommen.
+**Aktueller Stand:** 🟡 – sieben Fixrunden und sechs unabhängige Kontrollaudits sind technisch abgeschlossen. Der letzte Kontrollaudit fand fünf Befunde (drei P1, zwei P2); alle fünf wurden behoben. Die vollständige Suite mit 1.165 Tests, beide Typechecks und der Produktionsbuild sind grün. Offen ist die praktische Windows-Abnahme, deshalb ist Layer 2 noch nicht als vollständig abgenommen markiert.
 
 ### Gehört zu Layer 2
 
@@ -151,21 +151,27 @@ Verbindlicher Detailplan:
 ### Bereits vorhandene Grundlage
 
 - validierte Profil- und Trust-Konfiguration
-- lokale Conversation-Persistenz und Gesprächshistorie
-- Session- und Startkontext
-- Prompt-Layer für mehrere Kontextquellen
-- erste Memory-, Ausschluss- und Bestätigungseinstellungen
-- Slash-Command-Grundlage für besondere Turn-Arten
+- fail-closed Konfigurations-, Schlüssel- und Storage-Recovery
+- verschlüsselte lokale Conversation-Persistenz mit gebundener Herkunft und Quarantäne
+- atomare Turn-, Session-, Staging- und Curator-Lebenszyklen
+- query-bezogener Recall, begrenzter Live-Kontext und konservatives Kontextbudget
+- technisch erzwungene Memory-Ausschlüsse und Secret-Erkennung
+- mehrturniges Inkognito und flüchtiges `/anonymous`
+- zentrale Action-Policy mit turn-, action-, parameter- und anfragegebundenen Bestätigungen
+- technisch erzwungene Dateizugriffsgrenzen und sichtbare Degraded-Zustände
 
-### Noch zu prüfen und auszubauen
+### Noch praktisch abzunehmen
 
-- Einstellungen wie `memoryAllowed` technisch an der Persistenzgrenze erzwingen
-- `/anonymous` beziehungsweise Incognito wirklich flüchtig ausführen
-- Profile, Gesprächskontext und Langzeitgedächtnis fachlich sauber trennen
-- relevanten Recall statt pauschaler Verlaufsübernahme entwickeln
-- Bestätigungen turn-, action- und zeitgebunden erzwingen
-- zentrale Risikomatrix statt alleiniger Promptanweisung
-- vollständige Verwaltungs- und Löschwege für gespeicherte Informationen
+- Inkognito in Chat und Speak einschließlich Wechsel, Abbruch und Neustart
+- Erinnerungen anzeigen, korrigieren, einzeln löschen und vollständig bereinigen
+- Policy-Wechsel während eines bereits laufenden Turns
+- sichtbare OAuth-, Schlüssel-, Storage- und Quarantäne-Zustände
+- ausdrücklich bestätigter Altwert-Recovery-Dialog einschließlich Sicherung und Abbruch
+- Ende-zu-Ende-Verhalten von Recall, Kontextgrenzen und Bestätigungen im realen Windows-Betrieb
+
+Verbindlicher Detailplan und erstes Audit:
+
+- [`layer2-context-memory-security-plan.md`](../steps/layer2-context-memory-security-plan.md)
 
 ## 7. Layer 3 – Intelligence, Decisions und Planning
 
@@ -312,8 +318,8 @@ Layer 0 stellt währenddessen die technische Betriebsfähigkeit sicher.
 
 ## 13. Aktueller Arbeitsfokus
 
-1. Layer 2 vollständig gegen Bestand, Layer 1, Layer 0 und die Produktziele auditieren und planen.
-2. Layer-1/0-Befunde, die erst durch konkrete Layer-2-Abläufe sichtbar werden, an ihrer tatsächlichen Ursache beheben; kein erneuter isolierter Vollaudit ist vorgesehen.
-3. Layer 3 erst verbindlich detaillieren, wenn Kontext-, Berechtigungs- und Toolverträge ausreichend stabil sind.
+1. Layer 2 praktisch unter Windows gegen die dokumentierten Kontext-, Memory-, Datenschutz- und Berechtigungsverträge abnehmen.
+2. Dabei sichtbare Layer-1/0-Folgefehler an ihrer tatsächlichen Ursache beheben; nach dem sechsten Kontrollaudit mit fünf vollständig behobenen Befunden ist gemäß vereinbarter Schwelle kein weiterer isolierter Layer-2-Vollaudit vorgesehen.
+3. Layer 3 erst verbindlich detaillieren, wenn die technische Layer-2-Grundlage auch praktisch ausreichend stabil bestätigt ist.
 4. Layer 4 bis 6 zunächst als Zielstruktur pflegen und bei jeder neuen Funktion die Verantwortungsgrenzen einhalten.
 5. Die praktische Gesamtmatrix schrittweise erweitern und spätestens nach Layer 6 einmal vollständig bis Layer 0 durchführen.

@@ -2,6 +2,8 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
+import { randomUUID } from 'crypto';
 import type { SttAvailability, SttProvider } from '../stt-provider.interface.js';
 import { normalizeUtterance } from '../normalize-audio.js';
 import {
@@ -20,6 +22,8 @@ const RESTART_MAX_DELAY_MS = 30_000;
 const PROCESS_EXIT_TIMEOUT_MS = 1_000;
 const HTTP_PROBE_TIMEOUT_MS = 5_000;
 const SHUTDOWN_PROBE_TIMEOUT_MS = 1_500;
+const PRIVATE_TEMP_PREFIX = 'sarah-private-stt';
+const PRIVATE_TEMP_DIRECTORY_PATTERN = /^sarah-private-stt-\d+-[a-z0-9_-]{6,}$/iu;
 
 export class FasterWhisperProvider implements SttProvider {
   readonly id = 'faster-whisper';
@@ -34,8 +38,11 @@ export class FasterWhisperProvider implements SttProvider {
   private restartAttempt = 0;
   private everReady = false;
   private destroyed = false;
+  private tempDirectory: string | null = null;
+  private readonly ownedTempFiles = new Set<string>();
 
   constructor(private resourcesPath: string) {
+    this.cleanupStalePrivateTempDirectories();
     this.scriptPath = path.join(resourcesPath, 'whisper', 'faster-whisper-server.py');
   }
 
@@ -205,9 +212,9 @@ export class FasterWhisperProvider implements SttProvider {
     // Normalize the utterance level before Whisper — the capture path applies no
     // AGC, so this is what stops "only works when I shout" quiet/clipped input.
     const wavBuffer = this.encodeWav(normalizeUtterance(audio), sampleRate);
-    const tmpDir = process.env.TEMP ?? process.env.TMP ?? '/tmp';
-    const tmpPath = path.join(tmpDir, `sarah-stt-${Date.now()}.wav`);
-    fs.writeFileSync(tmpPath, wavBuffer);
+    const tmpPath = path.join(this.getPrivateTempDirectory(), `${randomUUID()}.wav`);
+    fs.writeFileSync(tmpPath, wavBuffer, { mode: 0o600, flag: 'wx' });
+    this.ownedTempFiles.add(tmpPath);
 
     try {
       let res: Response;
@@ -241,7 +248,7 @@ export class FasterWhisperProvider implements SttProvider {
       const text = await res.text();
       return text.trim();
     } finally {
-      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+      this.cleanupOwnedTempFile(tmpPath);
     }
   }
 
@@ -249,6 +256,52 @@ export class FasterWhisperProvider implements SttProvider {
     if (!signal?.aborted) return;
     const reason = signal.reason;
     throw reason instanceof Error ? reason : abortError();
+  }
+
+  /** Creates one unpredictable, process-owned STT directory without scanning sibling artifacts. */
+  private getPrivateTempDirectory(): string {
+    if (this.tempDirectory) return this.tempDirectory;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `${PRIVATE_TEMP_PREFIX}-${process.pid}-`));
+    try {
+      fs.chmodSync(directory, 0o700);
+    } catch {
+      // Windows ACLs are inherited from the current user's temp directory.
+    }
+    this.tempDirectory = directory;
+    return directory;
+  }
+
+  /** Removes only abandoned process directories created by Sarah's STT provider. */
+  private cleanupStalePrivateTempDirectories(): void {
+    const tempRoot = os.tmpdir();
+    try {
+      for (const entry of fs.readdirSync(tempRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !PRIVATE_TEMP_DIRECTORY_PATTERN.test(entry.name)) continue;
+        const candidate = path.join(tempRoot, entry.name);
+        try {
+          const metadata = fs.lstatSync(candidate);
+          if (!metadata.isDirectory() || metadata.isSymbolicLink()) continue;
+          fs.rmSync(candidate, { recursive: true, force: true, maxRetries: 1, retryDelay: 10 });
+        } catch (error) {
+          console.warn('[FasterWhisper] Stale private audio cleanup failed:', error);
+        }
+      }
+    } catch (error) {
+      console.warn('[FasterWhisper] Private audio directory scan failed:', error);
+    }
+  }
+
+  /** Removes only a WAV path created and tracked by this provider instance. */
+  private cleanupOwnedTempFile(filePath: string): void {
+    if (!this.ownedTempFiles.has(filePath)) return;
+    try {
+      fs.unlinkSync(filePath);
+      this.ownedTempFiles.delete(filePath);
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error ? error.code : undefined;
+      if (code === 'ENOENT') this.ownedTempFiles.delete(filePath);
+      else console.warn('[FasterWhisper] Temporary audio cleanup failed:', error);
+    }
   }
 
   async destroy(signal?: AbortSignal): Promise<void> {
@@ -281,6 +334,15 @@ export class FasterWhisperProvider implements SttProvider {
       }
     }
     this.availabilityListeners.clear();
+    for (const filePath of [...this.ownedTempFiles]) this.cleanupOwnedTempFile(filePath);
+    if (this.tempDirectory) {
+      try {
+        fs.rmdirSync(this.tempDirectory);
+        this.tempDirectory = null;
+      } catch {
+        // Non-empty or locked process-owned directories are left untouched.
+      }
+    }
   }
 
   private handleRuntimeFailure(process: ChildProcess, message: string): void {

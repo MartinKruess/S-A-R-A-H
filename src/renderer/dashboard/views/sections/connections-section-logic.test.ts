@@ -21,6 +21,7 @@ describe('connections-section-logic — toRowView', () => {
     expect(view.badgeText).toBe('Verbunden');
     expect(view.badgeState).toBe('connected');
     expect(view.buttonLabel).toBe('Trennen');
+    expect(view.buttonDisabled).toBe(false);
     expect(view.displayName).toBe('Spotify');
   });
 
@@ -29,6 +30,20 @@ describe('connections-section-logic — toRowView', () => {
     expect(view.badgeText).toBe('Nicht verbunden');
     expect(view.badgeState).toBe('disconnected');
     expect(view.buttonLabel).toBe('Verbinden');
+  });
+
+  it('surfaces a degraded token store and disables destructive overwrite paths', () => {
+    const view = toRowView({
+      ...DISCONNECTED,
+      storageState: 'degraded',
+      storageError: 'Token-Datei beschädigt',
+    });
+
+    expect(view.badgeText).toBe('Speicherfehler');
+    expect(view.badgeState).toBe('error');
+    expect(view.buttonLabel).toBe('Nicht verfügbar');
+    expect(view.buttonDisabled).toBe(true);
+    expect(view.errorMessage).toBe('Token-Datei beschädigt');
   });
 });
 

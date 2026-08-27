@@ -12,6 +12,7 @@ import {
   buildAuthorizeUrl,
   exchangeCode,
   generatePkce,
+  OAuthTokenEndpointError,
   randomState,
   refreshTokens,
 } from './oauth-pkce.js';
@@ -24,6 +25,8 @@ export type ConnectionInfo = {
   displayName: string;
   connected: boolean;
   expiresAt?: number;
+  storageState?: 'recovered' | 'degraded';
+  storageError?: string;
 };
 
 /** Access tokens are refreshed this many ms before their actual expiry. */
@@ -56,6 +59,8 @@ export class OAuthConnectionService {
   private readonly connecting = new Set<string>();
   /** Active loopback flows, cancelled during application shutdown. */
   private readonly activeConnections = new Map<string, (error: Error) => Promise<void>>();
+  /** At most one refresh request per provider may update or remove its token. */
+  private readonly activeRefreshes = new Map<string, Promise<string | null>>();
   private destroyed = false;
 
   constructor(deps: OAuthConnectionServiceDeps) {
@@ -79,11 +84,15 @@ export class OAuthConnectionService {
 
   private toInfo(p: OAuthProvider): ConnectionInfo {
     const stored = this.tokenStore.get(p.id);
+    const storageStatus = this.tokenStore.getStatus();
     return {
       id: p.id,
       displayName: p.displayName,
       connected: stored !== undefined,
       expiresAt: stored?.expiresAt,
+      ...(storageStatus.state === 'ready'
+        ? {}
+        : { storageState: storageStatus.state, storageError: storageStatus.message }),
     };
   }
 
@@ -99,7 +108,7 @@ export class OAuthConnectionService {
   /**
    * Return a valid access token for the provider, refreshing when it is within
    * the expiry skew. Missing token, unconfigured provider (empty clientId), or a
-   * failed refresh → null (a failed refresh also disconnects the provider).
+   * failed refresh → null. Only a definitive OAuth rejection disconnects the provider.
    */
   async getAccessToken(id: string, signal?: AbortSignal): Promise<string | null> {
     throwIfAborted(signal);
@@ -113,8 +122,26 @@ export class OAuthConnectionService {
       return stored.accessToken;
     }
 
+    const activeRefresh = this.activeRefreshes.get(id);
+    if (activeRefresh) return activeRefresh;
+
+    const refresh = this.refreshAccessToken(id, p, stored, signal);
+    this.activeRefreshes.set(id, refresh);
     try {
-      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn, signal);
+      return await refresh;
+    } finally {
+      if (this.activeRefreshes.get(id) === refresh) this.activeRefreshes.delete(id);
+    }
+  }
+
+  private async refreshAccessToken(
+    id: string,
+    provider: OAuthProvider,
+    stored: StoredToken,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    try {
+      const tokens = await refreshTokens(provider, stored.refreshToken, this.fetchFn, signal);
       const updated: StoredToken = {
         // Keep the existing refresh token unless the response rotated it.
         refreshToken: tokens.refreshToken ?? stored.refreshToken,
@@ -122,14 +149,34 @@ export class OAuthConnectionService {
         expiresAt: this.now() + tokens.expiresIn * 1000,
         scope: tokens.scope || stored.scope,
       };
+      const current = this.tokenStore.get(id);
+      if (!current || !this.sameToken(current, stored)) {
+        return current && current.expiresAt - this.now() > REFRESH_SKEW_MS
+          ? current.accessToken
+          : null;
+      }
       this.tokenStore.set(id, updated);
       return updated.accessToken;
     } catch (err) {
       if (signal?.aborted) throw abortError();
-      console.warn(`[OAuth] refresh failed for '${id}', disconnecting:`, (err as Error).message);
-      this.tokenStore.delete(id);
+      const definitive = err instanceof OAuthTokenEndpointError && err.disposition === 'definitive';
+      console.warn(
+        `[OAuth] refresh failed for '${id}', ${definitive ? 'disconnecting' : 'preserving connection'}:`,
+        err instanceof Error ? err.message : 'unknown refresh failure',
+      );
+      if (definitive) {
+        const current = this.tokenStore.get(id);
+        if (current && this.sameToken(current, stored)) this.tokenStore.delete(id);
+      }
       return null;
     }
+  }
+
+  private sameToken(left: StoredToken, right: StoredToken): boolean {
+    return left.refreshToken === right.refreshToken &&
+      left.accessToken === right.accessToken &&
+      left.expiresAt === right.expiresAt &&
+      left.scope === right.scope;
   }
 
   async disconnect(id: string): Promise<void> {

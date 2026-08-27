@@ -343,6 +343,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     forwardToRenderers(bus, 'llm:error'),
     forwardToRenderers(bus, 'turn:terminal'),
     forwardToRenderers(bus, 'storage:degraded'),
+    forwardToRenderers(bus, 'privacy:incognito'),
   ];
 
   const runtimeUnsubscribe = getAppContext().lifecycle.subscribe((snapshot) => {

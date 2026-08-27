@@ -93,6 +93,7 @@ export class ActionConfirmationGate {
     action: string,
     param: string,
     reference: ActionConfirmationReference | undefined,
+    sourceRequestId?: string,
   ): boolean {
     this.removeExpired();
     if (!reference) return false;
@@ -103,6 +104,7 @@ export class ActionConfirmationGate {
       || approval.confirmation.requestedTurnId !== reference.requestedTurnId
       || approval.action !== action
       || approval.param !== param
+      || approval.sourceRequestId !== sourceRequestId
     ) return false;
     this.approvals.delete(reference.confirmationId);
     return true;

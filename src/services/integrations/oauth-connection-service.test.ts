@@ -15,6 +15,7 @@ function fakeStore(initial: Record<string, StoredToken> = {}): TokenStore {
     delete: (id: string) => {
       delete data[id];
     },
+    getStatus: () => ({ state: 'ready' }),
   } as unknown as TokenStore;
 }
 
@@ -91,7 +92,50 @@ describe('OAuthConnectionService', () => {
     expect(store.get('spotify')?.refreshToken).toBe('keep-me');
   });
 
-  it('getAccessToken: refresh failure → disconnected + null', async () => {
+  it('coalesces parallel refreshes per provider into one token rotation', async () => {
+    const now = () => 1_000_000;
+    const store = fakeStore({
+      spotify: { refreshToken: 'old-refresh', accessToken: 'stale', expiresAt: now() + 1000, scope: 's' },
+    });
+    let resolveFetch: (response: Response) => void = () => {};
+    const fetchFn = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    })) as unknown as typeof fetch;
+    const svc = makeService({ store, fetchFn, now });
+
+    const first = svc.getAccessToken('spotify');
+    const second = svc.getAccessToken('spotify');
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    resolveFetch(jsonResponse({ access_token: 'fresh', refresh_token: 'rotated', expires_in: 3600 }));
+    await expect(Promise.all([first, second])).resolves.toEqual(['fresh', 'fresh']);
+    expect(store.get('spotify')?.refreshToken).toBe('rotated');
+  });
+
+  it('does not delete a newer token when an older in-flight refresh fails', async () => {
+    const now = () => 1_000_000;
+    const stale: StoredToken = {
+      refreshToken: 'old-refresh', accessToken: 'stale', expiresAt: now() + 1000, scope: 's',
+    };
+    const fresh: StoredToken = {
+      refreshToken: 'rotated', accessToken: 'fresh', expiresAt: now() + 3600_000, scope: 's',
+    };
+    const store = fakeStore({ spotify: stale });
+    let rejectFetch: (error: Error) => void = () => {};
+    const fetchFn = vi.fn(() => new Promise<Response>((_resolve, reject) => {
+      rejectFetch = reject;
+    })) as unknown as typeof fetch;
+    const svc = makeService({ store, fetchFn, now });
+
+    const refreshing = svc.getAccessToken('spotify');
+    store.set('spotify', fresh);
+    rejectFetch(new Error('late refresh failure'));
+
+    await expect(refreshing).resolves.toBeNull();
+    expect(store.get('spotify')).toEqual(fresh);
+  });
+
+  it('getAccessToken: invalid_grant definitively disconnects the provider', async () => {
     const now = () => 1_000_000;
     const store = fakeStore({
       spotify: { refreshToken: 'revoked', accessToken: 'stale', expiresAt: now() + 1000, scope: 's' },
@@ -103,6 +147,39 @@ describe('OAuthConnectionService', () => {
 
     expect(await svc.getAccessToken('spotify')).toBeNull();
     expect(store.has('spotify')).toBe(false);
+  });
+
+  it.each([
+    ['network failure', new TypeError('network unavailable')],
+    ['timeout', new DOMException('request timed out', 'TimeoutError')],
+  ])('getAccessToken: %s preserves the stored refresh token', async (_label, failure) => {
+    const now = () => 1_000_000;
+    const stored: StoredToken = {
+      refreshToken: 'keep', accessToken: 'stale', expiresAt: now() + 1000, scope: 's',
+    };
+    const store = fakeStore({ spotify: stored });
+    const fetchFn = vi.fn(async () => {
+      throw failure;
+    }) as unknown as typeof fetch;
+    const svc = makeService({ store, fetchFn, now });
+
+    expect(await svc.getAccessToken('spotify')).toBeNull();
+    expect(store.get('spotify')).toEqual(stored);
+  });
+
+  it('getAccessToken: HTTP 5xx preserves the stored refresh token', async () => {
+    const now = () => 1_000_000;
+    const stored: StoredToken = {
+      refreshToken: 'keep', accessToken: 'stale', expiresAt: now() + 1000, scope: 's',
+    };
+    const store = fakeStore({ spotify: stored });
+    const fetchFn = vi.fn(async () =>
+      jsonResponse({ error: 'server_error' }, false, 503),
+    ) as unknown as typeof fetch;
+    const svc = makeService({ store, fetchFn, now });
+
+    expect(await svc.getAccessToken('spotify')).toBeNull();
+    expect(store.get('spotify')).toEqual(stored);
   });
 
   it('getAccessToken: shutdown abort preserves the stored connection', async () => {

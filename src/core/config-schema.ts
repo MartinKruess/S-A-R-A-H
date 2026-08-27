@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { DEFAULT_LLM_CONFIG } from './llm-defaults.js';
+import {
+  MAX_MEMORY_EXCLUSIONS,
+  MAX_MEMORY_EXCLUSION_LENGTH,
+  normalizeMemoryExclusion,
+  normalizeMemoryExclusions,
+} from './memory-exclusions.js';
 
 const pre = <T extends z.ZodTypeAny>(schema: T) =>
   z.preprocess((v) => v ?? {}, schema);
@@ -73,6 +79,10 @@ export const ResourcesSchema = z.object({
   importantFolders: z.array(z.string()).default([]),
 });
 
+const MemoryExclusionSchema = z.string()
+  .transform(normalizeMemoryExclusion)
+  .pipe(z.string().min(1).max(MAX_MEMORY_EXCLUSION_LENGTH));
+
 export const TrustSchema = z.object({
   memoryAllowed: z.boolean().default(true),
   fileAccess: z.preprocess(
@@ -82,7 +92,10 @@ export const TrustSchema = z.object({
   confirmationLevel: z
     .enum(['minimal', 'standard', 'maximal'])
     .default('standard'),
-  memoryExclusions: z.array(z.string()).default([]),
+  memoryExclusions: z.array(MemoryExclusionSchema)
+    .max(MAX_MEMORY_EXCLUSIONS)
+    .transform(normalizeMemoryExclusions)
+    .default([]),
   anonymousEnabled: z.boolean().default(false),
   showContextEnabled: z.boolean().default(false),
 });

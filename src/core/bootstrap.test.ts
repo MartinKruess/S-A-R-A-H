@@ -10,7 +10,7 @@ describe('bootstrap', () => {
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-boot-'));
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
   });
 
   afterEach(async () => {
@@ -23,6 +23,15 @@ describe('bootstrap', () => {
     expect(ctx.registry).toBeDefined();
     expect(ctx.config).toBeDefined();
     expect(ctx.db).toBeDefined();
+  });
+
+  it('keeps normal trust defaults on a clean first installation', () => {
+    expect(ctx.configErrors).toBeNull();
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: true,
+      fileAccess: 'specific-folders',
+      confirmationLevel: 'standard',
+    }));
   });
 
   it('config can set and get values', async () => {
@@ -62,7 +71,7 @@ describe('bootstrap', () => {
     });
     await ctx.shutdown();
 
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
 
     expect(ctx.parsedConfig.controls.customCommands).toEqual([
       { command: '/meincommand', prompt: 'Bleibt erhalten' },
@@ -78,7 +87,7 @@ describe('bootstrap', () => {
   it('persists validated defaults after an invalid config is accepted', async () => {
     await ctx.config.set('root', { controls: { voiceMode: 'invalid' } });
     await ctx.shutdown();
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
     expect(ctx.configErrors).not.toBeNull();
 
     await repairInvalidConfig(ctx);
@@ -86,8 +95,121 @@ describe('bootstrap', () => {
     expect(await ctx.config.get('root')).toEqual(ctx.parsedConfig);
 
     await ctx.shutdown();
-    ctx = await bootstrap(tmpDir);
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
     expect(ctx.configErrors).toBeNull();
+  });
+
+  it('uses fail-closed trust defaults when config JSON and backup are unreadable', async () => {
+    await ctx.shutdown();
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), '{broken', 'utf-8');
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.configErrors).not.toBeNull();
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: false,
+      fileAccess: 'none',
+      confirmationLevel: 'maximal',
+    }));
+    expect(ctx.lifecycle.snapshot.capabilities.storage?.state).toBe('degraded');
+  });
+
+  it('fails closed when persisted config material has no root value', async () => {
+    await ctx.shutdown();
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), '{}', 'utf-8');
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.configErrors).toEqual(expect.arrayContaining([expect.stringContaining('root-Wert')]));
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: false,
+      fileAccess: 'none',
+      confirmationLevel: 'maximal',
+    }));
+  });
+
+  it('loads the valid config backup when the primary file is missing', async () => {
+    await ctx.config.set('root', {
+      ...ctx.parsedConfig,
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: true,
+        fileAccess: 'all',
+        confirmationLevel: 'minimal',
+        anonymousEnabled: true,
+        showContextEnabled: true,
+      },
+    });
+    await ctx.config.set('root', {
+      ...ctx.parsedConfig,
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: false,
+        fileAccess: 'none',
+        confirmationLevel: 'maximal',
+        anonymousEnabled: false,
+        showContextEnabled: false,
+      },
+    });
+    await ctx.shutdown();
+    fs.rmSync(path.join(tmpDir, 'config.json'));
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: false,
+      fileAccess: 'none',
+      confirmationLevel: 'maximal',
+      anonymousEnabled: false,
+      showContextEnabled: false,
+    }));
+    expect(ctx.configErrors).toEqual(expect.arrayContaining([expect.stringContaining('fehlte')]));
+    expect(ctx.lifecycle.snapshot.capabilities.storage?.state).toBe('degraded');
+  });
+
+  it('fails closed after encrypted config recovery discovers a permissive older backup', async () => {
+    await ctx.config.set('root', {
+      ...ctx.parsedConfig,
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: true,
+        fileAccess: 'all',
+        confirmationLevel: 'minimal',
+        anonymousEnabled: true,
+        showContextEnabled: true,
+      },
+    });
+    await ctx.config.set('root', {
+      ...ctx.parsedConfig,
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: false,
+        fileAccess: 'none',
+        confirmationLevel: 'maximal',
+        anonymousEnabled: false,
+        showContextEnabled: false,
+      },
+    });
+    await ctx.shutdown();
+
+    const configPath = path.join(tmpDir, 'config.json');
+    const primary = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+    primary.root = 'sarah-enc:v2:invalid-authenticated-ciphertext';
+    fs.writeFileSync(configPath, JSON.stringify(primary), 'utf-8');
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: false,
+      fileAccess: 'none',
+      confirmationLevel: 'maximal',
+      anonymousEnabled: false,
+      showContextEnabled: false,
+    }));
+    expect(ctx.configErrors).toEqual(expect.arrayContaining([
+      expect.stringContaining('kryptografisch ungültig'),
+    ]));
+    expect(ctx.lifecycle.snapshot.capabilities.storage?.state).toBe('degraded');
   });
 
   it('shutdown is safe when called repeatedly', async () => {
@@ -100,7 +222,7 @@ describe('bootstrap', () => {
     const dbPath = path.join(brokenDir, 'sarah.db');
     fs.writeFileSync(dbPath, 'not a sqlite database');
 
-    await expect(bootstrap(brokenDir)).rejects.toThrow();
+    await expect(bootstrap(brokenDir, { testWrappingKey: Buffer.alloc(32, 93) })).rejects.toThrow();
 
     expect(() => fs.rmSync(brokenDir, { recursive: true, force: true })).not.toThrow();
   });

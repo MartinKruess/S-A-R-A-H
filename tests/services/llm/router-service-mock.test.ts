@@ -55,6 +55,7 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
         query: vi.fn().mockResolvedValue([]),
         insert: vi.fn().mockResolvedValue(1),
         insertTurnMessages: vi.fn().mockResolvedValue(undefined),
+        persistTurnWithMemoryStaging: vi.fn().mockResolvedValue(1),
         update: vi.fn(),
         delete: vi.fn(),
         queryMessagesPage: vi.fn().mockResolvedValue([]),
@@ -381,12 +382,12 @@ describe('RouterService', () => {
 
       const fillerText = fillers[0];
       // The whole turn is persisted atomically; the transient filler adds no row.
-      expect(context.db.insertTurnMessages).toHaveBeenCalledOnce();
-      expect(context.db.insertTurnMessages).toHaveBeenCalledWith(1, [
+      expect(context.db.persistTurnWithMemoryStaging).toHaveBeenCalledOnce();
+      expect(context.db.persistTurnWithMemoryStaging).toHaveBeenCalledWith(1, expect.any(String), [
         { role: 'user', content: 'Erkläre mir Quantenphysik' },
         { role: 'assistant', content: 'Ausführliche Antwort vom 9B Modell.' },
-      ]);
-      const persisted = vi.mocked(context.db.insertTurnMessages).mock.calls[0][1];
+      ], expect.any(String), expect.any(String));
+      const persisted = vi.mocked(context.db.persistTurnWithMemoryStaging).mock.calls[0][2];
       expect(persisted.map((message) => message.content)).not.toContain(fillerText);
 
       // The filler was not pushed to history: it never reaches the worker context.

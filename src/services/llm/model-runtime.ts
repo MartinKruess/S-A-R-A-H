@@ -29,6 +29,7 @@ export interface ModelRuntimeSnapshot {
 
 export interface WorkerTextGenerator {
   generateWorkerText(prompt: string, options?: ChatOptions): Promise<string>;
+  generateWorkerMessages(messages: ChatMessage[], options?: ChatOptions): Promise<string>;
 }
 
 export interface ModelRuntimePort extends WorkerTextGenerator {
@@ -306,11 +307,15 @@ export class ModelRuntime implements ModelRuntimePort {
   }
 
   generateWorkerText(prompt: string, options?: ChatOptions): Promise<string> {
+    return this.generateWorkerMessages([{ role: 'user', content: prompt }], options);
+  }
+
+  generateWorkerMessages(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     return this.runWithRole(
       'local_worker',
       (operationSignal) => chatWithTimeout(
         this.workerProvider,
-        [{ role: 'user', content: prompt }],
+        messages,
         () => {},
         { ...options, signal: operationSignal },
       ),

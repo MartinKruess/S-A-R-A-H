@@ -10,7 +10,7 @@ describe('KeyManager', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-key-'));
-    manager = new KeyManager(tmpDir);
+    manager = new KeyManager(tmpDir, { testWrappingKey: Buffer.alloc(32, 91) });
   });
 
   afterEach(() => {
@@ -31,7 +31,7 @@ describe('KeyManager', () => {
 
   it('persists key across instances', () => {
     const key1 = manager.getOrCreateKey();
-    const manager2 = new KeyManager(tmpDir);
+    const manager2 = new KeyManager(tmpDir, { testWrappingKey: Buffer.alloc(32, 91) });
     const key2 = manager2.getOrCreateKey();
     expect(key1.equals(key2)).toBe(true);
   });
@@ -50,5 +50,17 @@ describe('KeyManager', () => {
       expect(raw).not.toBe(keyHex);
       expect(raw.length).toBeGreaterThan(32);
     }
+  });
+
+  it('refuses to create a replacement key when encrypted stores already exist', () => {
+    fs.writeFileSync(path.join(tmpDir, 'sarah.db'), 'existing-store', 'utf-8');
+    expect(() => manager.getOrCreateKey()).toThrow('kein Ersatzschlüssel');
+    expect(fs.existsSync(path.join(tmpDir, 'sarah.key'))).toBe(false);
+  });
+
+  it('fails closed without safeStorage or an explicit test wrapping key', () => {
+    const productionManager = new KeyManager(tmpDir);
+    expect(() => productionManager.getOrCreateKey()).toThrow('safeStorage');
+    expect(fs.existsSync(path.join(tmpDir, 'sarah.key'))).toBe(false);
   });
 });

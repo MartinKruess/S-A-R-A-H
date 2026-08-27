@@ -7,7 +7,9 @@ import type { ProgramLauncher, ProgramEntry, LaunchResult } from '../../main/pro
 import type { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
 import type { MediaController } from './media-controller.js';
-import { ACTION_SCHEMAS, isActionName, requiresActionConfirmation } from './action-schemas.js';
+import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
+import { evaluateActionPolicy } from './action-policy.js';
+import type { Trust } from '../../core/config-schema.js';
 import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
 import {
@@ -38,6 +40,7 @@ export interface ActionDeps {
   media: MediaController;
   confirmationGate?: ActionConfirmationGate;
   getConfirmationLevel?: () => ConfirmationLevel;
+  getFileAccess?: () => Trust['fileAccess'];
 }
 
 export interface ActionServiceOptions {
@@ -63,6 +66,7 @@ export class ActionService implements SarahService {
   private readonly drainTimeoutMs: number;
   private readonly confirmationGate: ActionConfirmationGate;
   private readonly getConfirmationLevel: () => ConfirmationLevel;
+  private readonly getFileAccess: () => Trust['fileAccess'];
 
   constructor(
     private bus: MessageBus,
@@ -72,6 +76,7 @@ export class ActionService implements SarahService {
     this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_ACTION_DRAIN_TIMEOUT_MS;
     this.confirmationGate = deps.confirmationGate ?? new ActionConfirmationGate();
     this.getConfirmationLevel = deps.getConfirmationLevel ?? (() => 'standard');
+    this.getFileAccess = deps.getFileAccess ?? (() => 'specific-folders');
   }
 
   async init(): Promise<void> {
@@ -111,11 +116,11 @@ export class ActionService implements SarahService {
     if (msg.topic !== 'action:request' || this.status !== 'running') return;
     const { turnId, requestId, action, param, sourceRequestId, confirmation } = msg.data;
     if (this.bus.isTurnTerminal(turnId)) {
-      console.warn('[Actions] request for terminal turn refused:', turnId, requestId, action);
+      console.warn('[Actions] request for terminal turn refused', { action });
       return;
     }
     if (this.seenRequestIds.has(requestId)) {
-      console.warn('[Actions] duplicate request refused:', requestId, action);
+      console.warn('[Actions] duplicate request refused', { action });
       return;
     }
     this.rememberRequestId(requestId);
@@ -144,7 +149,10 @@ export class ActionService implements SarahService {
           || this.status !== 'running'
           || this.bus.isTurnTerminal(turnId)
         ) return;
-        console.warn('[Actions] dispatch failed:', action, err);
+        console.warn('[Actions] dispatch failed', {
+          action,
+          error: err instanceof Error ? err.name : 'NonError',
+        });
         this.emitResult(turnId, requestId, action, param, {
           ok: false,
           speak: action === 'web_search' ? 'Meine Suche klemmt gerade.' : 'Das kann ich noch nicht.',
@@ -162,10 +170,7 @@ export class ActionService implements SarahService {
     param: string,
     result: LaunchResult,
   ): void {
-    console.log(
-      `[Actions] ${action}:${JSON.stringify(param)} → ok=${result.ok}` +
-        (result.speak != null ? ` speak=${JSON.stringify(result.speak)}` : ' (silent)'),
-    );
+    console.log('[Actions] completed', { action, ok: result.ok, hasSpeech: result.speak != null });
     // Exactly ONE result per request — also for silent successes (Spec §3).
     this.bus.emit(this.id, 'action:result', {
       turnId,
@@ -194,20 +199,32 @@ export class ActionService implements SarahService {
   ): Promise<LaunchResult> {
     throwIfAborted(signal);
     if (!isActionName(action)) {
-      console.warn('[Actions] unknown action refused:', action, param);
+      console.warn('[Actions] unknown action refused');
       return { ok: false, speak: 'Das kann ich noch nicht.' };
-    }
-    if (
-      requiresActionConfirmation(this.getConfirmationLevel(), action)
-      && !this.confirmationGate.consume(turnId, action, param, confirmation)
-    ) {
-      console.warn('[Actions] unconfirmed action refused:', turnId, requestId, action);
-      return { ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' };
     }
     const parsed = ACTION_SCHEMAS[action].safeParse(param);
     if (!parsed.success) {
-      console.warn('[Actions] invalid param refused:', action, JSON.stringify(param));
+      console.warn('[Actions] invalid param refused', { action });
       return { ok: false, speak: 'Das kann ich noch nicht.' };
+    }
+    const policy = evaluateActionPolicy(action, {
+      confirmationLevel: this.getConfirmationLevel(),
+      fileAccess: this.getFileAccess(),
+    });
+    if (policy.effect === 'deny') {
+      console.warn('[Actions] denied by policy', { action, reason: policy.reason });
+      return { ok: false, speak: 'Diese Aktion ist durch deine Berechtigungen gesperrt.' };
+    }
+    if (policy.effect === 'prepare_only') {
+      console.warn('[Actions] binding action restricted to preparation', { action });
+      return { ok: false, speak: 'Ich kann diese Aktion nur vorbereiten, aber nicht verbindlich ausführen.' };
+    }
+    if (
+      policy.effect === 'confirm'
+      && !this.confirmationGate.consume(turnId, action, param, confirmation, sourceRequestId)
+    ) {
+      console.warn('[Actions] unconfirmed action refused', { action });
+      return { ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' };
     }
 
     switch (action) {

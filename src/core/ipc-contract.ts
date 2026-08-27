@@ -5,6 +5,7 @@ import type { ConnectionInfo } from '../services/integrations/oauth-connection-s
 import type { SaveConfigResult } from './config-apply.js';
 import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 import type { PlaybackId, TurnId, VoiceCaptureId } from './turn-contract.js';
+import type { LegacyDbRecoveryResult, LegacyDbRecoveryReview } from './storage/storage.interface.js';
 
 /** IPC channels using ipcMain.handle / ipcRenderer.invoke (request-response) */
 export interface IpcCommands {
@@ -13,6 +14,11 @@ export interface IpcCommands {
   'get-config':                 { input: void; output: SarahConfig };
   'get-runtime-status':         { input: void; output: RuntimeSnapshot };
   'save-config':                { input: SarahConfigPatch; output: SaveConfigResult };
+  'legacy-db-recovery-review':  { input: void; output: LegacyDbRecoveryReview };
+  'legacy-db-recovery-restore': {
+    input: { quarantineIds: number[] };
+    output: LegacyDbRecoveryResult | null;
+  };
   'select-folder':              { input: string | undefined; output: string | null };
   'detect-programs':            { input: void; output: ProgramEntry[] };
   'scan-folder-exes':           { input: string; output: ProgramEntry[] };
@@ -54,6 +60,7 @@ export interface IpcEvents {
   'llm:error':         BusEvents['llm:error'];
   'turn:terminal':     BusEvents['turn:terminal'];
   'storage:degraded':  BusEvents['storage:degraded'];
+  'privacy:incognito': BusEvents['privacy:incognito'];
   'voice:state':       BusEvents['voice:state'];
   'voice:capture-flush-request': BusEvents['voice:capture-flush-request'];
   'voice:transcript':  BusEvents['voice:transcript'];
@@ -85,6 +92,8 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'get-config': true,
   'get-runtime-status': true,
   'save-config': true,
+  'legacy-db-recovery-review': true,
+  'legacy-db-recovery-restore': true,
   'select-folder': true,
   'detect-programs': true,
   'scan-folder-exes': true,
@@ -113,6 +122,7 @@ export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
   'llm:error': true,
   'turn:terminal': true,
   'storage:degraded': true,
+  'privacy:incognito': true,
   'voice:state': true,
   'voice:capture-flush-request': true,
   'voice:transcript': true,

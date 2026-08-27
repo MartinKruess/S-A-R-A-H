@@ -179,7 +179,7 @@ export function createFinishStep(data: WizardData): HTMLElement {
     trustRows.push(['Ausnahmen', data.trust.memoryExclusions.join(', ')]);
   }
   trustRows.push(['/showcontext', data.trust.showContextEnabled ? 'Aktiv' : 'Aus']);
-  trustRows.push(['/anonymous', data.trust.anonymousEnabled ? 'Aktiv' : 'Aus']);
+  trustRows.push(['/anonymous & /incognito', data.trust.anonymousEnabled ? 'Aktiv' : 'Aus']);
   addSection(finish, 'Vertrauen', trustRows);
 
   // Personalization

@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach der abgeschlossenen Layer-0/1-Windows-Matrix:** 704 Prüfpunkte — 167 🟢, 77 🟡, 443 🔴, 17 ⚪
+**Aktueller Zählstand nach den technischen Layer-2-Audits:** 704 Prüfpunkte — 167 🟢, 91 🟡, 429 🔴, 17 ⚪
 
 ---
 
@@ -117,29 +117,29 @@
 - 🟡 gespeicherte Informationen beeinflussen neue Gespräche nur dann, wenn sie relevant sind.
 - 🟢 temporäre Situationen verändern das Langzeitprofil nicht unnötig.
 - 🟡 der Nutzer kann abfragen, was Sarah über ihn gespeichert hat.
-- 🔴 einzelne Erinnerungen können gelöscht werden.
-- 🔴 einzelne Erinnerungen können korrigiert werden.
-- 🔴 das gesamte Langzeitgedächtnis kann verwaltet werden.
+- 🟡 einzelne Erinnerungen können gelöscht werden.
+- 🟡 einzelne Erinnerungen können korrigiert werden.
+- 🟡 das gesamte Langzeitgedächtnis kann verwaltet werden.
 
 ## 2.3 Session-Memory
 
 - 🟢 Sarah besitzt ein separates Session-Gedächtnis.
 - 🟢 Gesprächsinhalte bleiben während einer laufenden Session verfügbar.
-- 🔴 Session-Informationen werden nicht automatisch vollständig ins Langzeitgedächtnis übernommen.
-- 🔴 relevante Informationen können selektiv ins Langzeitgedächtnis übernommen werden.
+- 🟡 Session-Informationen werden nicht automatisch vollständig ins Langzeitgedächtnis übernommen.
+- 🟡 relevante Informationen können selektiv ins Langzeitgedächtnis übernommen werden.
 
 ## 2.4 Inkognito-/Nicht-speichern-Modus
 
-- 🔴 Ein Inkognito-/Nicht-speichern-Modus existiert.
-- 🔴 Gespräche im Inkognito-Modus besitzen temporären Kontext.
-- 🔴 Inhalte aus dem Inkognito-Modus werden nicht ins Langzeitgedächtnis geschrieben.
-- 🔴 bestehendes Langzeitgedächtnis kann weiterhin verwendet werden, sofern gewünscht.
-- 🔴 der Nutzer kann explizit einzelne Informationen trotz Inkognito-Modus dauerhaft speichern lassen.
-- 🔴 das Beenden des Inkognito-Modus löscht den temporären Kontext entsprechend der vorgesehenen Regeln.
+- 🟡 Ein Inkognito-/Nicht-speichern-Modus existiert.
+- 🟡 Gespräche im Inkognito-Modus besitzen temporären Kontext.
+- 🟡 Inhalte aus dem Inkognito-Modus werden nicht ins Langzeitgedächtnis geschrieben.
+- 🟡 bestehendes Langzeitgedächtnis kann weiterhin verwendet werden, sofern gewünscht.
+- 🟡 „Merk dir das“ und vergleichbare Speicherwünsche werden im Inkognito-Modus technisch abgewiesen; zum Speichern muss der Modus zuerst beendet und die Information anschließend erneut genannt werden.
+- 🟡 das Beenden des Inkognito-Modus löscht den temporären Kontext entsprechend der vorgesehenen Regeln.
 
 ## 2.5 Memory-Hygiene
 
-- 🔴 Sarah unterscheidet möglichst zwischen dauerhaften Nutzerpräferenzen und kurzfristigen Zuständen.
+- 🟡 Sarah unterscheidet möglichst zwischen dauerhaften Nutzerpräferenzen und kurzfristigen Zuständen.
 - 🔴 wiederholtes Verhalten kann als mögliche Präferenz erkannt werden.
 - 🟡 aus wenigen zufälligen Aktionen wird nicht automatisch eine dauerhafte Regel erstellt.
 - 🔴 Sarah kann vorgeschlagene neue Gewohnheiten zur Bestätigung vorlegen.
@@ -155,8 +155,8 @@
 - 🟡 Sicherheitsregeln werden technisch außerhalb des eigentlichen LLM-Prompts erzwungen.
 - 🟡 das LLM kann Sicherheitsregeln nicht durch eigene Tool-Aufrufe umgehen.
 - 🟡 externe Inhalte können Sicherheitsregeln nicht überschreiben.
-- 🔴 Aktionen werden anhand ihrer Risikoklasse bewertet.
-- 🔴 Lesen, Verändern und verbindliche Aktionen werden voneinander unterschieden.
+- 🟡 Aktionen werden anhand ihrer Risikoklasse bewertet.
+- 🟡 Lesen, Verändern und verbindliche Aktionen werden voneinander unterschieden.
 
 ## 3.2 Grüne Aktionen – Lesen und ungefährliche Bedienung
 

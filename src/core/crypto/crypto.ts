@@ -8,9 +8,10 @@ const AUTH_TAG_LENGTH = 16;
  * Encrypt plaintext with AES-256-GCM.
  * Returns base64 string: IV (12 bytes) + ciphertext + authTag (16 bytes).
  */
-export function encrypt(plaintext: string, key: Buffer): string {
+export function encrypt(plaintext: string, key: Buffer, additionalData?: string): string {
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  if (additionalData !== undefined) cipher.setAAD(Buffer.from(additionalData, 'utf8'));
 
   const encrypted = Buffer.concat([
     cipher.update(plaintext, 'utf8'),
@@ -25,7 +26,7 @@ export function encrypt(plaintext: string, key: Buffer): string {
  * Decrypt a base64 string produced by encrypt().
  * Throws on wrong key or tampered data.
  */
-export function decrypt(ciphertext: string, key: Buffer): string {
+export function decrypt(ciphertext: string, key: Buffer, additionalData?: string): string {
   const data = Buffer.from(ciphertext, 'base64');
 
   const iv = data.subarray(0, IV_LENGTH);
@@ -33,6 +34,7 @@ export function decrypt(ciphertext: string, key: Buffer): string {
   const encrypted = data.subarray(IV_LENGTH, data.length - AUTH_TAG_LENGTH);
 
   const decipher = createDecipheriv(ALGORITHM, key, iv, { authTagLength: AUTH_TAG_LENGTH });
+  if (additionalData !== undefined) decipher.setAAD(Buffer.from(additionalData, 'utf8'));
   decipher.setAuthTag(authTag);
 
   return Buffer.concat([

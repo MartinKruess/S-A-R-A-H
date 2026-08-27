@@ -21,8 +21,9 @@ export interface TurnRequest {
 export type TurnCommand =
   | { kind: 'none' }
   | { kind: 'custom'; command: string; arguments: string; expandedText: string }
-  | { kind: 'anonymous'; command: '/anonymous'; arguments: string }
+  | { kind: 'anonymous'; command: '/anonymous' | '/incognito'; arguments: string }
   | { kind: 'confirmation'; command: '/confirm'; arguments: string }
+  | { kind: 'memory'; command: '/showcontext' | '/remember' | '/correctmemory' | '/forget' | '/deletememory' | '/exportmemory'; arguments: string }
   | { kind: 'builtin_unavailable'; command: string; arguments: string }
   | { kind: 'unknown'; command: string; arguments: string };
 
@@ -66,13 +67,25 @@ export function prepareTurnEnvelope(
   }
 
   if (resolution.kind === 'builtin') {
-    if (resolution.command === '/anonymous') {
+    if (resolution.command === '/anonymous' || resolution.command === '/incognito') {
       return {
         ...request,
         normalizedText,
         effectiveText: resolution.arguments,
         command: {
           kind: 'anonymous',
+          command: resolution.command,
+          arguments: resolution.arguments,
+        },
+      };
+    }
+    if (resolution.command !== '/confirm') {
+      return {
+        ...request,
+        normalizedText,
+        effectiveText: normalizedText,
+        command: {
+          kind: 'memory',
           command: resolution.command,
           arguments: resolution.arguments,
         },

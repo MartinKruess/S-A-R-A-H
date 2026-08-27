@@ -182,6 +182,31 @@ describe('ActionService', () => {
     });
   });
 
+  it('requires confirmation for a sensitive action at standard but not minimal level', async () => {
+    const standard = makeService({ confirmationLevel: 'standard' });
+    await standard.service.init();
+    await request(standard.bus, 'lock_screen', '');
+    expect(standard.results[0]).toMatchObject({ ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' });
+
+    const minimal = makeService({ confirmationLevel: 'minimal' });
+    await minimal.service.init();
+    await request(minimal.bus, 'lock_screen', '');
+    expect(minimal.results[0]).toMatchObject({ ok: true });
+  });
+
+  it('never writes action parameters or response text to diagnostic logs', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { bus, service } = makeService({
+      search: { runSearch: vi.fn<SearchLike['runSearch']>().mockResolvedValue('private result') },
+    });
+    await service.init();
+    await request(bus, 'web_search', 'private query');
+    const logged = [...log.mock.calls, ...warn.mock.calls].flat().join(' ');
+    expect(logged).not.toContain('private query');
+    expect(logged).not.toContain('private result');
+  });
+
   it('consumes a matching confirmation once and rejects reuse for another request', async () => {
     const confirmationGate = new ActionConfirmationGate();
     const media = makeMedia();
@@ -250,6 +275,49 @@ describe('ActionService', () => {
     expect(media.next).not.toHaveBeenCalled();
     expect(media.pause).not.toHaveBeenCalled();
     expect(results.every((result) => !result.ok)).toBe(true);
+  });
+
+  it('binds a confirmed browser result to the exact source search request', async () => {
+    const confirmationGate = new ActionConfirmationGate();
+    const showResult = vi.fn<SearchLike['showResult']>().mockResolvedValue({ ok: true });
+    const { bus, results, service } = makeService({
+      search: { showResult },
+      confirmationGate,
+      confirmationLevel: 'maximal',
+    });
+    await service.init();
+    const confirmationId = confirmationGate.request(
+      'request-turn',
+      'show_browser',
+      '1',
+      'search-a',
+    );
+    const approved = confirmationGate.approve(confirmationId, TURN_ID);
+    if (!approved) throw new Error('expected confirmation');
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'wrong-source',
+      action: 'show_browser',
+      param: '1',
+      sourceRequestId: 'search-b',
+      confirmation: approved.confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    expect(results[0].ok).toBe(false);
+    expect(showResult).not.toHaveBeenCalled();
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'right-source',
+      action: 'show_browser',
+      param: '1',
+      sourceRequestId: 'search-a',
+      confirmation: approved.confirmation,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(2));
+    expect(results[1].ok).toBe(true);
+    expect(showResult).toHaveBeenCalledOnce();
   });
 
   it('aborts active actions, suppresses late results, and ignores new work during shutdown', async () => {

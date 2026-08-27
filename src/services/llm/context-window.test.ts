@@ -4,7 +4,9 @@ import {
   START_CONTEXT_HEADER,
   CHARS_PER_TOKEN,
   RESPONSE_SAFETY_TOKENS,
-  MIN_CURRENT_MESSAGE_TOKENS,
+  CHAT_TEMPLATE_BASE_TOKENS,
+  CHAT_TEMPLATE_MESSAGE_TOKENS,
+  estimateTokens,
 } from './context-window.js';
 import type { ChatMessage } from './llm-provider.interface.js';
 
@@ -12,7 +14,7 @@ function msg(role: ChatMessage['role'], content: string): ChatMessage {
   return { role, content };
 }
 
-/** chars → tokens helper matching the estimator (ceil(chars / CHARS_PER_TOKEN)). */
+/** ASCII helper matching the fail-safe byte upper bound. */
 function chars(tokens: number): string {
   return 'x'.repeat(tokens * CHARS_PER_TOKEN);
 }
@@ -53,14 +55,13 @@ describe('buildContextWindow', () => {
   });
 
   it('derives the budget from numCtx and numPredict', () => {
-    // reserve = numPredict + RESPONSE_SAFETY_TOKENS; system prompt is empty (0 tokens).
-    // budget = 13 tokens: current (5) + older (8) = 13 → both fit exactly.
+    const template = CHAT_TEMPLATE_BASE_TOKENS + (4 * CHAT_TEMPLATE_MESSAGE_TOKENS);
     const input = {
       systemPrompt: '',
       startContext: [] as ChatMessage[],
       history: [msg('user', chars(3)), msg('assistant', chars(5)), msg('user', chars(5))],
       numPredict: 100,
-      numCtx: 100 + RESPONSE_SAFETY_TOKENS + 13,
+      numCtx: 100 + RESPONSE_SAFETY_TOKENS + template + 13,
     };
     expect(buildContextWindow(input)).toHaveLength(4); // system + complete old turn + current
 
@@ -77,7 +78,8 @@ describe('buildContextWindow', () => {
       startContext: [msg('user', chars(2))],
       history: [msg('user', chars(2)), msg('assistant', chars(2)), msg('user', chars(4))],
       numPredict: 100,
-      numCtx: 100 + RESPONSE_SAFETY_TOKENS + 10,
+      numCtx: 100 + RESPONSE_SAFETY_TOKENS
+        + CHAT_TEMPLATE_BASE_TOKENS + (4 * CHAT_TEMPLATE_MESSAGE_TOKENS) + 10,
     });
 
     // live history survives fully; header + start context did not fit → dropped entirely
@@ -86,7 +88,7 @@ describe('buildContextWindow', () => {
   });
 
   it('trims start context oldest-first', () => {
-    const headerTokens = Math.ceil(START_CONTEXT_HEADER.length / CHARS_PER_TOKEN);
+    const headerTokens = estimateTokens(START_CONTEXT_HEADER) + CHAT_TEMPLATE_MESSAGE_TOKENS;
     // budget: current (2) + header + newest start msg (3) — older start msg (5) must fall off.
     const result = buildContextWindow({
       systemPrompt: '',
@@ -96,7 +98,8 @@ describe('buildContextWindow', () => {
       ],
       history: [msg('user', chars(2))],
       numPredict: 100,
-      numCtx: 100 + RESPONSE_SAFETY_TOKENS + 2 + headerTokens + 3,
+      numCtx: 100 + RESPONSE_SAFETY_TOKENS + CHAT_TEMPLATE_BASE_TOKENS
+        + (4 * CHAT_TEMPLATE_MESSAGE_TOKENS) + 2 + headerTokens + 3,
     });
 
     expect(result.map((m) => m.content)).toEqual([
@@ -114,7 +117,8 @@ describe('buildContextWindow', () => {
         msg('user', chars(2)),
       ],
       numPredict: 100,
-      numCtx: 100 + RESPONSE_SAFETY_TOKENS + 6,
+      numCtx: 100 + RESPONSE_SAFETY_TOKENS + CHAT_TEMPLATE_BASE_TOKENS
+        + (4 * CHAT_TEMPLATE_MESSAGE_TOKENS) + 6,
     });
     expect(result.map((message) => message.content)).toEqual([
       '', chars(2), chars(2), chars(2),
@@ -155,37 +159,47 @@ describe('buildContextWindow', () => {
     ]);
   });
 
-  it('keeps an over-budget current message whole when it fits the guarantee floor', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // budget 10 < message (100 tokens), but 100 ≤ MIN_CURRENT_MESSAGE_TOKENS → kept whole
-    const result = buildContextWindow({
+  it('fails closed instead of silently overfilling for an oversized current message', () => {
+    expect(() => buildContextWindow({
       systemPrompt: '',
       startContext: [msg('user', 'wird verworfen')],
       history: [msg('user', 'y'.repeat(100 * CHARS_PER_TOKEN))],
       numPredict: 100,
       numCtx: 100 + RESPONSE_SAFETY_TOKENS + 10,
-    });
-
-    expect(result).toHaveLength(2); // system + current, history/startContext dropped
-    expect(result[1].content).toBe('y'.repeat(100 * CHARS_PER_TOKEN));
-    expect(warn).toHaveBeenCalledOnce();
+    })).toThrow(/Protected prompt exceeds context window/);
   });
 
-  it('truncates a truly oversized current message to the guarantee floor, never to zero', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // negative budget: huge system prompt + small numCtx (H3 review case)
-    const result = buildContextWindow({
+  it('fails closed when the protected system prompt leaves no room for the current message', () => {
+    expect(() => buildContextWindow({
       systemPrompt: chars(600),
       startContext: [],
       history: [msg('user', 'z'.repeat(1000 * CHARS_PER_TOKEN))],
       numPredict: 100,
       numCtx: 512,
-    });
+    })).toThrow(/Protected prompt exceeds context window/);
+  });
 
-    expect(result).toHaveLength(2);
-    expect(result[0].content).toBe(chars(600)); // system prompt survives untouched
-    expect(result[1].content).toBe('z'.repeat(MIN_CURRENT_MESSAGE_TOKENS * CHARS_PER_TOKEN));
-    expect(warn).toHaveBeenCalledOnce();
+  it('accounts conservatively for multibyte text and chat-template overhead', () => {
+    const systemTokens = estimateTokens('S') + CHAT_TEMPLATE_MESSAGE_TOKENS;
+    const currentTokens = estimateTokens('😀'.repeat(20)) + CHAT_TEMPLATE_MESSAGE_TOKENS;
+    expect(() => buildContextWindow({
+      systemPrompt: 'S',
+      startContext: [],
+      history: [msg('user', '😀'.repeat(20))],
+      numPredict: 100,
+      numCtx: 100 + RESPONSE_SAFETY_TOKENS + CHAT_TEMPLATE_BASE_TOKENS
+        + systemTokens + currentTokens - 1,
+    })).toThrow(/Protected prompt exceeds context window/);
+  });
+
+  it('rejects the real 4,000-character Qwen overflow repro at a 4,096 context', () => {
+    expect(() => buildContextWindow({
+      systemPrompt: 'Systemregel '.repeat(140),
+      startContext: [],
+      history: [msg('user', 'x'.repeat(4_000))],
+      numPredict: 1_600,
+      numCtx: 4_096,
+    })).toThrow(/Protected prompt exceeds context window/);
   });
 
   it('system prompt and current user message always survive overflow', () => {

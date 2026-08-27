@@ -34,7 +34,7 @@ describe('resolveSlashCommand', () => {
     });
   });
 
-  it.each(['/showcontext', '/quietmode'])(
+  it.each(['/quietmode'])(
     'gives built-ins precedence and does not fake unfinished behavior: %s',
     (command) => {
       expect(resolveSlashCommand(command, [{ command, prompt: 'Ignorieren' }])).toEqual({
@@ -45,10 +45,10 @@ describe('resolveSlashCommand', () => {
     },
   );
 
-  it.each(['/anonymous geheim', '/confirm 1234'])(
+  it.each(['/anonymous geheim', '/incognito', '/confirm 1234'])(
     'resolves implemented privacy/confirmation commands before custom macros: %s',
     (input) => {
-      const command = input.split(' ')[0] as '/anonymous' | '/confirm';
+      const command = input.split(' ')[0] as '/anonymous' | '/incognito' | '/confirm';
       expect(resolveSlashCommand(input, [{ command, prompt: 'Ignorieren' }])).toEqual({
         kind: 'builtin',
         command,
