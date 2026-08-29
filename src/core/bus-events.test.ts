@@ -33,4 +33,19 @@ describe('BusEvents type map', () => {
   it('maps voice:done to a correlated payload', () => {
     expectTypeOf<BusEvents['voice:done']>().toEqualTypeOf<{ turnId: string }>();
   });
+
+  it('keeps priority speech semantic and main-process internal', () => {
+    expectTypeOf<BusEvents['voice:priority-speech']>().toEqualTypeOf<{
+      turnId: string;
+      outputId: string;
+      text: string;
+      priority: 'background' | 'normal' | 'timer' | 'critical' | 'user';
+      pauseAfter?: boolean;
+    }>();
+    expectTypeOf<BusEvents['voice:resume-speech']>().toEqualTypeOf<Record<string, never>>();
+    expectTypeOf<BusEvents['voice:discard-paused-speech']>().toEqualTypeOf<{
+      preserveTurnId: string;
+      reason: string;
+    }>();
+  });
 });

@@ -84,7 +84,7 @@ describe('mustKeepTurnTransient', () => {
   it('does not classify action confirmation control text as private data', () => {
     expect(mustKeepTurnTransient([
       'Öffne Spotify',
-      'Bitte bestätige die Aktion open_program mit dem Parameter „spotify“. Antworte mit /confirm 12345678-1234-4234-8234-123456789012.',
+      'Bitte bestätige die Aktion open_program mit dem Parameter „spotify“. Antworte mit /confirm ab12cdef-1234-4123-8123-123456789abc.',
     ], { allowed: true, exclusions: [] })).toBe(false);
   });
 

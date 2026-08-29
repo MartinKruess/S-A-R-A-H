@@ -1,14 +1,22 @@
 // tests/services/voice/tts-queue.test.ts
 
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
-import { TtsQueue } from '../../../src/services/voice/tts-queue.js';
+import {
+  TTS_PRIORITY,
+  TtsQueue,
+  type TtsQueueItem,
+} from '../../../src/services/voice/tts-queue.js';
 import type { TtsProvider } from '../../../src/services/voice/tts-provider.interface.js';
 
 const SAMPLE_AUDIO = new Float32Array([0.1, 0.2]);
 const TURN_ID = 'turn-1';
 
-function item(text: string, outputId = `output-${text}`) {
-  return { turnId: TURN_ID, outputId, text };
+function item(
+  text: string,
+  outputId = `output-${text}`,
+  options: Pick<TtsQueueItem, 'priority' | 'pauseAfterPlayback'> = {},
+): TtsQueueItem {
+  return { turnId: TURN_ID, outputId, text, ...options };
 }
 
 function makeMockTts(overrides: Partial<TtsProvider> = {}): TtsProvider {
@@ -416,5 +424,335 @@ describe('TtsQueue', () => {
     ]);
     expect(queue.hasTurn(TURN_ID)).toBe(false);
     expect(queue.hasTurn('turn-2')).toBe(true);
+  });
+
+  // ── Priority and pause barrier ──────────────────────────────────────────────
+
+  it('plays a timer after the current sentence, preserves the normal prebuffer, and resumes it', async () => {
+    const firstAudio = new Float32Array([1]);
+    const bufferedAudio = new Float32Array([2]);
+    const timerAudio = new Float32Array([3]);
+    const normal = item('Buffered normal.');
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    vi.mocked(mockTts.speak)
+      .mockResolvedValueOnce(firstAudio)
+      .mockResolvedValueOnce(bufferedAudio)
+      .mockResolvedValueOnce(timerAudio);
+
+    queue.enqueue(item('Current.'));
+    queue.enqueue(normal);
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    queue.enqueue(timer);
+
+    playbackDone(0);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(timer);
+    expect(onAudioReady.mock.calls[1][2]).toEqual(timerAudio);
+
+    playbackDone(1);
+    expect(queue.isPaused).toBe(true);
+    expect(onAudioReady).toHaveBeenCalledTimes(2);
+
+    queue.resume();
+    queue.resume();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(3));
+    expect(onAudioReady.mock.calls[2][0]).toEqual(normal);
+    expect(onAudioReady.mock.calls[2][2]).toEqual(bufferedAudio);
+    expect(mockTts.speak).toHaveBeenCalledTimes(3);
+    expect(queue.isPaused).toBe(false);
+
+    playbackDone(2);
+    expect(onQueueEmpty).toHaveBeenCalledOnce();
+  });
+
+  it('selects critical speech before timers while keeping equal-priority timers FIFO-stable', async () => {
+    const timerOne: TtsQueueItem = {
+      turnId: 'timer-1',
+      outputId: 'timer-output-1',
+      text: 'Timer one.',
+      priority: TTS_PRIORITY.TIMER,
+    };
+    const timerTwo: TtsQueueItem = {
+      turnId: 'timer-2',
+      outputId: 'timer-output-2',
+      text: 'Timer two.',
+      priority: TTS_PRIORITY.TIMER,
+    };
+    const critical: TtsQueueItem = {
+      turnId: 'critical-turn',
+      outputId: 'critical-output',
+      text: 'Critical.',
+      priority: TTS_PRIORITY.CRITICAL,
+    };
+
+    queue.enqueue(item('Current.'));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    queue.enqueue(timerOne);
+    queue.enqueue(timerTwo);
+    queue.enqueue(critical);
+
+    playbackDone(0);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(critical);
+    playbackDone(1);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(3));
+    expect(onAudioReady.mock.calls[2][0]).toEqual(timerOne);
+    playbackDone(2);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(4));
+    expect(onAudioReady.mock.calls[3][0]).toEqual(timerTwo);
+    playbackDone(3);
+  });
+
+  it('does not let an in-flight normal prebuffer synthesis overtake a waiting timer', async () => {
+    let resolveNormal = (_audio: Float32Array): void => {};
+    const staleNormalAudio = new Float32Array([2]);
+    const timerAudio = new Float32Array([3]);
+    const resynthesizedNormalAudio = new Float32Array([4]);
+    const normal = item('Slow normal.');
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+    };
+    vi.mocked(mockTts.speak)
+      .mockResolvedValueOnce(new Float32Array([1]))
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => {
+        resolveNormal = resolve;
+      }))
+      .mockResolvedValueOnce(timerAudio)
+      .mockResolvedValueOnce(resynthesizedNormalAudio);
+
+    queue.enqueue(item('Current.'));
+    queue.enqueue(normal);
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    queue.enqueue(timer);
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(3));
+    playbackDone(0);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(timer);
+    expect(onAudioReady.mock.calls[1][2]).toEqual(timerAudio);
+
+    resolveNormal(staleNormalAudio);
+    playbackDone(1);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(3));
+    expect(onAudioReady.mock.calls[2][0]).toEqual(normal);
+    expect(onAudioReady.mock.calls[2][2]).toEqual(resynthesizedNormalAudio);
+    expect(mockTts.speak).toHaveBeenCalledTimes(4);
+    playbackDone(2);
+  });
+
+  it('lets all equal-priority timers cross the pause barrier before blocking normal speech', async () => {
+    const normal = item('Normal after timers.');
+    const timerOne: TtsQueueItem = {
+      turnId: 'timer-1',
+      outputId: 'timer-output-1',
+      text: 'Timer one.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const timerTwo: TtsQueueItem = {
+      turnId: 'timer-2',
+      outputId: 'timer-output-2',
+      text: 'Timer two.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+
+    queue.enqueue(item('Current.'));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    queue.enqueue(normal);
+    queue.enqueue(timerOne);
+    queue.enqueue(timerTwo);
+    playbackDone(0);
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(timerOne);
+    playbackDone(1);
+    expect(queue.isPaused).toBe(true);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(3));
+    expect(onAudioReady.mock.calls[2][0]).toEqual(timerTwo);
+    playbackDone(2);
+    expect(queue.isPaused).toBe(true);
+    expect(onAudioReady).toHaveBeenCalledTimes(3);
+
+    queue.resume();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(4));
+    expect(onAudioReady.mock.calls[3][0]).toEqual(normal);
+    playbackDone(3);
+  });
+
+  it('buffers additional normal chunks while paused and releases them in FIFO order on resume', async () => {
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const normalOne = item('Normal one.', 'normal-output-1');
+    const normalTwo = item('Normal two.', 'normal-output-2');
+
+    queue.enqueue(timer);
+    queue.enqueue(normalOne);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    playbackDone(0);
+    expect(queue.isPaused).toBe(true);
+
+    queue.enqueue(normalTwo);
+    expect(onAudioReady).toHaveBeenCalledOnce();
+    queue.resume();
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(normalOne);
+    playbackDone(1);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(3));
+    expect(onAudioReady.mock.calls[2][0]).toEqual(normalTwo);
+    playbackDone(2);
+  });
+
+  it('stop clears a pause and prevents late synthesis from reviving it', async () => {
+    let resolveNormal = (_audio: Float32Array): void => {};
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    vi.mocked(mockTts.speak)
+      .mockResolvedValueOnce(new Float32Array([1]))
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => {
+        resolveNormal = resolve;
+      }));
+
+    queue.enqueue(timer);
+    queue.enqueue(item('Slow normal.'));
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    playbackDone(0);
+    expect(queue.isPaused).toBe(true);
+
+    queue.stop();
+    resolveNormal(new Float32Array([2]));
+    await Promise.resolve();
+    expect(queue.isPaused).toBe(false);
+    expect(queue.isActive).toBe(false);
+    expect(onAudioReady).toHaveBeenCalledOnce();
+  });
+
+  it('canceling the turn that owns a completed pause releases preserved normal audio', async () => {
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const normal: TtsQueueItem = {
+      turnId: 'normal-turn',
+      outputId: 'normal-output',
+      text: 'Normal.',
+    };
+
+    queue.enqueue(timer);
+    queue.enqueue(normal);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    playbackDone(0);
+    expect(queue.isPaused).toBe(true);
+
+    queue.cancelTurn('timer-turn');
+    expect(queue.isPaused).toBe(false);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(normal);
+    playbackDone(1);
+  });
+
+  it('does not activate a pause when renderer playback of the pause item fails', async () => {
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const normal = item('Normal.');
+    queue.enqueue(timer);
+    queue.enqueue(normal);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+
+    queue.playbackFailed('timer-turn', onAudioReady.mock.calls[0][1], new Error('failed'));
+
+    expect(queue.isPaused).toBe(false);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0]).toEqual(normal);
+    playbackDone(1);
+  });
+
+  it('does not activate a pause after playback timeout and ignores the late ACK', async () => {
+    vi.useFakeTimers();
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const normal = item('Normal.');
+    queue.enqueue(timer);
+    queue.enqueue(normal);
+    await vi.runAllTicks();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    const timerPlaybackId = onAudioReady.mock.calls[0][1] as string;
+
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    expect(queue.isPaused).toBe(false);
+    expect(onAudioReady).toHaveBeenCalledTimes(2);
+    queue.playbackDone('timer-turn', timerPlaybackId);
+    expect(onAudioReady).toHaveBeenCalledTimes(2);
+    playbackDone(1);
+  });
+
+  it('a non-recoverable renderer failure clears an existing pause and buffered speech', async () => {
+    const timer: TtsQueueItem = {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    };
+    const critical: TtsQueueItem = {
+      turnId: 'critical-turn',
+      outputId: 'critical-output',
+      text: 'Critical.',
+      priority: TTS_PRIORITY.CRITICAL,
+    };
+    queue.enqueue(timer);
+    queue.enqueue(item('Normal.'));
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    playbackDone(0);
+    expect(queue.isPaused).toBe(true);
+
+    queue.enqueue(critical);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    queue.playbackFailed(
+      'critical-turn',
+      onAudioReady.mock.calls[1][1],
+      new Error('renderer unavailable'),
+      true,
+    );
+
+    expect(queue.isPaused).toBe(false);
+    expect(queue.isActive).toBe(false);
+    expect(queue.pendingCount).toBe(0);
   });
 });

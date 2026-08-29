@@ -177,12 +177,16 @@ export function containsUnconditionallyPrivateData(value: string): boolean {
   // Unicode format controls are invisible in UI text and must not let a label
   // such as API_KEY or PASSWORT bypass the immutable persistence guard.
   const visibleValue = value.normalize('NFKC').replace(/\p{Cf}+/gu, '');
+  // UUIDs are control identifiers, not IBANs. Some valid UUIDs happen to start
+  // with two letters and two digits and would otherwise match the permissive
+  // IBAN candidate shape used for international account formats.
+  const withoutUuids = visibleValue.replace(UUID_PATTERN, '');
   return SECRET_LABEL_PATTERN.test(visibleValue)
     || SECRET_ASSIGNMENT_PATTERN.test(visibleValue)
     || LOGIN_ASSIGNMENT_PATTERN.test(visibleValue)
     || BANK_INSURANCE_DATA_LABEL_PATTERN.test(visibleValue)
     || BANK_CUSTOMER_NUMBER_PATTERN.test(visibleValue)
-    || IBAN_PATTERN.test(visibleValue)
+    || IBAN_PATTERN.test(withoutUuids)
     || containsPaymentCardNumber(visibleValue);
 }
 
