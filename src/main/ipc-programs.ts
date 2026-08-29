@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import type { IpcMain } from 'electron';
+import type { Trust } from '../core/config-schema.js';
 import {
   classifyProgramPath,
   verifyProgramPath,
@@ -43,14 +44,114 @@ const mapProgramResult = (result: ProgramScanResult): ProgramOption => {
   };
 };
 
-export function registerProgramHandlers(ipcMain: IpcMain): void {
-  ipcMain.handle('scan-folder-exes', (_event, folderPath: string) => {
+export interface ProgramHandlerDeps {
+  getFileAccess: () => Trust['fileAccess'];
+  getAllowedFolders: () => string[];
+}
+
+export interface ProgramFolderGrant {
+  grantFolderAccess: (folderPath: string, senderId: number) => void;
+  invalidateFolderGrants: () => void;
+}
+
+export interface FolderScanGrant {
+  senderId: number;
+  expiresAt: number;
+}
+
+const FOLDER_GRANT_TTL_MS = 60_000;
+
+function canonicalFolder(folderPath: string): string | null {
+  if (!folderPath || folderPath.includes('\0')) return null;
+  try {
+    const resolved = fs.existsSync(folderPath)
+      ? fs.realpathSync.native(folderPath)
+      : path.resolve(folderPath);
+    return process.platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
+  } catch {
+    return null;
+  }
+}
+
+function isInsideFolder(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/** Enforces the file-access policy before renderer-controlled paths reach fs. */
+export function resolveFolderScanPath(
+  folderPath: string,
+  fileAccess: Trust['fileAccess'],
+  allowedFolders: readonly string[],
+  selectedFolderGrants: ReadonlyMap<string, FolderScanGrant>,
+  senderId: number,
+  now = Date.now(),
+): string | null {
+  if (fileAccess === 'none') return null;
+  const candidate = canonicalFolder(folderPath);
+  if (!candidate) return null;
+  if (fileAccess === 'all') return candidate;
+  const grant = selectedFolderGrants.get(candidate);
+  if (grant && grant.senderId === senderId && grant.expiresAt >= now) return candidate;
+  const insideAllowedRoot = allowedFolders.some((folder) => {
+    const root = canonicalFolder(folder);
+    return root != null && isInsideFolder(candidate, root);
+  });
+  return insideAllowedRoot ? candidate : null;
+}
+
+/** Enforces the file-access policy before renderer-controlled paths reach fs. */
+export function isFolderScanAllowed(
+  folderPath: string,
+  fileAccess: Trust['fileAccess'],
+  allowedFolders: readonly string[],
+  selectedFolderGrants: ReadonlyMap<string, FolderScanGrant>,
+  senderId: number,
+  now = Date.now(),
+): boolean {
+  return resolveFolderScanPath(
+    folderPath,
+    fileAccess,
+    allowedFolders,
+    selectedFolderGrants,
+    senderId,
+    now,
+  ) != null;
+}
+
+export function isProgramDetectionAllowed(fileAccess: Trust['fileAccess']): boolean {
+  // The automatic inventory traverses the machine-wide Start Menu and AppX
+  // registry. In specific-folders mode callers must use scan-folder-exes so
+  // the configured roots remain an actual access boundary.
+  return fileAccess === 'all';
+}
+
+export function registerProgramHandlers(
+  ipcMain: IpcMain,
+  deps: ProgramHandlerDeps,
+): ProgramFolderGrant {
+  const selectedFolderGrants = new Map<string, FolderScanGrant>();
+  ipcMain.handle('scan-folder-exes', (event, folderPath: string) => {
     try {
       if (typeof folderPath !== 'string' || folderPath.length === 0 || folderPath.length > 500) {
         console.warn('[IPC] invalid payload for scan-folder-exes');
         return [];
       }
-      if (!fs.existsSync(folderPath)) return [];
+      const grantedPath = resolveFolderScanPath(
+        folderPath,
+        deps.getFileAccess(),
+        deps.getAllowedFolders(),
+        selectedFolderGrants,
+        event.sender.id,
+      );
+      if (!grantedPath) {
+        console.warn('[IPC] folder scan denied by file-access policy');
+        return [];
+      }
+      selectedFolderGrants.delete(grantedPath);
+      // Read the exact canonical target that was authorized. Re-reading the
+      // renderer-provided junction would re-open a TOCTOU path substitution.
+      if (!fs.existsSync(grantedPath)) return [];
       const results: { name: string; path: string }[] = [];
       const seen = new Set<string>();
 
@@ -58,13 +159,13 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
       // (the one whose name matches the folder name, or the largest exe)
       let topEntries: fs.Dirent[];
       try {
-        topEntries = fs.readdirSync(folderPath, { withFileTypes: true });
+        topEntries = fs.readdirSync(grantedPath, { withFileTypes: true });
       } catch {
         return [];
       }
 
       for (const entry of topEntries) {
-        const full = path.join(folderPath, entry.name);
+        const full = path.join(grantedPath, entry.name);
 
         if (entry.isFile() && entry.name.toLowerCase().endsWith('.exe')) {
           // Direct exe in the scanned folder
@@ -155,6 +256,10 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
 
   ipcMain.handle('detect-programs', () => {
     try {
+      if (!isProgramDetectionAllowed(deps.getFileAccess())) {
+        console.warn('[IPC] program detection denied by file-access policy');
+        return [];
+      }
       const script = [
         '# Shared noise filter',
         'function Test-Noise($name) {',
@@ -242,4 +347,19 @@ export function registerProgramHandlers(ipcMain: IpcMain): void {
       return [];
     }
   });
+
+  return {
+    grantFolderAccess(folderPath: string, senderId: number): void {
+      const canonical = canonicalFolder(folderPath);
+      if (canonical) {
+        selectedFolderGrants.set(canonical, {
+          senderId,
+          expiresAt: Date.now() + FOLDER_GRANT_TTL_MS,
+        });
+      }
+    },
+    invalidateFolderGrants(): void {
+      selectedFolderGrants.clear();
+    },
+  };
 }

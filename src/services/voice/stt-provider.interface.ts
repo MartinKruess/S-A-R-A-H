@@ -26,6 +26,9 @@ export interface SttProvider {
   /** Subscribe to provider crashes and successful runtime recovery. */
   onAvailabilityChange?(listener: (state: SttAvailability) => void): () => void;
 
+  /** Explicitly retry a terminal or exhausted provider recovery. */
+  retry?(signal?: AbortSignal): Promise<void>;
+
   /** Clean up resources */
   destroy(signal?: AbortSignal): Promise<void>;
 }

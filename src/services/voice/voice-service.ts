@@ -56,6 +56,7 @@ export class VoiceService implements SarahService {
   readonly subscriptions = [
     'turn:accepted',
     'chat:message',
+    'turn:output-policy',
     'llm:chunk',
     'llm:done',
     'llm:error',
@@ -350,6 +351,22 @@ export class VoiceService implements SarahService {
     return { ...this.capabilities };
   }
 
+  async retryRuntimeRecovery(signal?: AbortSignal): Promise<void> {
+    throwIfAborted(signal);
+    try {
+      if (this.stt.retry) await this.stt.retry(signal);
+      else await this.stt.init(signal);
+      this.applySttAvailability({ available: true });
+      this.status = 'running';
+      this.context.bus.emit(this.id, 'voice:capability', { ...this.capabilities });
+    } catch (error) {
+      throwIfAborted(signal);
+      const message = error instanceof Error ? error.message : String(error);
+      this.applySttAvailability({ available: false, message });
+      throw error;
+    }
+  }
+
   init(signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) this.initPromise = this.doInit(signal);
     return this.initPromise;
@@ -614,12 +631,18 @@ export class VoiceService implements SarahService {
       return;
     }
 
+    if (msg.topic === 'turn:output-policy') {
+      if (msg.data.speech === 'suppress') {
+        this.turnSpeechDecisions.set(msg.data.turnId, false);
+      }
+      return;
+    }
+
     if (msg.topic === 'llm:filler') {
       // A bridging phrase spoken over a model-swap pause. It is not turn content,
-      // so it bypasses the sentence buffer and the turn-state machine entirely and
-      // never touches _voiceState. No-op when TTS is unavailable.
+      // but it still follows the recording/renderer safety gate before reaching TTS.
       if (!this.context.bus.isTurnOpen(msg.data.turnId)) return;
-      this.ttsQueue?.enqueue({
+      this.enqueueOrDefer({
         turnId: msg.data.turnId,
         outputId: randomUUID(),
         text: msg.data.text,

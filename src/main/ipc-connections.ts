@@ -29,4 +29,8 @@ export function registerConnectionHandlers(ipcMain: IpcMain, deps: ConnectionHan
   ipcMain.handle('connection-disconnect', async (_event, providerId: string) => {
     await getOAuth().disconnect(providerId);
   });
+
+  ipcMain.handle('connection-cancel', async (_event, providerId: string) => {
+    await getOAuth().cancelConnect(providerId);
+  });
 }

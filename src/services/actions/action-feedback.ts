@@ -51,3 +51,38 @@ export function getActionAcknowledgement(action: ActionName, param: string): str
       return 'Ich sperre den Bildschirm.';
   }
 }
+
+/**
+ * @param action - Validierte Aktion.
+ * @param param - Bereits validierter Aktionsparameter.
+ *
+ * @returns Kurze nutzerseitige Beschreibung für eine Sicherheitsbestätigung.
+ *
+ * @category Transformation
+ */
+export function getActionConfirmationDescription(action: ActionName, param: string): string {
+  switch (action) {
+    case 'open_program':
+      return `das Programm „${safeTarget(param)}“ öffnen`;
+    case 'set_timer':
+      return `einen Timer für ${param} Minuten starten`;
+    case 'lock_screen':
+      return 'den Bildschirm sperren';
+    case 'set_volume':
+      return `die Systemlautstärke auf ${param} Prozent setzen`;
+    case 'spotify_volume':
+      return `die Spotify-Lautstärke auf ${param} Prozent setzen`;
+    case 'spotify_volume_adjust':
+      return `die Spotify-Lautstärke um ${param} Prozent verändern`;
+    case 'media_play':
+    case 'media_pause':
+    case 'media_toggle':
+    case 'media_next':
+    case 'media_previous':
+      return 'die angeforderte Mediensteuerung ausführen';
+    case 'web_search':
+      return 'die Websuche ausführen';
+    case 'show_browser':
+      return 'das Suchergebnis öffnen';
+  }
+}

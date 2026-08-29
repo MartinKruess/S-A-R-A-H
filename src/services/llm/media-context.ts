@@ -33,6 +33,11 @@ export class MediaContext {
     this.state = { lastAction: action, atMs: nowMs };
   }
 
+  /** Clears the short-lived interpretation hint at privacy/lifecycle boundaries. */
+  clear(): void {
+    this.state = null;
+  }
+
   /**
    * Resolve a terse follow-up to a media action, or null if the window is cold
    * or the text isn't a known terse follow-up (caller then routes normally).

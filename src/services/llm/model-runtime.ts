@@ -1,7 +1,10 @@
 import type { RuntimeState } from '../../core/app-lifecycle-controller.js';
 import type { LlmConfig } from '../../core/config-schema.js';
 import type { ChatMessage, ChatOptions, LlmProvider } from './llm-provider.interface.js';
-import type { OllamaContainerManager } from './ollama-container-manager.js';
+import {
+  isOllamaPrerequisiteError,
+  type OllamaContainerManager,
+} from './ollama-container-manager.js';
 import { PERFORMANCE_PROFILE_MAP } from './llm-types.js';
 import { OllamaProvider } from './providers/ollama-provider.js';
 import { RoutingService, type RoutingResult } from './routing-service.js';
@@ -29,6 +32,7 @@ export interface ModelRuntimeSnapshot {
 
 export interface WorkerTextGenerator {
   generateWorkerText(prompt: string, options?: ChatOptions): Promise<string>;
+  generateWorkerMessages(messages: ChatMessage[], options?: ChatOptions): Promise<string>;
 }
 
 export interface ModelRuntimePort extends WorkerTextGenerator {
@@ -40,9 +44,11 @@ export interface ModelRuntimePort extends WorkerTextGenerator {
     responseStyle: string,
     onChunk: (text: string) => void,
     signal?: AbortSignal,
+    effectiveNumPredict?: number,
   ): Promise<WorkerResult>;
   ensureRole(role: ModelRole): Promise<void>;
   scheduleRouterRestore(): void;
+  retryRecovery(signal?: AbortSignal): Promise<ModelRuntimeSnapshot>;
   destroy(signal?: AbortSignal): Promise<void>;
   /** Compatibility seam for focused legacy tests; productive code never calls it. */
   assumeRole(role: ModelRole): void;
@@ -64,6 +70,8 @@ export interface ModelRuntimeDeps {
   cleanupTimeoutMs?: number;
   transitionTimeoutMs?: number;
   runtimeRecheckDelayMs?: number;
+  runtimeRecheckMaxDelayMs?: number;
+  runtimeRecheckMaxAttempts?: number;
   /** Test/legacy adapter only: let the real request perform Ollama's lazy model load. */
   eagerLoadTransitions?: boolean;
 }
@@ -73,6 +81,8 @@ const DEFAULT_DRAIN_TIMEOUT_MS = 2_000;
 const DEFAULT_CLEANUP_TIMEOUT_MS = 3_000;
 const DEFAULT_TRANSITION_TIMEOUT_MS = 120_000;
 const DEFAULT_RUNTIME_RECHECK_DELAY_MS = 5_000;
+const DEFAULT_RUNTIME_RECHECK_MAX_DELAY_MS = 30_000;
+const DEFAULT_RUNTIME_RECHECK_MAX_ATTEMPTS = 5;
 
 function errorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
@@ -112,12 +122,15 @@ export class ModelRuntime implements ModelRuntimePort {
   private readonly cleanupTimeoutMs: number;
   private readonly transitionTimeoutMs: number;
   private readonly runtimeRecheckDelayMs: number;
+  private readonly runtimeRecheckMaxDelayMs: number;
+  private readonly runtimeRecheckMaxAttempts: number;
   private readonly eagerLoadTransitions: boolean;
   private current: ModelRuntimeSnapshot;
   private initPromise: Promise<ModelRuntimeSnapshot> | null = null;
   private operationTail: Promise<void> = Promise.resolve();
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private runtimeRecheckTimer: ReturnType<typeof setTimeout> | null = null;
+  private runtimeRecheckAttempt = 0;
   private shuttingDown = false;
   private destroyed = false;
   private destroyPromise: Promise<void> | null = null;
@@ -153,6 +166,10 @@ export class ModelRuntime implements ModelRuntimePort {
     this.cleanupTimeoutMs = deps.cleanupTimeoutMs ?? DEFAULT_CLEANUP_TIMEOUT_MS;
     this.transitionTimeoutMs = deps.transitionTimeoutMs ?? DEFAULT_TRANSITION_TIMEOUT_MS;
     this.runtimeRecheckDelayMs = deps.runtimeRecheckDelayMs ?? DEFAULT_RUNTIME_RECHECK_DELAY_MS;
+    this.runtimeRecheckMaxDelayMs = deps.runtimeRecheckMaxDelayMs
+      ?? DEFAULT_RUNTIME_RECHECK_MAX_DELAY_MS;
+    this.runtimeRecheckMaxAttempts = deps.runtimeRecheckMaxAttempts
+      ?? DEFAULT_RUNTIME_RECHECK_MAX_ATTEMPTS;
     this.eagerLoadTransitions = deps.eagerLoadTransitions ?? true;
     this.current = {
       state: 'registered',
@@ -204,7 +221,9 @@ export class ModelRuntime implements ModelRuntimePort {
       this.markUnavailable('router', message);
       this.markUnavailable('local_worker', message);
       this.current.state = 'error';
-      this.scheduleRuntimeRecheck();
+      if (!(value instanceof Error && isOllamaPrerequisiteError(value))) {
+        this.scheduleRuntimeRecheck();
+      }
       throw value;
     }
 
@@ -242,6 +261,7 @@ export class ModelRuntime implements ModelRuntimePort {
       throw value;
     }
     this.current.state = workerCheck.available ? 'ready' : 'degraded';
+    if (workerCheck.available) this.runtimeRecheckAttempt = 0;
     return this.snapshot;
   }
 
@@ -296,21 +316,32 @@ export class ModelRuntime implements ModelRuntimePort {
     responseStyle: string,
     onChunk: (text: string) => void,
     signal?: AbortSignal,
+    effectiveNumPredict?: number,
   ): Promise<WorkerResult> {
     return this.runWithRole(
       'local_worker',
-      (operationSignal) => this.worker.stream(messages, responseStyle, onChunk, operationSignal),
+      (operationSignal) => this.worker.stream(
+        messages,
+        responseStyle,
+        onChunk,
+        operationSignal,
+        effectiveNumPredict,
+      ),
       true,
       signal,
     );
   }
 
   generateWorkerText(prompt: string, options?: ChatOptions): Promise<string> {
+    return this.generateWorkerMessages([{ role: 'user', content: prompt }], options);
+  }
+
+  generateWorkerMessages(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     return this.runWithRole(
       'local_worker',
       (operationSignal) => chatWithTimeout(
         this.workerProvider,
-        [{ role: 'user', content: prompt }],
+        messages,
         () => {},
         { ...options, signal: operationSignal },
       ),
@@ -598,20 +629,32 @@ export class ModelRuntime implements ModelRuntimePort {
   }
 
   private scheduleRuntimeRecheck(): void {
-    if (this.shuttingDown || this.destroyed || this.runtimeRecheckTimer) return;
+    if (
+      this.shuttingDown
+      || this.destroyed
+      || this.runtimeRecheckTimer
+      || this.runtimeRecheckAttempt >= this.runtimeRecheckMaxAttempts
+    ) return;
+    const delayMs = Math.min(
+      this.runtimeRecheckDelayMs * (2 ** this.runtimeRecheckAttempt),
+      this.runtimeRecheckMaxDelayMs,
+    );
+    this.runtimeRecheckAttempt += 1;
     this.runtimeRecheckTimer = setTimeout(() => {
       this.runtimeRecheckTimer = null;
       void this.recheckRuntime().catch((value) => {
         if (!this.shuttingDown && !this.destroyed) {
           console.warn('[ModelRuntime] Runtime recheck failed:', value);
-          this.scheduleRuntimeRecheck();
+          if (!(value instanceof Error && isOllamaPrerequisiteError(value))) {
+            this.scheduleRuntimeRecheck();
+          }
         }
       });
-    }, this.runtimeRecheckDelayMs);
+    }, delayMs);
     this.runtimeRecheckTimer.unref?.();
   }
 
-  private async recheckRuntime(): Promise<void> {
+  private async recheckRuntime(signal = this.runtimeAbort.signal): Promise<void> {
     if (this.shuttingDown || this.destroyed) return;
     await runWithTimeout(
       async (signal) => {
@@ -634,14 +677,32 @@ export class ModelRuntime implements ModelRuntimePort {
       },
       this.transitionTimeoutMs,
       'Ollama runtime recheck timed out',
-      this.runtimeAbort.signal,
+      signal,
     );
     await this.ensureRole('router');
     this.current.state = this.current.roles.local_worker.availability === 'available'
       ? 'ready'
       : 'degraded';
-    if (this.current.roles.local_worker.availability !== 'available') {
+    if (this.current.roles.local_worker.availability === 'available') {
+      this.runtimeRecheckAttempt = 0;
+    } else {
       this.scheduleRuntimeRecheck();
+    }
+  }
+
+  async retryRecovery(signal?: AbortSignal): Promise<ModelRuntimeSnapshot> {
+    if (this.shuttingDown || this.destroyed) {
+      throw new Error('ModelRuntime is shutting down');
+    }
+    if (this.runtimeRecheckTimer) clearTimeout(this.runtimeRecheckTimer);
+    this.runtimeRecheckTimer = null;
+    this.runtimeRecheckAttempt = 0;
+    const linked = linkAbortSignals(signal, this.runtimeAbort.signal);
+    try {
+      await this.recheckRuntime(linked.signal);
+      return this.snapshot;
+    } finally {
+      linked.dispose();
     }
   }
 
@@ -667,6 +728,7 @@ export class ModelRuntime implements ModelRuntimePort {
     this.clearIdleTimer();
     if (this.runtimeRecheckTimer) clearTimeout(this.runtimeRecheckTimer);
     this.runtimeRecheckTimer = null;
+    this.runtimeRecheckAttempt = this.runtimeRecheckMaxAttempts;
     this.initSignalCleanup?.();
     this.initSignalCleanup = null;
     this.runtimeAbort.abort();

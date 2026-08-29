@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SarahConfigSchema } from './config-schema.js';
+import { MAX_MEMORY_EXCLUSIONS, MAX_MEMORY_EXCLUSION_LENGTH } from './memory-exclusions.js';
 
 describe('SarahConfigSchema', () => {
   it('parses an empty object with all defaults', () => {
@@ -13,6 +14,7 @@ describe('SarahConfigSchema', () => {
     expect(result.personalization.accentColor).toBe('#00d4ff');
     expect(result.llm.baseUrl).toBe('http://localhost:11434');
     expect(result.trust.fileAccess).toBe('specific-folders');
+    expect(result.trust.webAccessAllowed).toBe(true);
   });
 
   it('preserves provided values', () => {
@@ -133,5 +135,42 @@ describe('SarahConfigSchema', () => {
   it('rejects a workerOptions.num_ctx below the response-reserve minimum', () => {
     const result = SarahConfigSchema.safeParse({ llm: { workerOptions: { num_ctx: 2048 } } });
     expect(result.success).toBe(false);
+  });
+
+  it('accepts a bounded remote Ollama endpoint without forcing loopback', () => {
+    const result = SarahConfigSchema.parse({
+      llm: { baseUrl: 'https://ollama.example.test:11434/api' },
+    });
+
+    expect(result.llm.baseUrl).toBe('https://ollama.example.test:11434/api');
+  });
+
+  it.each([
+    { personalization: { speechRate: 0.1 } },
+    { controls: { quietModeDuration: 0 } },
+    { controls: { customCommands: [{ command: '/ok', prompt: 'x'.repeat(2_001) }] } },
+    { controls: { customCommands: [{ command: 'not-a-command', prompt: 'ok' }] } },
+    { llm: { baseUrl: 'file:///tmp/ollama.sock' } },
+    { llm: { routerModel: 'x'.repeat(201) } },
+    { llm: { options: { temperature: 2.1 } } },
+    { llm: { options: { num_predict: 0 } } },
+    { llm: { options: { num_ctx: 300_000 } } },
+  ])('rejects unsafe config bounds: %#', (input) => {
+    expect(SarahConfigSchema.safeParse(input).success).toBe(false);
+  });
+
+  it('normalizes and deduplicates bounded memory exclusion labels', () => {
+    const result = SarahConfigSchema.parse({
+      trust: { memoryExclusions: ['  Finanzen  ', 'finanzen', 'Projekt   Eule', 'Ｐｒｏｊｅｋｔ Eule'] },
+    });
+
+    expect(result.trust.memoryExclusions).toEqual(['Finanzen', 'Projekt Eule']);
+  });
+
+  it.each([
+    { memoryExclusions: Array.from({ length: MAX_MEMORY_EXCLUSIONS + 1 }, (_, index) => `topic-${index}`) },
+    { memoryExclusions: ['x'.repeat(MAX_MEMORY_EXCLUSION_LENGTH + 1)] },
+  ])('rejects oversized memory exclusion input', ({ memoryExclusions }) => {
+    expect(SarahConfigSchema.safeParse({ trust: { memoryExclusions } }).success).toBe(false);
   });
 });

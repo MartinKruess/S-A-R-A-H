@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { abortError, runWithTimeout, throwIfAborted } from '../core/abort-utils.js';
 
 const LOAD_TIMEOUT_MS = 15_000;
+const REQUEST_VALIDATION_TIMEOUT_MS = 3_000;
 const MAX_REDIRECTS = 5;
 
 const blockedAddresses = new BlockList();
@@ -37,6 +38,15 @@ export interface SandboxWindow {
       clearStorageData(): Promise<void>;
       clearCache(): Promise<void>;
       resolveHost?(hostname: string): Promise<{ endpoints: Array<{ address: string }> }>;
+      webRequest: {
+        onBeforeRequest(
+          filter: { urls: string[] },
+          listener: (
+            details: { url: string },
+            callback: (response: { cancel: boolean }) => void,
+          ) => void,
+        ): void;
+      };
       cookies?: {
         set(details: {
           url: string;
@@ -109,6 +119,19 @@ function parseHttpsUrl(raw: string): URL | null {
   }
 }
 
+function parseNetworkRequestUrl(raw: string): URL | null {
+  try {
+    const url = new URL(raw);
+    return ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)
+      && url.username === ''
+      && url.password === ''
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizedHostname(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
 }
@@ -135,8 +158,8 @@ function ipv4FromMappedAddress(address: string): string | null {
   return `${high >>> 8}.${high & 0xff}.${low >>> 8}.${low & 0xff}`;
 }
 
-async function validatePublicHttpsUrl(raw: string, resolveHost: HostResolver): Promise<URL> {
-  const url = parseHttpsUrl(raw);
+async function validatePublicNetworkUrl(raw: string, resolveHost: HostResolver): Promise<URL> {
+  const url = parseNetworkRequestUrl(raw);
   if (!url) throw new Error(`Blocked URL: ${raw}`);
   const hostname = normalizedHostname(url);
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
@@ -148,6 +171,27 @@ async function validatePublicHttpsUrl(raw: string, resolveHost: HostResolver): P
     throw new Error(`Blocked network target: ${hostname}`);
   }
   return url;
+}
+
+async function validatePublicHttpsUrl(raw: string, resolveHost: HostResolver): Promise<URL> {
+  const url = parseHttpsUrl(raw);
+  if (!url) throw new Error(`Blocked URL: ${raw}`);
+  return await validatePublicNetworkUrl(url.toString(), resolveHost);
+}
+
+function frameTargetNeedsBlocking(raw: string): boolean {
+  try {
+    const inertUrl = new URL(raw);
+    if (inertUrl.protocol === 'about:' && inertUrl.href === 'about:blank') return false;
+    if (inertUrl.protocol === 'data:' || inertUrl.protocol === 'blob:') return false;
+  } catch {
+    return true;
+  }
+  const url = parseNetworkRequestUrl(raw);
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) return true;
+  const hostname = normalizedHostname(url);
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) return true;
+  return isIP(hostname) !== 0 && isBlockedAddress(hostname);
 }
 
 async function defaultCreateWindow(): Promise<SandboxWindow> {
@@ -196,6 +240,16 @@ export class SandboxBrowser {
     const approvedNavigations = new Set<string>();
     this.approvedNavigations.set(win, approvedNavigations);
     this.navigationTokens.set(win, 0);
+    this.installRequestBoundary(win);
+    win.webContents.on('will-frame-navigate', (
+      event: { preventDefault(): void },
+      details: { url: string },
+    ) => {
+      // Hostnames receive the authoritative asynchronous DNS check in the
+      // session request boundary. Reject malformed URLs, credentials, local
+      // names and private IP literals synchronously before a frame can move.
+      if (frameTargetNeedsBlocking(details.url)) event.preventDefault();
+    });
     // Page-initiated navigations remain constrained after the request-scoped
     // load listeners have been removed. Redirects receive the stronger async
     // DNS validation in fetchPageHtml()/show().
@@ -228,6 +282,32 @@ export class SandboxBrowser {
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     this.window = win;
     return win;
+  }
+
+  /**
+   * Enforces the public-network boundary for every renderer request.
+   *
+   * - Re-resolves hostnames through the isolated Electron session.
+   * - Rejects loopback, private, link-local, multicast and failed DNS targets.
+   * - Uses a short deadline so a stuck resolver fails closed instead of
+   *   indefinitely withholding Electron's request callback.
+   *
+   * @category Authorization External Integration
+   */
+  private installRequestBoundary(win: SandboxWindow): void {
+    win.webContents.session.webRequest.onBeforeRequest(
+      { urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] },
+      (details, callback) => {
+        void runWithTimeout(
+          () => validatePublicNetworkUrl(details.url, this.resolverFor(win)),
+          REQUEST_VALIDATION_TIMEOUT_MS,
+          'Browser subrequest validation timed out',
+        ).then(
+          () => callback({ cancel: false }),
+          () => callback({ cancel: true }),
+        );
+      },
+    );
   }
 
   private resolverFor(win: SandboxWindow): HostResolver {
@@ -438,7 +518,7 @@ export class SandboxBrowser {
       await this.validateForWindow(win, url, signal);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') throw error;
-      if (!win.isDestroyed()) win.hide();
+      this.invalidateWindow(win);
       return false;
     }
     throwIfAborted(signal);
@@ -461,7 +541,8 @@ export class SandboxBrowser {
       const fail = (): void => {
         if (settled) return;
         cleanup();
-        if (!win.isDestroyed()) win.hide();
+        wc.stop();
+        this.invalidateWindow(win);
         resolve(false);
       };
 
@@ -512,7 +593,6 @@ export class SandboxBrowser {
       };
       const onGone = (): void => {
         fail();
-        win.destroy();
       };
       const onAbort = (): void => {
         if (settled) return;
@@ -522,8 +602,6 @@ export class SandboxBrowser {
         reject(abortError('Browser display aborted'));
       };
       const timeout = setTimeout(() => {
-        wc.stop();
-        this.invalidateWindow(win);
         fail();
       }, LOAD_TIMEOUT_MS);
 
@@ -540,7 +618,9 @@ export class SandboxBrowser {
   }
 
   hide(): void {
-    if (this.window && !this.window.isDestroyed()) this.window.hide();
+    // A hidden external page could keep scripts, media, and network requests alive.
+    // Ending display mode therefore destroys its isolated in-memory session.
+    this.close();
   }
 
   close(): void {

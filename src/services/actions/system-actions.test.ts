@@ -67,4 +67,17 @@ describe('SystemActions', () => {
     vi.advanceTimersByTime(10 * 60 * 1000);
     expect(notify).not.toHaveBeenCalled();
   });
+
+  it('cancels an armed timer when its owning action is aborted', () => {
+    const notify = vi.fn();
+    const sys = new SystemActions({ execFn: vi.fn(), platform: 'win32', onNotify: notify });
+    const controller = new AbortController();
+
+    expect(sys.setTimer(5, controller.signal)).toEqual({ ok: true });
+    controller.abort();
+    vi.advanceTimersByTime(10 * 60 * 1000);
+
+    expect(notify).not.toHaveBeenCalled();
+    expect(sys.setTimer(1)).toEqual({ ok: true });
+  });
 });

@@ -18,7 +18,7 @@ function fakeIpcMain(): { ipcMain: IpcMain; handlers: Map<string, Handler> } {
 }
 
 const CONNECTIONS: ConnectionInfo[] = [
-  { id: 'spotify', displayName: 'Spotify', connected: false },
+  { id: 'spotify', displayName: 'Spotify', configured: true, connected: false },
 ];
 
 describe('registerConnectionHandlers', () => {

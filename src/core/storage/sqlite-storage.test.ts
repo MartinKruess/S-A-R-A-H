@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SqliteStorage } from './sqlite-storage.js';
-import { MESSAGES_PAGE_MAX_LIMIT } from './storage.interface.js';
+import { SQLITE_SCHEMA_VERSION, SqliteStorage } from './sqlite-storage.js';
+import { LEGACY_DB_RECOVERY_CONFIRMATION, MESSAGES_PAGE_MAX_LIMIT } from './storage.interface.js';
+import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -21,19 +22,192 @@ describe('SqliteStorage', () => {
   });
 
   describe('table operations', () => {
+    it('scrubs explicit privacy deletions from the database and WAL without changing normal delete semantics', async () => {
+      const marker = `privacy-marker-${Date.now()}-${'x'.repeat(80)}`;
+      const id = await storage.insert('curated_memories', {
+        kind: 'explicit',
+        content: marker,
+        source_turn_id: 'privacy-delete',
+        confidence: 1,
+      });
+      expect(await storage.delete('curated_memories', { id })).toBe(1);
+
+      await storage.finalizePrivacyDeletion();
+
+      const dbPath = path.join(tmpDir, 'sarah.db');
+      expect(fs.readFileSync(dbPath).includes(Buffer.from(marker))).toBe(false);
+      const walPath = `${dbPath}-wal`;
+      if (fs.existsSync(walPath)) expect(fs.statSync(walPath).size).toBe(0);
+    });
+
+    it('purges a quarantined message as a complete Layer-2 provenance chain', async () => {
+      await storage.insert('conversations', { id: 1 });
+      await storage.insertTurnMessages(1, 'turn-safe', [
+        { id: 12, role: 'user', content: 'Bleibt' },
+      ]);
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-corrupt',
+        [
+          { id: 10, role: 'user', content: 'Frage' },
+          { id: 11, role: 'assistant', content: 'Antwort' },
+        ],
+        'Quelle',
+        'fingerprint',
+        20,
+      );
+      await storage.insert('curated_memories', {
+        id: 30,
+        source_staging_id: stagingId,
+        kind: 'fact',
+        content: 'Abgeleitet über Staging',
+        source_conversation_id: 1,
+        source_turn_id: 'turn-corrupt',
+        confidence: 0.9,
+      });
+      await storage.insert('curated_memories', {
+        id: 31,
+        kind: 'episode',
+        content: 'Abgeleitet über Turn',
+        source_conversation_id: 1,
+        source_turn_id: 'turn-corrupt',
+        confidence: 0.8,
+      });
+      const quarantineId = await storage.insert('storage_quarantine', {
+        source_table: 'messages',
+        source_row_id: 10,
+        column_name: 'content',
+        ciphertext: 'isolated',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+      await storage.insert('storage_quarantine', {
+        source_table: 'storage_quarantine',
+        source_row_id: quarantineId,
+        column_name: 'row_data',
+        ciphertext: 'nested',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+
+      await expect(storage.purgeQuarantinedLayer2Memory()).resolves.toEqual({
+        turns: 1,
+        staging: 1,
+        memories: 2,
+        legacy: 0,
+        quarantine: 2,
+      });
+      expect(await storage.query('messages', { turn_id: 'turn-corrupt' })).toEqual([]);
+      expect(await storage.query('memory_staging', { id: stagingId })).toEqual([]);
+      expect(await storage.query('curated_memories')).toEqual([]);
+      expect(await storage.query('storage_quarantine')).toEqual([]);
+      expect(await storage.query('messages', { turn_id: 'turn-safe' })).toHaveLength(1);
+    });
+
+    it('purges legacy learned memory and its recursive quarantine but keeps absolute rules', async () => {
+      const learnedId = await storage.insert('learned_facts', {
+        category: 'person', fact: 'Alt', confidence: 0.7, source: 'legacy',
+      });
+      await storage.insert('persistent_rules', { category: 'user', rule: 'Nutzerregel' });
+      await storage.insert('session_rules', { session_id: 'session', rule: 'Sitzungsregel' });
+      await storage.insert('absolute_rules', { rule: 'Systemgrenze' });
+      await storage.insert('message_quarantine', {
+        original_id: 99, conversation_id: 1, turn_id: 'legacy', role: 'user',
+        content: 'isolierter Legacy-Turn', reason: 'legacy',
+      });
+      const quarantineId = await storage.insert('storage_quarantine', {
+        source_table: 'learned_facts',
+        source_row_id: learnedId,
+        column_name: 'fact',
+        ciphertext: 'isolated',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+      await storage.insert('storage_quarantine', {
+        source_table: 'storage_quarantine',
+        source_row_id: quarantineId,
+        column_name: 'row_data',
+        ciphertext: 'nested',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+
+      const result = await storage.purgeAllLayer2Memory();
+
+      expect(result.legacy).toBe(3);
+      expect(result.quarantine).toBe(3);
+      expect(await storage.query('learned_facts')).toEqual([]);
+      expect(await storage.query('persistent_rules')).toEqual([]);
+      expect(await storage.query('session_rules')).toEqual([]);
+      expect(await storage.query('storage_quarantine')).toEqual([]);
+      expect(await storage.query('message_quarantine')).toEqual([]);
+      expect(await storage.query('absolute_rules')).toHaveLength(1);
+    });
+
+    it('rolls back every reviewed legacy write when one source changed after review', async () => {
+      const firstId = await storage.insert('persistent_rules', { category: 'legacy', rule: 'legacy-a' });
+      const secondId = await storage.insert('persistent_rules', { category: 'legacy', rule: 'legacy-b' });
+      const firstQuarantine = await storage.insert('storage_quarantine', {
+        source_table: 'persistent_rules', source_row_id: firstId, column_name: 'rule',
+        ciphertext: 'wrapped-a', row_data: '{}', reason: 'unbound_legacy_ciphertext',
+      });
+      const secondQuarantine = await storage.insert('storage_quarantine', {
+        source_table: 'persistent_rules', source_row_id: secondId, column_name: 'rule',
+        ciphertext: 'wrapped-b', row_data: '{}', reason: 'unbound_legacy_ciphertext',
+      });
+
+      await expect(storage.restoreReviewedLegacyDbValues(
+        LEGACY_DB_RECOVERY_CONFIRMATION,
+        [
+          {
+            quarantineId: firstQuarantine, table: 'persistent_rules', rowId: firstId,
+            column: 'rule', legacyCiphertext: 'legacy-a', encryptedValue: 'v2-a',
+          },
+          {
+            quarantineId: secondQuarantine, table: 'persistent_rules', rowId: secondId,
+            column: 'rule', legacyCiphertext: 'stale-value', encryptedValue: 'v2-b',
+          },
+        ],
+      )).rejects.toThrow('changed after review');
+
+      expect(await storage.query<{ rule: string }>('persistent_rules')).toEqual([
+        expect.objectContaining({ id: firstId, rule: 'legacy-a' }),
+        expect.objectContaining({ id: secondId, rule: 'legacy-b' }),
+      ]);
+      expect(await storage.query('storage_quarantine')).toHaveLength(2);
+      expect(fs.readdirSync(tmpDir).some((name) => name.includes('.legacy-recovery-'))).toBe(true);
+    });
+
     it('writes a completed multi-message turn through one transactional operation', async () => {
-      await storage.insertTurnMessages(7, [
+      await storage.insert('conversations', { id: 7 });
+      await storage.insertTurnMessages(7, 'turn-7', [
         { role: 'user', content: 'Frage' },
         { role: 'assistant', content: 'Zwischenstand' },
         { role: 'assistant', content: 'Antwort' },
       ]);
 
-      const rows = await storage.query<{ conversation_id: number; role: string; content: string }>('messages');
+      const rows = await storage.query<{ conversation_id: number; turn_id: string; role: string; content: string }>('messages');
       expect(rows).toEqual([
-        expect.objectContaining({ conversation_id: 7, role: 'user', content: 'Frage' }),
-        expect.objectContaining({ conversation_id: 7, role: 'assistant', content: 'Zwischenstand' }),
-        expect.objectContaining({ conversation_id: 7, role: 'assistant', content: 'Antwort' }),
+        expect.objectContaining({ conversation_id: 7, turn_id: 'turn-7', role: 'user', content: 'Frage' }),
+        expect.objectContaining({ conversation_id: 7, turn_id: 'turn-7', role: 'assistant', content: 'Zwischenstand' }),
+        expect.objectContaining({ conversation_id: 7, turn_id: 'turn-7', role: 'assistant', content: 'Antwort' }),
       ]);
+    });
+
+    it('rejects orphaned messages and invalid roles at the database boundary', async () => {
+      await expect(storage.insert('messages', {
+        conversation_id: 999,
+        turn_id: 'turn-orphan',
+        role: 'user',
+        content: 'orphan',
+      })).rejects.toThrow();
+      await storage.insert('conversations', { id: 1 });
+      await expect(storage.insert('messages', {
+        conversation_id: 1,
+        turn_id: 'turn-system',
+        role: 'system',
+        content: 'invalid',
+      })).rejects.toThrow();
     });
 
     it('inserts and queries a row', async () => {
@@ -102,6 +276,64 @@ describe('SqliteStorage', () => {
   });
 
   describe('schema initialization', () => {
+    it('records the current schema version after transactional initialization', async () => {
+      const dbPath = path.join(tmpDir, 'versioned.db');
+      const versioned = new SqliteStorage(dbPath);
+      await versioned.close();
+      const raw = new Database(dbPath, { readonly: true });
+      expect(raw.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION);
+      raw.close();
+    });
+
+    it('rejects an unknown newer schema before mutating the database', () => {
+      const dbPath = path.join(tmpDir, 'newer.db');
+      const raw = new Database(dbPath);
+      raw.exec('CREATE TABLE future_data (value TEXT NOT NULL); INSERT INTO future_data VALUES (\'keep\');');
+      raw.pragma(`user_version = ${SQLITE_SCHEMA_VERSION + 1}`);
+      raw.close();
+
+      expect(() => new SqliteStorage(dbPath)).toThrow(/newer schema version/);
+
+      const unchanged = new Database(dbPath, { readonly: true });
+      expect(unchanged.prepare('SELECT value FROM future_data').pluck().get()).toBe('keep');
+      expect(unchanged.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION + 1);
+      unchanged.close();
+    });
+
+    it('rolls back every schema change when one migration step fails', () => {
+      const dbPath = path.join(tmpDir, 'broken-migration.db');
+      const raw = new Database(dbPath);
+      raw.exec(`
+        CREATE TABLE conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at TEXT,
+          ended_at TEXT,
+          mode TEXT NOT NULL DEFAULT 'ambient',
+          summary TEXT DEFAULT ''
+        );
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          timestamp TEXT
+        );
+        CREATE TABLE messages_migrated (id INTEGER PRIMARY KEY);
+      `);
+      raw.close();
+
+      expect(() => new SqliteStorage(dbPath)).toThrow();
+
+      const unchanged = new Database(dbPath, { readonly: true });
+      const conversationColumns = unchanged.pragma('table_info(conversations)') as Array<{ name: string }>;
+      expect(conversationColumns.some(({ name }) => name === 'close_status')).toBe(false);
+      expect(unchanged.pragma('user_version', { simple: true })).toBe(0);
+      expect(unchanged.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_quarantine'",
+      ).get()).toBeUndefined();
+      unchanged.close();
+    });
+
     it('creates expected tables', async () => {
       await storage.insert('absolute_rules', { rule: 'test' });
       await storage.insert('persistent_rules', { category: 'test', rule: 'test' });
@@ -117,10 +349,125 @@ describe('SqliteStorage', () => {
       expect(await storage.query('messages')).toHaveLength(1);
       expect(await storage.query('learned_facts')).toHaveLength(1);
     });
+
+    it('atomically completes a staging item without duplicating curated memory', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const stagingId = await storage.insert('memory_staging', {
+        conversation_id: 1,
+        turn_id: 'turn-memory',
+        source_content: 'Quelle',
+      });
+      await storage.insertTurnMessages(1, 'turn-memory', [
+        { role: 'user', content: 'Rohfrage' },
+        { role: 'assistant', content: 'Rohantwort' },
+      ]);
+      const input = {
+        stagingId,
+        memory: {
+          kind: 'fact' as const,
+          content: 'Fakt',
+          sourceConversationId: 1,
+          sourceTurnId: 'turn-memory',
+          confidence: 0.9,
+        },
+      };
+
+      await storage.completeMemoryStaging(input);
+      await storage.completeMemoryStaging(input);
+
+      expect(await storage.query('curated_memories')).toHaveLength(1);
+      expect(await storage.query('memory_staging', { state: 'completed', source_content: '' })).toHaveLength(1);
+      expect(await storage.query('messages', { turn_id: 'turn-memory' })).toHaveLength(0);
+    });
+
+    it('atomically discards an irrelevant staging item and its retained raw turn', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const stagingId = await storage.insert('memory_staging', {
+        conversation_id: 1,
+        turn_id: 'turn-discard',
+        source_content: 'Nicht relevant',
+      });
+      await storage.insertTurnMessages(1, 'turn-discard', [
+        { role: 'user', content: 'Rohfrage' },
+        { role: 'assistant', content: 'Rohantwort' },
+      ]);
+
+      await storage.discardMemoryStaging(stagingId);
+
+      expect(await storage.query('memory_staging', {
+        id: stagingId,
+        state: 'completed',
+        source_content: '',
+      })).toHaveLength(1);
+      expect(await storage.query('messages', { turn_id: 'turn-discard' })).toHaveLength(0);
+      expect(await storage.query('curated_memories')).toHaveLength(0);
+    });
+
+    it('atomically persists a completed turn together with its staging job', async () => {
+      await storage.insert('conversations', { id: 1 });
+
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-atomic',
+        [
+          { role: 'user', content: 'Frage' },
+          { role: 'assistant', content: 'Antwort' },
+        ],
+        'USER: Frage\nASSISTANT: Antwort',
+        'frage antwort',
+      );
+
+      expect(await storage.query('messages', { turn_id: 'turn-atomic' })).toHaveLength(2);
+      expect(await storage.query('memory_staging', { id: stagingId, state: 'pending' })).toHaveLength(1);
+    });
+
+    it('rolls back all turn rows if the atomic staging write fails', async () => {
+      await storage.insert('conversations', { id: 1 });
+
+      await expect(storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-rollback',
+        [
+          { id: 50, role: 'user', content: 'Frage' },
+          { id: 50, role: 'assistant', content: 'Antwort' },
+        ],
+        'Quelle',
+      )).rejects.toThrow();
+
+      expect(await storage.query('messages', { turn_id: 'turn-rollback' })).toEqual([]);
+      expect(await storage.query('memory_staging', { turn_id: 'turn-rollback' })).toEqual([]);
+    });
+
+    it('atomically dead-letters staging and removes its retained raw turn', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-failed',
+        [{ role: 'user', content: 'Rohfrage' }],
+        'USER: Rohfrage',
+        'rohfrage',
+      );
+
+      await storage.failMemoryStaging(stagingId);
+
+      const [failed] = await storage.query<{
+        state: string;
+        source_content: string;
+        policy_terms: string;
+      }>('memory_staging', { id: stagingId });
+      expect(failed).toMatchObject({
+        state: 'failed',
+        source_content: 'USER: Rohfrage',
+        policy_terms: 'rohfrage',
+      });
+      expect(await storage.query('messages', { turn_id: 'turn-failed' })).toHaveLength(1);
+    });
   });
 
   describe('queryMessagesPage', () => {
     it('returns newest messages first, excluding the given conversation', async () => {
+      await storage.insert('conversations', { id: 1 });
+      await storage.insert('conversations', { id: 2 });
       await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'old 1' });
       await storage.insert('messages', { conversation_id: 1, role: 'assistant', content: 'old 2' });
       await storage.insert('messages', { conversation_id: 2, role: 'user', content: 'current' });
@@ -133,6 +480,7 @@ describe('SqliteStorage', () => {
     });
 
     it('applies the limit after ordering', async () => {
+      await storage.insert('conversations', { id: 1 });
       for (let i = 0; i < 5; i++) {
         await storage.insert('messages', { conversation_id: 1, role: 'user', content: `msg ${i}` });
       }
@@ -162,5 +510,86 @@ describe('SqliteStorage', () => {
         'Invalid excludeConversationId',
       );
     });
+  });
+
+  it('migrates valid legacy turns and quarantines unsafe legacy rows', async () => {
+    await storage.close();
+    const dbPath = path.join(tmpDir, 'legacy.db');
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT DEFAULT (datetime('now')),
+        ended_at TEXT,
+        mode TEXT NOT NULL DEFAULT 'ambient',
+        summary TEXT DEFAULT ''
+      );
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        timestamp TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO conversations (id) VALUES (5);
+      INSERT INTO messages (conversation_id, role, content) VALUES
+        (5, 'assistant', 'orphan'),
+        (5, 'user', 'question'),
+        (5, 'assistant', 'answer'),
+        (5, 'system', 'unsafe'),
+        (6, 'user', 'missing parent');
+    `);
+    legacy.close();
+
+    storage = new SqliteStorage(dbPath);
+
+    const rows = await storage.query<{ turn_id: string; content: string }>('messages');
+    expect(rows.map((row) => row.content)).toEqual(['question', 'answer']);
+    expect(rows[0].turn_id).toBe(rows[1].turn_id);
+    expect(await storage.query('conversations', { id: 5 })).toHaveLength(1);
+    expect(await storage.query('conversations', { id: 6 })).toHaveLength(0);
+    const quarantined = await storage.query<{ reason: string }>('message_quarantine');
+    expect(quarantined.map((row) => row.reason).sort()).toEqual([
+      'invalid_role',
+      'missing_conversation',
+      'orphan_assistant',
+    ]);
+  });
+
+  it('migrates legacy memory staging to failed-state and provenance support', async () => {
+    await storage.close();
+    const dbPath = path.join(tmpDir, 'legacy-memory.db');
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE conversations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at TEXT DEFAULT (datetime('now')),
+        ended_at TEXT,
+        mode TEXT NOT NULL DEFAULT 'ambient',
+        summary TEXT DEFAULT ''
+      );
+      CREATE TABLE memory_staging (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL,
+        turn_id TEXT NOT NULL UNIQUE,
+        source_content TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'processing', 'completed')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lease_started_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO conversations (id) VALUES (1);
+      INSERT INTO memory_staging (conversation_id, turn_id, source_content)
+      VALUES (1, 'legacy-memory', 'Quelle');
+    `);
+    legacy.close();
+
+    storage = new SqliteStorage(dbPath);
+    expect(await storage.update('memory_staging', { turn_id: 'legacy-memory' }, {
+      state: 'failed',
+      policy_terms: 'quelle',
+    })).toBe(1);
+    expect(await storage.query('memory_staging', { state: 'failed' })).toHaveLength(1);
   });
 });

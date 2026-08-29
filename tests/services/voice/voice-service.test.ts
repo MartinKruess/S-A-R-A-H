@@ -245,6 +245,7 @@ describe('VoiceService', () => {
     expect(service.subscriptions).toEqual([
       'turn:accepted',
       'chat:message',
+      'turn:output-policy',
       'llm:chunk',
       'llm:done',
       'llm:error',
@@ -639,6 +640,48 @@ describe('VoiceService', () => {
     expect(tts.speak).toHaveBeenCalledWith('Hallo!', expect.any(AbortSignal));
   });
 
+  it('keeps a visual-only turn silent while a normal voice turn still speaks', async () => {
+    await service.init();
+    autoCompletePlayback(bus);
+
+    const visualTurnId = randomUUID();
+    service.onMessage(makeMsg(service, bus, 'turn:accepted', {
+      turnId: visualTurnId,
+      source: 'chat',
+      mode: 'voice',
+    }));
+    service.onMessage(makeMsg(service, bus, 'turn:output-policy', {
+      turnId: visualTurnId,
+      speech: 'suppress',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: visualTurnId,
+      text: 'Turn 85-123 und sehr lange Diagnosedaten.',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId: visualTurnId }));
+    await flush();
+
+    expect(tts.speak).not.toHaveBeenCalled();
+
+    const normalTurnId = randomUUID();
+    service.onMessage(makeMsg(service, bus, 'turn:accepted', {
+      turnId: normalTurnId,
+      source: 'chat',
+      mode: 'voice',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: normalTurnId,
+      text: 'Diese normale Antwort wird gesprochen.',
+    }));
+    service.onMessage(makeMsg(service, bus, 'llm:done', { turnId: normalTurnId }));
+    await flush();
+
+    expect(tts.speak).toHaveBeenCalledWith(
+      'Diese normale Antwort wird gesprochen.',
+      expect.any(AbortSignal),
+    );
+  });
+
   it('does not speak when voice mode is off', async () => {
     context = createMockContext(bus, 'off');
     service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
@@ -658,7 +701,7 @@ describe('VoiceService', () => {
     expect(service.subscriptions).toContain('llm:filler');
   });
 
-  it('speaks an llm:filler straight to the TTS queue without changing voice state', async () => {
+  it('speaks an llm:filler through the safe TTS queue without changing voice state', async () => {
     await service.init();
 
     // Auto-drain the queue so synthesis proceeds.
@@ -675,6 +718,31 @@ describe('VoiceService', () => {
     // The filler is a spoken bridge, not turn content: no state transition.
     expect(service.voiceState).toBe(stateBefore);
     expect(stateListener).not.toHaveBeenCalled();
+  });
+
+  it('defers an llm:filler while the microphone is listening', async () => {
+    await service.init();
+    (service as unknown as { setState: (state: string) => void }).setState('listening');
+
+    service.onMessage(makeMsg(service, bus, 'llm:filler', { text: 'Einen Moment.' }));
+    await flush();
+
+    expect(tts.speak).not.toHaveBeenCalled();
+    (service as unknown as { setState: (state: string) => void }).setState('processing');
+    await vi.waitFor(() => expect(tts.speak).toHaveBeenCalledWith(
+      'Einen Moment.',
+      expect.any(AbortSignal),
+    ));
+  });
+
+  it('defers an llm:filler while the renderer is unavailable', async () => {
+    await service.init();
+    (service as unknown as { rendererAvailable: boolean }).rendererAvailable = false;
+
+    service.onMessage(makeMsg(service, bus, 'llm:filler', { text: 'Einen Moment.' }));
+    await flush();
+
+    expect(tts.speak).not.toHaveBeenCalled();
   });
 
   it('no-ops an llm:filler when TTS is unavailable', async () => {
@@ -1632,6 +1700,33 @@ describe('VoiceService partial failure (voice:capability)', () => {
 
     await service.destroy();
     expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('exposes an explicit retry path after recoverable STT initialization fails', async () => {
+    const bus = new MessageBus();
+    const stt = createMockStt();
+    Object.defineProperty(stt, 'recoversAfterInitFailure', { value: true });
+    (stt.init as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Python fehlt'));
+    stt.retry = vi.fn().mockResolvedValue(undefined);
+    const context = createMockContext(bus, 'push-to-talk');
+    context.lifecycle = { setCapability: vi.fn() } as AppContext['lifecycle'];
+    const service = new VoiceService(
+      context,
+      stt,
+      createMockTts(),
+      createMockWakeWord(),
+      createMockAudio(),
+      createMockHotkey(),
+    );
+
+    await service.init();
+    expect(service.capabilitySnapshot.stt).toBe(false);
+    await service.retryRuntimeRecovery();
+
+    expect(stt.retry).toHaveBeenCalledOnce();
+    expect(service.capabilitySnapshot.stt).toBe(true);
+    expect(context.lifecycle.setCapability).toHaveBeenLastCalledWith('stt', 'ready', undefined);
+    await service.destroy();
   });
 
   it('terminalizes the held F9 capture when STT becomes unavailable', async () => {

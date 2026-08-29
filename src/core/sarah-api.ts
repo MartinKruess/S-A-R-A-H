@@ -5,6 +5,7 @@ import type { PlaybackId, TurnId, VoiceCaptureId } from './turn-contract.js';
 import type { ConnectionInfo } from '../services/integrations/oauth-connection-service.js';
 import type { SaveConfigResult } from './config-apply.js';
 import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
+import type { LegacyDbRecoveryResult, LegacyDbRecoveryReview } from './storage/storage.interface.js';
 
 export type { ConnectionInfo };
 
@@ -51,6 +52,7 @@ export interface SarahVoiceApi {
 export interface SarahConnectionsApi {
   list(): Promise<ConnectionInfo[]>;
   connect(id: string): Promise<{ ok: boolean; error?: string }>;
+  cancel(id: string): Promise<void>;
   disconnect(id: string): Promise<void>;
 }
 
@@ -75,8 +77,12 @@ export interface SarahApi {
   ): () => void;
   getConfig(): Promise<SarahConfig>;
   getRuntimeStatus(): Promise<RuntimeSnapshot>;
+  retryRuntimeRecovery(): Promise<IpcCommands['retry-runtime-recovery']['output']>;
+  getPrivacyState(): Promise<IpcCommands['get-privacy-state']['output']>;
   onRuntimeStatus(cb: (snapshot: RuntimeSnapshot) => void): () => void;
   saveConfig(config: SarahConfigPatch): Promise<SaveConfigResult>;
+  reviewLegacyDbRecovery(): Promise<LegacyDbRecoveryReview>;
+  restoreLegacyDbRecovery(quarantineIds: number[]): Promise<LegacyDbRecoveryResult | null>;
   selectFolder(title?: string): Promise<string | null>;
   detectPrograms(): Promise<ProgramEntry[]>;
   scanFolderExes(folderPath: string): Promise<ProgramEntry[]>;
@@ -92,6 +98,7 @@ export interface SarahApi {
   onChatError(cb: (data: BusEvents['llm:error']) => void): () => void;
   onTurnTerminal(cb: (data: BusEvents['turn:terminal']) => void): () => void;
   onStorageDegraded(cb: (data: BusEvents['storage:degraded']) => void): () => void;
+  onIncognitoChanged(cb: (data: BusEvents['privacy:incognito']) => void): () => void;
   onBusDiagnostic(cb: (data: BusDiagnostic) => void): () => void;
   voice: SarahVoiceApi;
   connections: SarahConnectionsApi;

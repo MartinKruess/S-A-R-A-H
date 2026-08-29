@@ -36,12 +36,10 @@ export class RoutingService {
     const tookMs = Math.round(performance.now() - start);
     const parsed = parseRouteTag(response);
     const hadTag = /^\s*\[(?:ROUTE:\w+|ACTION:[a-z_]+(?::[^\]]*)?)]\s*$/.test(response);
-    // Ground-truth diagnostic (action layer is young): show exactly what the
-    // router model emitted and how it was understood, so a "geht nicht" report
-    // is never guesswork.
-    const decision =
-      parsed.kind === 'action' ? `ACTION ${parsed.action}:${JSON.stringify(parsed.param)}` : `ROUTE ${parsed.route}`;
-    console.log(`[Router] raw=${JSON.stringify(response)} → ${decision} (hadTag=${hadTag})`);
+    // Never log raw model output or action parameters: both may contain private
+    // user text, including during one-shot or multi-turn incognito requests.
+    const decision = parsed.kind === 'action' ? `ACTION ${parsed.action}` : `ROUTE ${parsed.route}`;
+    console.log(`[Router] ${decision} (hadTag=${hadTag})`);
     return { parsed, tookMs, hadTag };
   }
 

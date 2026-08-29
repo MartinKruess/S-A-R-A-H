@@ -42,6 +42,8 @@ const api: SarahApi = {
   },
   getConfig: () => ipcRenderer.invoke('get-config'),
   getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),
+  retryRuntimeRecovery: () => ipcRenderer.invoke('retry-runtime-recovery'),
+  getPrivacyState: () => ipcRenderer.invoke('get-privacy-state'),
   onRuntimeStatus: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: RuntimeSnapshot) => callback(data);
     ipcRenderer.on('runtime-status', handler);
@@ -56,6 +58,11 @@ const api: SarahApi = {
     return () => ipcRenderer.removeListener('voice-input-config-changed', handler);
   },
   saveConfig: (config) => ipcRenderer.invoke('save-config', config),
+  reviewLegacyDbRecovery: () => ipcRenderer.invoke('legacy-db-recovery-review'),
+  restoreLegacyDbRecovery: (quarantineIds) => ipcRenderer.invoke(
+    'legacy-db-recovery-restore',
+    { quarantineIds },
+  ),
   selectFolder: (title?) => ipcRenderer.invoke('select-folder', title),
   detectPrograms: () => ipcRenderer.invoke('detect-programs'),
   scanFolderExes: (folderPath) => ipcRenderer.invoke('scan-folder-exes', folderPath),
@@ -88,6 +95,11 @@ const api: SarahApi = {
     const handler = (_event: Electron.IpcRendererEvent, data: { message: string }) => callback(data);
     ipcRenderer.on('storage:degraded', handler);
     return () => ipcRenderer.removeListener('storage:degraded', handler);
+  },
+  onIncognitoChanged: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['privacy:incognito']) => callback(data);
+    ipcRenderer.on('privacy:incognito', handler);
+    return () => ipcRenderer.removeListener('privacy:incognito', handler);
   },
   onBusDiagnostic: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: IpcEvents['bus:diagnostic']) => callback(data);
@@ -156,6 +168,7 @@ const api: SarahApi = {
   connections: {
     list: () => ipcRenderer.invoke('connections-list'),
     connect: (id) => ipcRenderer.invoke('connection-connect', id),
+    cancel: (id) => ipcRenderer.invoke('connection-cancel', id),
     disconnect: (id) => ipcRenderer.invoke('connection-disconnect', id),
   },
 };

@@ -5,6 +5,44 @@ import * as fs from 'fs';
 import type { TtsAvailability, TtsProvider } from '../tts-provider.interface.js';
 import { abortError, throwIfAborted } from '../../../core/abort-utils.js';
 
+const PIPER_PROBE_TIMEOUT_MS = 5_000;
+
+async function probePiperExecutable(binaryPath: string, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve, reject) => {
+    const process = spawn(binaryPath, ['--help'], { windowsHide: true, stdio: 'ignore' });
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onAbort = (): void => {
+      process.kill();
+      finish(abortError('Piper availability probe aborted'));
+    };
+    const timeout = setTimeout(() => {
+      process.kill();
+      finish(new Error('Piper availability probe timed out'));
+    }, PIPER_PROBE_TIMEOUT_MS);
+    timeout.unref?.();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    process.once('error', (error) => finish(new Error(`Failed to start piper: ${error.message}`)));
+    process.once('close', (code, closeSignal) => {
+      if (code === 0) finish();
+      else if (code === null) finish(new Error(`Piper probe terminated by signal ${closeSignal ?? 'unknown'}`));
+      else finish(new Error(`Piper probe exited with code ${code}`));
+    });
+  });
+}
+
+export interface PiperProviderOptions {
+  probe?: (binaryPath: string, signal?: AbortSignal) => Promise<void>;
+}
+
 export class PiperProvider implements TtsProvider {
   readonly id = 'piper';
   private binaryPath: string;
@@ -12,13 +50,15 @@ export class PiperProvider implements TtsProvider {
   private readonly activeProcesses = new Map<ChildProcess, (error: Error) => void>();
   private readonly availabilityListeners = new Set<(state: TtsAvailability) => void>();
   private available: boolean | null = null;
+  private readonly probe: (binaryPath: string, signal?: AbortSignal) => Promise<void>;
 
   /**
    * @param resourcesPath — path to app resources directory
    */
-  constructor(resourcesPath: string) {
+  constructor(resourcesPath: string, options: PiperProviderOptions = {}) {
     this.binaryPath = path.join(resourcesPath, 'piper', 'piper.exe');
     this.voicePath = path.join(resourcesPath, 'piper', 'de_DE-thorsten-medium.onnx');
+    this.probe = options.probe ?? probePiperExecutable;
   }
 
   private initPromise: Promise<void> | null = null;
@@ -26,7 +66,7 @@ export class PiperProvider implements TtsProvider {
   // init() is single-flight (A8): repeated calls return the same promise.
   init(_signal?: AbortSignal): Promise<void> {
     if (!this.initPromise) {
-      this.initPromise = this.doInit().then(
+      this.initPromise = this.doInit(_signal).then(
         () => { this.publishAvailability(true); },
         (error) => {
           this.publishAvailability(false, error instanceof Error ? error.message : String(error));
@@ -42,13 +82,14 @@ export class PiperProvider implements TtsProvider {
     return () => this.availabilityListeners.delete(listener);
   }
 
-  private async doInit(): Promise<void> {
+  private async doInit(signal?: AbortSignal): Promise<void> {
     if (!fs.existsSync(this.binaryPath)) {
       throw new Error(`Piper binary not found: ${this.binaryPath}`);
     }
     if (!fs.existsSync(this.voicePath)) {
       throw new Error(`Piper voice not found: ${this.voicePath}`);
     }
+    await this.probe(this.binaryPath, signal);
   }
 
   async speak(text: string, signal?: AbortSignal): Promise<Float32Array> {

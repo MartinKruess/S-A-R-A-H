@@ -39,6 +39,15 @@ describe('MediaContext.resolve', () => {
     expect(new MediaContext().resolve('weiter', 5000)).toBeNull();
   });
 
+  it('clears a warm hint at a privacy or lifecycle boundary', () => {
+    const c = new MediaContext();
+    c.record('media_pause', 1000);
+
+    c.clear();
+
+    expect(c.resolve('weiter', 1500)).toBeNull();
+  });
+
   it('returns null for a whole sentence (> 3 tokens)', () => {
     const c = new MediaContext();
     c.record('media_next', 1000);

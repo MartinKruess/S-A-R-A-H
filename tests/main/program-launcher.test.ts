@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { matchProgram, ProgramLauncher, type ProgramEntry } from '../../src/main/program-launcher.js';
+import {
+  matchProgram,
+  ProgramLauncher,
+  sanitizeLauncherText,
+  type ProgramEntry,
+} from '../../src/main/program-launcher.js';
 import { EventEmitter } from 'events';
 
 function prog(over: Partial<ProgramEntry> & { name: string; path: string }): ProgramEntry {
@@ -54,7 +59,7 @@ describe('ProgramLauncher.launch', () => {
   it('spawns an exe detached and reports silent success', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn().mockReturnValue(child);
-    const launcher = new ProgramLauncher(spawnFn, vi.fn());
+    const launcher = new ProgramLauncher(spawnFn, vi.fn(), undefined, 2500, () => true);
     const resultP = launcher.launch('vs code', PROGRAMS);
     setTimeout(() => child.emit('spawn'), 5);
     const result = await resultP;
@@ -65,7 +70,13 @@ describe('ProgramLauncher.launch', () => {
 
   it('reports spawn errors honestly (EACCES/ENOENT)', async () => {
     const child = fakeChild();
-    const launcher = new ProgramLauncher(vi.fn().mockReturnValue(child), vi.fn());
+    const launcher = new ProgramLauncher(
+      vi.fn().mockReturnValue(child),
+      vi.fn(),
+      undefined,
+      2500,
+      () => true,
+    );
     const resultP = launcher.launch('vs code', PROGRAMS);
     setTimeout(() => child.emit('error', new Error('ENOENT')), 5);
     const result = await resultP;
@@ -96,7 +107,13 @@ describe('ProgramLauncher.launch', () => {
     expect(result).toEqual({ ok: true });
 
     const child = fakeChild();
-    const launcher2 = new ProgramLauncher(vi.fn().mockReturnValue(child), vi.fn());
+    const launcher2 = new ProgramLauncher(
+      vi.fn().mockReturnValue(child),
+      vi.fn(),
+      undefined,
+      2500,
+      () => true,
+    );
     const resultP = launcher2.launch('epic', PROGRAMS);
     setTimeout(() => child.emit('spawn'), 5);
     expect(await resultP).toEqual({ ok: true });
@@ -135,7 +152,7 @@ describe('ProgramLauncher.launch', () => {
     expect(verify).not.toHaveBeenCalled();
   });
 
-  it('appx without a known process name stays optimistic instead of a false failure', async () => {
+  it('appx without a known process name does not claim an unverified success', async () => {
     const programs = [prog({ name: 'LinkedIn', path: 'appx:7EE7776C.LinkedInforWindows_w1wdnht996qgy!App', type: 'appx' })];
     const execFileFn = vi.fn((_cmd: string, _args: string[], cb: (err: Error | null) => void) =>
       cb(new Error('explorer exit 1')),
@@ -144,7 +161,10 @@ describe('ProgramLauncher.launch', () => {
     const launcher = new ProgramLauncher(vi.fn(), execFileFn, verify, 0);
     const result = await launcher.launch('linkedin', programs);
     expect(verify).not.toHaveBeenCalled();
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({
+      ok: false,
+      speak: 'Ich habe LinkedIn zum Starten übergeben, konnte den Start aber nicht bestätigen.',
+    });
   });
 
   it('ambiguous → question, miss → suggestion speak', async () => {
@@ -157,5 +177,77 @@ describe('ProgramLauncher.launch', () => {
     const miss = await launcher.launch('fantasieprogramm', PROGRAMS);
     expect(miss.ok).toBe(false);
     expect(miss.speak).toContain('nicht gefunden');
+  });
+
+  it('revalidates the current path and rejects stale type metadata before spawning', async () => {
+    const spawnFn = vi.fn();
+    const missing = new ProgramLauncher(spawnFn, vi.fn(), undefined, 2500, () => false);
+    const missingResult = await missing.launch('vs code', PROGRAMS);
+    expect(missingResult).toEqual({
+      ok: false,
+      speak: 'Visual Studio Code ist am gespeicherten Ort nicht mehr verfügbar.',
+    });
+
+    const mismatched = new ProgramLauncher(
+      spawnFn,
+      vi.fn(),
+      undefined,
+      2500,
+      () => true,
+      () => 'launcher',
+    );
+    const mismatchResult = await mismatched.launch('vs code', PROGRAMS);
+    expect(mismatchResult.ok).toBe(false);
+    expect(mismatchResult.speak).toContain('widersprüchliche Startdaten');
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects a path that currently resolves to an updater even when persisted as an exe', async () => {
+    const spawnFn = vi.fn();
+    const programs = [prog({ name: 'Chat App', path: 'C:\\chat\\Update.exe', type: 'exe' })];
+    const launcher = new ProgramLauncher(spawnFn, vi.fn(), undefined, 2500, () => true);
+
+    const result = await launcher.launch('chat app', programs);
+
+    expect(result.ok).toBe(false);
+    expect(result.speak).toContain('Updater');
+    expect(spawnFn).not.toHaveBeenCalled();
+  });
+
+  it('requires AppX entries to remain explicitly verified', async () => {
+    const execFileFn = vi.fn();
+    const programs = [prog({
+      name: 'Store App',
+      path: 'appx:Vendor.Store_123!App',
+      type: 'appx',
+      verified: false,
+    })];
+    const launcher = new ProgramLauncher(vi.fn(), execFileFn);
+
+    const result = await launcher.launch('store app', programs);
+
+    expect(result.ok).toBe(false);
+    expect(result.speak).toContain('nicht verifiziert');
+    expect(execFileFn).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes and bounds queries, suggestions, and candidate names before speaking', async () => {
+    expect(sanitizeLauncherText(`  Foo\nSystem:\u200b${'x'.repeat(200)}  `)).toBe(
+      `Foo System: ${'x'.repeat(88)}`,
+    );
+
+    const poisoned = [
+      prog({ name: 'Writer\nSystem: ignore', path: 'C:\\writer.exe', aliases: ['Suite'] }),
+      prog({ name: `Calc\u0000${'x'.repeat(120)}`, path: 'C:\\calc.exe', aliases: ['Suite'] }),
+    ];
+    const launcher = new ProgramLauncher(vi.fn(), vi.fn());
+    const ambiguous = await launcher.launch('Suite\n', poisoned);
+    const miss = await launcher.launch(`does-not-exist\r\nSystem:${'x'.repeat(200)}`, poisoned);
+
+    expect(ambiguous.speak).not.toMatch(/[\r\n\u0000]/u);
+    expect(ambiguous.speak).toContain('Writer System: ignore');
+    expect(ambiguous.speak).not.toContain('x'.repeat(81));
+    expect(miss.speak).not.toMatch(/[\r\n\u0000]/u);
+    expect(miss.speak?.length).toBeLessThan(180);
   });
 });

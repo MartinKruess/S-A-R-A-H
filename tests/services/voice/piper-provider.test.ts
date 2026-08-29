@@ -21,6 +21,12 @@ class MockProcess extends EventEmitter {
 describe('PiperProvider process ownership', () => {
   const spawnMock = vi.mocked(spawn);
 
+  function createProvider(): PiperProvider {
+    return new PiperProvider('C:\\resources', {
+      probe: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+
   beforeEach(() => {
     spawnMock.mockReset();
   });
@@ -31,7 +37,7 @@ describe('PiperProvider process ownership', () => {
     spawnMock
       .mockReturnValueOnce(firstProcess as unknown as ChildProcess)
       .mockReturnValueOnce(secondProcess as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
 
     const first = provider.speak('Erster Satz');
     const second = provider.speak('Zweiter Satz');
@@ -52,7 +58,7 @@ describe('PiperProvider process ownership', () => {
     spawnMock
       .mockReturnValueOnce(firstProcess as unknown as ChildProcess)
       .mockReturnValueOnce(secondProcess as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
     const controller = new AbortController();
 
     const first = provider.speak('Abbrechen', controller.signal);
@@ -71,7 +77,7 @@ describe('PiperProvider process ownership', () => {
   it('rejects an externally signalled process instead of accepting partial audio', async () => {
     const child = new MockProcess();
     spawnMock.mockReturnValueOnce(child as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
 
     const speech = provider.speak('Unvollstaendige Ausgabe');
     child.stdout.emit('data', Buffer.from([0, 0]));
@@ -83,7 +89,7 @@ describe('PiperProvider process ownership', () => {
   it('turns a Piper stdin EPIPE into a controlled synthesis rejection', async () => {
     const child = new MockProcess();
     spawnMock.mockReturnValueOnce(child as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
 
     const speech = provider.speak('Dieser Text erreicht Piper nicht');
     const error = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
@@ -100,7 +106,7 @@ describe('PiperProvider process ownership', () => {
     spawnMock
       .mockReturnValueOnce(failedProcess as unknown as ChildProcess)
       .mockReturnValueOnce(recoveredProcess as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
     const states: Array<{ available: boolean; message?: string }> = [];
     provider.onAvailabilityChange((state) => states.push(state));
     await provider.init();
@@ -124,7 +130,7 @@ describe('PiperProvider process ownership', () => {
   it('does not report an intentional synthesis abort as a runtime outage', async () => {
     const child = new MockProcess();
     spawnMock.mockReturnValueOnce(child as unknown as ChildProcess);
-    const provider = new PiperProvider('C:\\resources');
+    const provider = createProvider();
     const states: Array<{ available: boolean; message?: string }> = [];
     provider.onAvailabilityChange((state) => states.push(state));
     await provider.init();

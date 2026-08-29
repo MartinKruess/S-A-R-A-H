@@ -15,7 +15,7 @@ const MAX_BUILTIN_ARGUMENT_LENGTH = 4_000;
 export type SlashCommandResolution =
   | { kind: 'none' }
   | { kind: 'custom'; command: string; arguments: string; expandedText: string }
-  | { kind: 'builtin'; command: '/anonymous' | '/confirm'; arguments: string }
+  | { kind: 'builtin'; command: '/anonymous' | '/confirm' | '/showcontext' | '/remember' | '/correctmemory' | '/forget' | '/deletememory' | '/exportmemory'; arguments: string }
   | { kind: 'builtin_unavailable'; command: string; arguments: string }
   | { kind: 'unknown'; command: string; arguments: string };
 
@@ -56,7 +56,11 @@ export function resolveSlashCommand(
       : MAX_ARGUMENT_LENGTH,
   );
   if (AVAILABLE_BUILTIN_COMMANDS.has(command)) {
-    return { kind: 'builtin', command: command as '/anonymous' | '/confirm', arguments: args };
+    return {
+      kind: 'builtin',
+      command: command as '/anonymous' | '/confirm' | '/showcontext' | '/remember' | '/correctmemory' | '/forget' | '/deletememory' | '/exportmemory',
+      arguments: args,
+    };
   }
   if (UNAVAILABLE_BUILTIN_COMMANDS.has(command)) {
     return { kind: 'builtin_unavailable', command, arguments: args };

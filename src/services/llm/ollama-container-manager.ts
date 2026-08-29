@@ -40,6 +40,19 @@ const DOCKER_ERROR_MESSAGES: Record<Exclude<DockerState, 'ok'>, string> = {
   'not-running': 'Docker Desktop läuft nicht — bitte Docker Desktop starten.',
 };
 
+export class OllamaPrerequisiteError extends Error {
+  readonly code = 'OLLAMA_PREREQUISITE';
+
+  constructor(readonly dockerState: 'not-installed' | 'not-on-path', message: string) {
+    super(message);
+    this.name = 'OllamaPrerequisiteError';
+  }
+}
+
+export function isOllamaPrerequisiteError(value: object): value is OllamaPrerequisiteError {
+  return 'code' in value && value.code === 'OLLAMA_PREREQUISITE';
+}
+
 export class OllamaContainerManager {
   private execFn: ExecFn;
   private existsFn: (filePath: string) => boolean;
@@ -103,6 +116,9 @@ export class OllamaContainerManager {
   async ensureRunning(signal?: AbortSignal): Promise<void> {
     const status = await this.getStatus(signal);
     if (status.docker !== 'ok') {
+      if (status.docker === 'not-installed' || status.docker === 'not-on-path') {
+        throw new OllamaPrerequisiteError(status.docker, DOCKER_ERROR_MESSAGES[status.docker]);
+      }
       throw new Error(DOCKER_ERROR_MESSAGES[status.docker]);
     }
     if (status.container === 'stopped') {

@@ -26,10 +26,12 @@ export interface ServiceDestroyReport {
 }
 
 export interface ServiceRegistryOptions {
+  initTimeoutMs?: number;
   initDrainTimeoutMs?: number;
   destroyTimeoutMs?: number;
 }
 
+const DEFAULT_INIT_TIMEOUT_MS = 120_000;
 const DEFAULT_INIT_DRAIN_TIMEOUT_MS = 2_000;
 const DEFAULT_DESTROY_TIMEOUT_MS = 10_000;
 
@@ -50,10 +52,12 @@ export class ServiceRegistry {
   private cleanupPromises = new Map<string, Promise<ServiceDestroyResult>>();
   private destroyed = false;
 
+  private readonly initTimeoutMs: number;
   private readonly initDrainTimeoutMs: number;
   private readonly destroyTimeoutMs: number;
 
   constructor(private bus: MessageBus, options: ServiceRegistryOptions = {}) {
+    this.initTimeoutMs = options.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS;
     this.initDrainTimeoutMs = options.initDrainTimeoutMs ?? DEFAULT_INIT_DRAIN_TIMEOUT_MS;
     this.destroyTimeoutMs = options.destroyTimeoutMs ?? DEFAULT_DESTROY_TIMEOUT_MS;
   }
@@ -109,7 +113,12 @@ export class ServiceRegistry {
       this.initializing.add(service.id);
 
       try {
-        await service.init(this.initAbort.signal);
+        await runWithTimeout(
+          (signal) => service.init(signal),
+          this.initTimeoutMs,
+          `Service initialization timed out: ${service.id}`,
+          this.initAbort.signal,
+        );
         if (this.initAbort.signal.aborted || this.destroyed) throw abortError('Service initialization aborted');
         if (service.status === 'error') {
           throw new Error(`Service "${service.id}" entered error state during initialization`);
@@ -199,13 +208,10 @@ export class ServiceRegistry {
         () => ({ id: service.id, ok: true }) satisfies ServiceDestroyResult,
         (value) => ({ id: service.id, ok: false, error: toError(value) }) satisfies ServiceDestroyResult,
       );
-    let cleanup!: Promise<ServiceDestroyResult>;
-    cleanup = attempt.finally(() => {
-      if (this.cleanupPromises.get(service.id) === cleanup) {
-        this.cleanupPromises.delete(service.id);
-      }
-    });
-    this.cleanupPromises.set(service.id, cleanup);
-    return cleanup;
+    // Retain the terminal attempt for the registry lifetime. A timeout settles
+    // only our wait; a non-cooperative destroy() may still be running and must
+    // never be started a second time against the same native resources.
+    this.cleanupPromises.set(service.id, attempt);
+    return attempt;
   }
 }

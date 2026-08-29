@@ -177,7 +177,24 @@ describe('ServiceRegistry', () => {
     expect(svc.destroy).toHaveBeenCalledOnce();
     release();
     await starting;
-    expect(svc.destroy).toHaveBeenCalledTimes(2);
+    expect(svc.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('terminates initAll when a service ignores its initialization deadline', async () => {
+    registry = new ServiceRegistry(bus, { initTimeoutMs: 5, destroyTimeoutMs: 5 });
+    const blocked = createMockService('blocked-init');
+    blocked.init = vi.fn(async () => new Promise<void>(() => {}));
+    registry.register(blocked);
+
+    const report = await registry.initAll();
+
+    expect(report.ok).toBe(false);
+    expect(report.services[0]).toMatchObject({
+      id: 'blocked-init',
+      ok: false,
+      error: { name: 'TimeoutError' },
+    });
+    expect(blocked.destroy).toHaveBeenCalledOnce();
   });
 
   it('continues cleanup after a service destroy exceeds its deadline', async () => {

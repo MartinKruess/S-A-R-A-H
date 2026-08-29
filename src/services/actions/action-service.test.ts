@@ -46,6 +46,7 @@ function makeService(over: {
   drainTimeoutMs?: number;
   confirmationGate?: ActionConfirmationGate;
   confirmationLevel?: ConfirmationLevel;
+  webAccessAllowed?: boolean;
 } = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
@@ -66,6 +67,7 @@ function makeService(over: {
       media,
       confirmationGate: over.confirmationGate,
       getConfirmationLevel: () => over.confirmationLevel ?? 'standard',
+      getWebAccessAllowed: () => over.webAccessAllowed ?? true,
     },
     { drainTimeoutMs: over.drainTimeoutMs },
   );
@@ -79,12 +81,55 @@ function makeService(over: {
   return { bus, results, service, spotify, media };
 }
 
-async function request(bus: MessageBus, action: string, param: string): Promise<void> {
-  bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'rid-1', action, param });
+async function request(
+  bus: MessageBus,
+  action: string,
+  param: string,
+  confirmation?: BusEvents['action:request']['confirmation'],
+): Promise<void> {
+  bus.emit('test', 'action:request', {
+    turnId: TURN_ID,
+    requestId: 'rid-1',
+    action,
+    param,
+    ...(confirmation ? { confirmation } : {}),
+  });
   await new Promise((r) => setTimeout(r, 10));
 }
 
 describe('ActionService', () => {
+  it('runs a web search without per-action confirmation when browser access is enabled', async () => {
+    const runSearch = vi.fn<SearchLike['runSearch']>().mockResolvedValue('Ein Treffer.');
+    const { bus, results, service } = makeService({
+      search: { runSearch },
+      confirmationLevel: 'maximal',
+      webAccessAllowed: true,
+    });
+    await service.init();
+
+    await request(bus, 'web_search', 'OWASP');
+
+    expect(runSearch).toHaveBeenCalledOnce();
+    expect(results[0]).toMatchObject({ ok: true, speak: 'Ein Treffer.' });
+  });
+
+  it('blocks search before the provider when browser access is disabled', async () => {
+    const runSearch = vi.fn<SearchLike['runSearch']>();
+    const { bus, results, service } = makeService({
+      search: { runSearch },
+      webAccessAllowed: false,
+    });
+    await service.init();
+
+    await request(bus, 'web_search', 'OWASP');
+
+    expect(runSearch).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      ok: false,
+      speak: 'Der Browserzugriff ist in den Einstellungen deaktiviert.',
+    });
+  });
+
   it('emits exactly one action:result per request, silent success without speak', async () => {
     const { bus, results, service } = makeService();
     await service.init();
@@ -110,7 +155,9 @@ describe('ActionService', () => {
   });
 
   it('web_search failure → search-broken speak', async () => {
-    const { bus, results, service } = makeService({ search: { runSearch: vi.fn<SearchLike['runSearch']>().mockRejectedValue(new Error('captcha')) } });
+    const { bus, results, service } = makeService({
+      search: { runSearch: vi.fn<SearchLike['runSearch']>().mockRejectedValue(new Error('captcha')) },
+    });
     await service.init();
     await request(bus, 'web_search', 'hotels kiel');
     expect(results[0]).toEqual({ turnId: TURN_ID, requestId: 'rid-1', action: 'web_search', ok: false, speak: 'Meine Suche klemmt gerade.' });
@@ -150,6 +197,28 @@ describe('ActionService', () => {
     vi.useRealTimers();
   });
 
+  it('removes a timer when its turn is canceled before the action result is delivered', async () => {
+    vi.useFakeTimers();
+    const bus = new MessageBus();
+    const notifies: BusEvents['action:notify'][] = [];
+    bus.on('action:notify', (msg) => { notifies.push(msg.data); });
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    const service = new ActionService(bus, {
+      launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
+      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(),
+    });
+    bus.on('action:request', (msg) => service.onMessage(msg));
+    bus.on('turn:cancel', (msg) => service.onMessage(msg));
+    await service.init();
+
+    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'timer', action: 'set_timer', param: '1' });
+    bus.emit('test', 'turn:cancel', { turnId: TURN_ID, reason: 'barge-in' });
+    await vi.advanceTimersByTimeAsync(60_000 + 50);
+
+    expect(notifies).toEqual([]);
+    vi.useRealTimers();
+  });
+
   it('media_next dispatches to MediaController.next with the target param', async () => {
     const media = makeMedia();
     const { bus, results, service } = makeService({ media });
@@ -180,6 +249,49 @@ describe('ActionService', () => {
       ok: false,
       speak: 'Diese Aktion wurde nicht bestätigt.',
     });
+  });
+
+  it('requires confirmation for a sensitive action at standard but not minimal level', async () => {
+    const standard = makeService({ confirmationLevel: 'standard' });
+    await standard.service.init();
+    await request(standard.bus, 'lock_screen', '');
+    expect(standard.results[0]).toMatchObject({ ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' });
+
+    const minimal = makeService({ confirmationLevel: 'minimal' });
+    await minimal.service.init();
+    await request(minimal.bus, 'lock_screen', '');
+    expect(minimal.results[0]).toMatchObject({ ok: true });
+  });
+
+  it.each(['minimal', 'standard', 'maximal'] as const)(
+    'uses the persistent web grant without per-search confirmation at %s level',
+    async (confirmationLevel) => {
+      const runSearch = vi.fn<SearchLike['runSearch']>().mockResolvedValue('private result');
+      const current = makeService({ search: { runSearch }, confirmationLevel });
+      await current.service.init();
+
+      await request(current.bus, 'web_search', 'private query');
+
+      expect(runSearch).toHaveBeenCalledOnce();
+      expect(current.results[0]).toMatchObject({
+        action: 'web_search',
+        ok: true,
+        speak: 'private result',
+      });
+    },
+  );
+
+  it('never writes action parameters or response text to diagnostic logs', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { bus, service } = makeService({
+      search: { runSearch: vi.fn<SearchLike['runSearch']>().mockResolvedValue('private result') },
+    });
+    await service.init();
+    await request(bus, 'web_search', 'private query');
+    const logged = [...log.mock.calls, ...warn.mock.calls].flat().join(' ');
+    expect(logged).not.toContain('private query');
+    expect(logged).not.toContain('private result');
   });
 
   it('consumes a matching confirmation once and rejects reuse for another request', async () => {
@@ -250,6 +362,31 @@ describe('ActionService', () => {
     expect(media.next).not.toHaveBeenCalled();
     expect(media.pause).not.toHaveBeenCalled();
     expect(results.every((result) => !result.ok)).toBe(true);
+  });
+
+  it('passes the exact source search request to browser result selection', async () => {
+    const showResult = vi.fn<SearchLike['showResult']>().mockResolvedValue({ ok: true });
+    const { bus, results, service } = makeService({
+      search: { showResult },
+      confirmationLevel: 'maximal',
+    });
+    await service.init();
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'show-request',
+      action: 'show_browser',
+      param: '1',
+      sourceRequestId: 'search-a',
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    expect(results[0].ok).toBe(true);
+    expect(showResult).toHaveBeenCalledOnce();
+    expect(showResult).toHaveBeenCalledWith(
+      '1',
+      expect.objectContaining({ sourceRequestId: 'search-a' }),
+      expect.any(AbortSignal),
+    );
   });
 
   it('aborts active actions, suppresses late results, and ignores new work during shutdown', async () => {

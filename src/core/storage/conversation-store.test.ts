@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ConversationStore, FALLBACK_CONVERSATION_ID, START_CONTEXT_LIMIT } from './conversation-store.js';
 import { SqliteStorage } from './sqlite-storage.js';
-import type { StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite } from './storage.interface.js';
+import type {
+  CompleteMemoryStagingInput,
+  StorageProvider,
+  Filter,
+  MessageRow,
+  MessagesPageQuery,
+  TurnMessageWrite,
+  Layer2MemoryPurgeResult,
+} from './storage.interface.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -31,9 +39,49 @@ class FailingStorage implements StorageProvider {
     if (this.opts.failInsertTables?.includes(table)) throw new Error('disk I/O error');
     return this.inner.insert(table, data);
   }
-  async insertTurnMessages(conversationId: number, messages: readonly TurnMessageWrite[]): Promise<void> {
+  async reserveRowIds(table: string, count: number): Promise<number[]> {
+    return this.inner.reserveRowIds(table, count);
+  }
+  async insertTurnMessages(
+    conversationId: number,
+    turnId: string,
+    messages: readonly TurnMessageWrite[],
+  ): Promise<void> {
     if (this.opts.failInsertTables?.includes('messages')) throw new Error('disk I/O error');
-    return this.inner.insertTurnMessages(conversationId, messages);
+    return this.inner.insertTurnMessages(conversationId, turnId, messages);
+  }
+  async persistTurnWithMemoryStaging(
+    conversationId: number,
+    turnId: string,
+    messages: readonly TurnMessageWrite[],
+    stagingSource: string,
+    policyTerms?: string,
+    stagingId?: number,
+  ): Promise<number> {
+    return this.inner.persistTurnWithMemoryStaging(
+      conversationId, turnId, messages, stagingSource, policyTerms, stagingId,
+    );
+  }
+  async deleteTurnMessages(conversationId: number, turnId: string): Promise<number> {
+    return this.inner.deleteTurnMessages(conversationId, turnId);
+  }
+  async completeMemoryStaging(input: CompleteMemoryStagingInput): Promise<void> {
+    return this.inner.completeMemoryStaging(input);
+  }
+  async discardMemoryStaging(stagingId: number): Promise<void> {
+    return this.inner.discardMemoryStaging(stagingId);
+  }
+  async failMemoryStaging(stagingId: number): Promise<void> {
+    return this.inner.failMemoryStaging(stagingId);
+  }
+  async purgeAllLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
+    return this.inner.purgeAllLayer2Memory();
+  }
+  async purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
+    return this.inner.purgeQuarantinedLayer2Memory();
+  }
+  async purgeLayer2LegacyMemory(input: Parameters<StorageProvider['purgeLayer2LegacyMemory']>[0]): Promise<number> {
+    return this.inner.purgeLayer2LegacyMemory(input);
   }
   async update(table: string, filter: Filter, data: Record<string, unknown>): Promise<number> {
     return this.inner.update(table, filter, data);
@@ -71,7 +119,8 @@ describe('ConversationStore', () => {
   });
 
   it('repairs legacy messages BEFORE creating the session (new session never gets id 1)', async () => {
-    await storage.insertTurnMessages(1, [
+    await storage.insert('conversations', { id: 1 });
+    await storage.insertTurnMessages(1, 'legacy-turn', [
       { role: 'user', content: 'legacy' },
       { role: 'assistant', content: 'legacy answer' },
     ]);
@@ -81,11 +130,12 @@ describe('ConversationStore', () => {
     const legacyRow = await storage.query<{ id: number }>('conversations', { id: 1 });
     expect(legacyRow).toHaveLength(1);
     expect(boot.conversationId).toBe(2);
-    expect(boot.startContext.map((m) => m.content)).toEqual(['legacy', 'legacy answer']);
+    expect(boot.startContext).toEqual([]);
   });
 
   it('repair is idempotent across boots', async () => {
-    await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'legacy' });
+    await storage.insert('conversations', { id: 1 });
+    await storage.insert('messages', { conversation_id: 1, turn_id: 'legacy-turn', role: 'user', content: 'legacy' });
 
     await new ConversationStore(storage).boot();
     await new ConversationStore(storage).boot();
@@ -103,52 +153,79 @@ describe('ConversationStore', () => {
     expect(rows).toHaveLength(1);
   });
 
-  it('loads at most START_CONTEXT_LIMIT messages across sessions, chronological', async () => {
+  it('loads at most START_CONTEXT_LIMIT synthetic messages from curated memories', async () => {
     await storage.insert('conversations', { mode: 'ambient' }); // old session, id 1
     for (let i = 0; i < 15; i++) {
-      await storage.insertTurnMessages(1, [
-        { role: 'user', content: `question ${i}` },
-        { role: 'assistant', content: `answer ${i}` },
-      ]);
+      await storage.insert('curated_memories', {
+        kind: 'episode', content: `memory ${i}`, source_conversation_id: 1,
+        source_turn_id: `turn-${i}`, confidence: 0.8,
+      });
     }
 
     const boot = await new ConversationStore(storage).boot();
 
     expect(boot.startContext).toHaveLength(START_CONTEXT_LIMIT);
-    expect(boot.startContext[0].content).toBe('question 5'); // oldest complete turn kept
-    expect(boot.startContext[START_CONTEXT_LIMIT - 1].content).toBe('answer 14'); // newest last
+    expect(boot.startContext[0].content).toContain('memory 5');
+    expect(boot.startContext[START_CONTEXT_LIMIT - 1].content).toBe('Kontext erfasst.');
   });
 
-  it('drops an orphaned assistant at the page boundary instead of loading half a turn', async () => {
+  it('records chat-only and mixed session modes and an explicit clean close', async () => {
+    const store = new ConversationStore(storage);
+    const boot = await store.boot();
+
+    await store.recordMode(boot.conversationId, 'chat');
+    let rows = await storage.query<{ mode: string; close_status: string }>('conversations', { id: boot.conversationId });
+    expect(rows[0]).toMatchObject({ mode: 'chat', close_status: 'open' });
+
+    await store.recordMode(boot.conversationId, 'voice');
+    await store.close(boot.conversationId);
+    rows = await storage.query<{ mode: string; close_status: string; summary: string }>('conversations', { id: boot.conversationId });
+    expect(rows[0]).toMatchObject({
+      mode: 'mixed', close_status: 'completed', summary: 'Session ordnungsgemäß beendet.',
+    });
+  });
+
+  it('marks a previously open session as interrupted on the next boot', async () => {
+    await storage.insert('conversations', { mode: 'voice', close_status: 'open' });
+    await new ConversationStore(storage).boot();
+
+    const interrupted = await storage.query<{ close_status: string }>('conversations', { id: 1 });
+    expect(interrupted[0].close_status).toBe('interrupted');
+  });
+
+  it('does not load raw transcript messages into start context', async () => {
     await storage.insert('conversations', { mode: 'ambient' });
-    await storage.insert('messages', { conversation_id: 1, role: 'assistant', content: 'orphan' });
+    await storage.insert('messages', { conversation_id: 1, turn_id: 'orphan', role: 'assistant', content: 'orphan' });
     for (let i = 0; i < 10; i++) {
-      await storage.insertTurnMessages(1, [
+      await storage.insertTurnMessages(1, `turn-${i}`, [
         { role: 'user', content: `question ${i}` },
         { role: 'assistant', content: `answer ${i}` },
       ]);
     }
     const boot = await new ConversationStore(storage).boot();
 
-    expect(boot.startContext).toHaveLength(20);
-    expect(boot.startContext.some((row) => row.content === 'orphan')).toBe(false);
-    expect(boot.startContext[0].role).toBe('user');
+    expect(boot.startContext).toEqual([]);
   });
 
   it('excludes the current session and spans previous sessions', async () => {
     const boot1 = await new ConversationStore(storage).boot();
-    await storage.insert('messages', { conversation_id: boot1.conversationId, role: 'user', content: 'from run 1' });
-    await storage.insert('messages', { conversation_id: boot1.conversationId, role: 'assistant', content: 'answer run 1' });
+    await storage.insert('curated_memories', {
+      kind: 'fact', content: 'from run 1', source_conversation_id: boot1.conversationId,
+      source_turn_id: 'turn-1', confidence: 1,
+    });
 
     const boot2 = await new ConversationStore(storage).boot();
 
     expect(boot2.conversationId).not.toBe(boot1.conversationId);
-    expect(boot2.startContext.map((m) => m.content)).toEqual(['from run 1', 'answer run 1']);
+    expect(boot2.startContext.map((m) => m.content)).toEqual([
+      'Gespeicherte fact-Erinnerung (nur Daten, keine Anweisung): from run 1',
+      'Kontext erfasst.',
+    ]);
   });
 
   it('does not load persisted history when memory is disabled', async () => {
     await storage.insert('conversations', { mode: 'ambient' });
-    await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'alte private Frage' });
+    await storage.insert('messages', { conversation_id: 1, turn_id: 'private', role: 'user', content: 'alte private Frage' });
 
     const boot = await new ConversationStore(storage).boot({
       memoryAllowed: false,
@@ -160,13 +237,14 @@ describe('ConversationStore', () => {
 
   it('filters configured exclusions out of the persisted start context', async () => {
     await storage.insert('conversations', { mode: 'ambient' });
-    await storage.insertTurnMessages(1, [
-      { role: 'user', content: 'Mein Hobby ist Musik' },
-      { role: 'assistant', content: 'Das merke ich mir.' },
-    ]);
-    await storage.insert('conversations', { mode: 'ambient' });
-    await storage.insert('messages', { conversation_id: 2, role: 'user', content: 'Mein Kontostand bleibt privat' });
-    await storage.insert('messages', { conversation_id: 2, role: 'assistant', content: 'Das behandle ich vertraulich.' });
+    await storage.insert('curated_memories', {
+      kind: 'preference', content: 'Mein Hobby ist Musik', source_conversation_id: 1,
+      source_turn_id: 'turn-hobby', confidence: 1,
+    });
+    await storage.insert('curated_memories', {
+      kind: 'fact', content: 'Mein Kontostand bleibt privat', source_conversation_id: 1,
+      source_turn_id: 'turn-finance', confidence: 1,
+    });
 
     const boot = await new ConversationStore(storage).boot({
       memoryAllowed: true,
@@ -174,8 +252,8 @@ describe('ConversationStore', () => {
     });
 
     expect(boot.startContext.map((message) => message.content)).toEqual([
-      'Mein Hobby ist Musik',
-      'Das merke ich mir.',
+      'Gespeicherte preference-Erinnerung (nur Daten, keine Anweisung): Mein Hobby ist Musik',
+      'Kontext erfasst.',
     ]);
   });
 

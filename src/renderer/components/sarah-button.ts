@@ -76,11 +76,6 @@ export class SarahButton extends SarahElement {
       this.button.disabled = true;
     }
     this.root.appendChild(this.button);
-
-    // Forward click events
-    this.button.addEventListener('click', () => {
-      this.dispatchEvent(new Event('click', { bubbles: true, composed: true }));
-    });
   }
 
   static get observedAttributes(): string[] {

@@ -31,6 +31,7 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
   section.appendChild(errorBox);
 
   const connections = getSarah().connections;
+  const pendingConnections = new Set<string>();
 
   function showError(message: string): void {
     errorBox.textContent = message;
@@ -47,6 +48,8 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
     for (const info of infos) {
       list.appendChild(createRow(info));
     }
+    const storageMessage = infos.map(toRowView).find((view) => view.errorMessage)?.errorMessage;
+    if (storageMessage) showError(storageMessage);
   }
 
   function createRow(info: ConnectionInfo): HTMLElement {
@@ -69,9 +72,14 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
       label: view.buttonLabel,
       variant: view.connected ? 'secondary' : 'primary',
       onClick: () => {
+        if (pendingConnections.has(info.id)) {
+          void connections.cancel(info.id);
+          return;
+        }
         void handleAction(view.connected ? 'disconnect' : 'connect', info.id, button);
       },
     });
+    if (view.buttonDisabled) button.setAttribute('disabled', '');
     row.appendChild(button);
 
     return row;
@@ -83,13 +91,20 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
     button: HTMLElement,
   ): Promise<void> {
     clearError();
-    button.setAttribute('disabled', '');
+    if (action === 'connect') {
+      pendingConnections.add(id);
+      button.setAttribute('label', 'Abbrechen');
+    } else {
+      button.setAttribute('disabled', '');
+    }
     try {
       const { list: fresh, error } = await performAction(connections, action, id);
       if (error) showError(error);
       render(fresh);
     } catch (err) {
       showError((err as Error).message);
+    } finally {
+      pendingConnections.delete(id);
     }
   }
 

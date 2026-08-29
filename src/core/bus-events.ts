@@ -18,6 +18,7 @@ import type { ActionConfirmationReference } from './action-confirmation.js';
 export type BusEvents = {
   'chat:message':        TurnRequest;
   'turn:accepted':       { turnId: TurnId; source: TurnSource; mode: TurnMode };
+  'turn:output-policy':  { turnId: TurnId; speech: 'suppress' };
   'turn:cancel':         { turnId: TurnId; reason: string };
   'turn:terminal':       { turnId: TurnId; status: TurnTerminalStatus; message?: string };
   'llm:chunk':           { turnId: TurnId; outputId: OutputId; sequence: number; text: string };
@@ -44,6 +45,8 @@ export type BusEvents = {
   'perf:timing':         { label: string; ms: number; turnId?: TurnId; meta?: Record<string, unknown> };
   'boot:status':         { step: string; message?: string };
   'storage:degraded':    { message: string };
+  'privacy:incognito':   { active: boolean; turnId: TurnId };
+  'search:discard-session': { requestId: string };
   'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };
   'action:result':       { turnId: TurnId; requestId: string; action: string; ok: boolean; speak?: string };

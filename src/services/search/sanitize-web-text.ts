@@ -26,10 +26,10 @@ function cleanText(s: string, max: number): string {
   return cleaned.slice(0, max);
 }
 
-function isValidHttpUrl(raw: string): boolean {
+function isValidHttpsUrl(raw: string): boolean {
   try {
     const url = new URL(raw);
-    return url.protocol === 'http:' || url.protocol === 'https:';
+    return url.protocol === 'https:';
   } catch {
     return false;
   }
@@ -43,7 +43,7 @@ export function sanitizeResults(raw: SearchResult[]): SearchResult[] {
     if (out.length >= MAX_RESULTS) break;
     const title = cleanText(entry.title, MAX_TITLE);
     const snippet = cleanText(entry.snippet, MAX_SNIPPET);
-    if (!title || !isValidHttpUrl(entry.url)) continue;
+    if (!title || !isValidHttpsUrl(entry.url)) continue;
     const cost = title.length + snippet.length;
     if (cost > budget) break;
     budget -= cost;

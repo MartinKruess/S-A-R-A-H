@@ -12,6 +12,7 @@ import {
   buildAuthorizeUrl,
   exchangeCode,
   generatePkce,
+  OAuthTokenEndpointError,
   randomState,
   refreshTokens,
 } from './oauth-pkce.js';
@@ -22,8 +23,13 @@ type FetchFn = typeof fetch;
 export type ConnectionInfo = {
   id: string;
   displayName: string;
+  configured: boolean;
   connected: boolean;
   expiresAt?: number;
+  storageState?: 'recovered' | 'degraded';
+  storageError?: string;
+  temporaryError?: string;
+  configurationError?: string;
 };
 
 /** Access tokens are refreshed this many ms before their actual expiry. */
@@ -56,6 +62,9 @@ export class OAuthConnectionService {
   private readonly connecting = new Set<string>();
   /** Active loopback flows, cancelled during application shutdown. */
   private readonly activeConnections = new Map<string, (error: Error) => Promise<void>>();
+  /** At most one refresh request per provider may update or remove its token. */
+  private readonly activeRefreshes = new Map<string, Promise<string | null>>();
+  private readonly refreshErrors = new Map<string, string>();
   private destroyed = false;
 
   constructor(deps: OAuthConnectionServiceDeps) {
@@ -79,11 +88,21 @@ export class OAuthConnectionService {
 
   private toInfo(p: OAuthProvider): ConnectionInfo {
     const stored = this.tokenStore.get(p.id);
+    const storageStatus = this.tokenStore.getStatus();
+    const configured = p.clientId.trim().length > 0;
     return {
       id: p.id,
       displayName: p.displayName,
+      configured,
       connected: stored !== undefined,
       expiresAt: stored?.expiresAt,
+      ...(storageStatus.state === 'ready'
+        ? {}
+        : { storageState: storageStatus.state, storageError: storageStatus.message }),
+      ...(this.refreshErrors.has(p.id) ? { temporaryError: this.refreshErrors.get(p.id) } : {}),
+      ...(configured
+        ? {}
+        : { configurationError: `${p.displayName} ist in dieser Installation noch nicht eingerichtet.` }),
     };
   }
 
@@ -99,7 +118,7 @@ export class OAuthConnectionService {
   /**
    * Return a valid access token for the provider, refreshing when it is within
    * the expiry skew. Missing token, unconfigured provider (empty clientId), or a
-   * failed refresh → null (a failed refresh also disconnects the provider).
+   * failed refresh → null. Only a definitive OAuth rejection disconnects the provider.
    */
   async getAccessToken(id: string, signal?: AbortSignal): Promise<string | null> {
     throwIfAborted(signal);
@@ -107,14 +126,36 @@ export class OAuthConnectionService {
     if (!p || !p.clientId) return null;
 
     const stored = this.tokenStore.get(id);
-    if (!stored) return null;
+    if (!stored) {
+      this.refreshErrors.delete(id);
+      return null;
+    }
 
     if (stored.expiresAt - this.now() > REFRESH_SKEW_MS) {
+      this.refreshErrors.delete(id);
       return stored.accessToken;
     }
 
+    const activeRefresh = this.activeRefreshes.get(id);
+    if (activeRefresh) return activeRefresh;
+
+    const refresh = this.refreshAccessToken(id, p, stored, signal);
+    this.activeRefreshes.set(id, refresh);
     try {
-      const tokens = await refreshTokens(p, stored.refreshToken, this.fetchFn, signal);
+      return await refresh;
+    } finally {
+      if (this.activeRefreshes.get(id) === refresh) this.activeRefreshes.delete(id);
+    }
+  }
+
+  private async refreshAccessToken(
+    id: string,
+    provider: OAuthProvider,
+    stored: StoredToken,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    try {
+      const tokens = await refreshTokens(provider, stored.refreshToken, this.fetchFn, signal);
       const updated: StoredToken = {
         // Keep the existing refresh token unless the response rotated it.
         refreshToken: tokens.refreshToken ?? stored.refreshToken,
@@ -122,18 +163,56 @@ export class OAuthConnectionService {
         expiresAt: this.now() + tokens.expiresIn * 1000,
         scope: tokens.scope || stored.scope,
       };
+      const current = this.tokenStore.get(id);
+      if (!current || !this.sameToken(current, stored)) {
+        if (current && current.expiresAt - this.now() > REFRESH_SKEW_MS) {
+          this.refreshErrors.delete(id);
+          return current.accessToken;
+        }
+        return null;
+      }
       this.tokenStore.set(id, updated);
+      this.refreshErrors.delete(id);
       return updated.accessToken;
     } catch (err) {
       if (signal?.aborted) throw abortError();
-      console.warn(`[OAuth] refresh failed for '${id}', disconnecting:`, (err as Error).message);
-      this.tokenStore.delete(id);
+      const definitive = err instanceof OAuthTokenEndpointError && err.disposition === 'definitive';
+      console.warn(
+        `[OAuth] refresh failed for '${id}', ${definitive ? 'disconnecting' : 'preserving connection'}:`,
+        err instanceof Error ? err.message : 'unknown refresh failure',
+      );
+      if (definitive) {
+        const current = this.tokenStore.get(id);
+        if (current && this.sameToken(current, stored)) this.tokenStore.delete(id);
+        this.refreshErrors.delete(id);
+      } else {
+        this.refreshErrors.set(id, 'Die Verbindung ist gespeichert, aber Spotify ist gerade nicht erreichbar.');
+      }
       return null;
     }
   }
 
+  private sameToken(left: StoredToken, right: StoredToken): boolean {
+    return left.refreshToken === right.refreshToken &&
+      left.accessToken === right.accessToken &&
+      left.expiresAt === right.expiresAt &&
+      left.scope === right.scope;
+  }
+
   async disconnect(id: string): Promise<void> {
     this.tokenStore.delete(id);
+    this.refreshErrors.delete(id);
+  }
+
+  /** Explain a null access-token result without conflating outages with disconnects. */
+  getAccessTokenFailure(id: string): 'not-connected' | 'temporarily-unavailable' {
+    return this.refreshErrors.has(id) ? 'temporarily-unavailable' : 'not-connected';
+  }
+
+  /** Cancel one interactive authorization flow without affecting stored tokens. */
+  async cancelConnect(id: string): Promise<void> {
+    const cancel = this.activeConnections.get(id);
+    if (cancel) await cancel(new Error('Verbindung abgebrochen.'));
   }
 
   /**
@@ -146,7 +225,7 @@ export class OAuthConnectionService {
     const p = this.provider(id);
     if (!p) throw new Error(`Unbekannter Dienst: ${id}`);
     if (!p.clientId) {
-      throw new Error('SPOTIFY_CLIENT_ID fehlt — App im Spotify-Dashboard anlegen und Client-ID setzen.');
+      throw new Error(`${p.displayName} ist in dieser Installation noch nicht eingerichtet.`);
     }
     if (this.connecting.has(id)) {
       throw new Error('Die Verbindung läuft bereits — bitte schließe zuerst den Browser-Login ab.');
@@ -159,6 +238,7 @@ export class OAuthConnectionService {
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      let callbackInProgress = false;
       const server = http.createServer();
 
       const closeServer = (): Promise<void> => new Promise((closeResolve) => {
@@ -216,10 +296,18 @@ export class OAuthConnectionService {
         void (async (): Promise<void> => {
           try {
             const returnedState = url.searchParams.get('state');
+            if (returnedState !== state) {
+              respond(400, '<!doctype html><meta charset="utf-8"><p>Ungültige oder veraltete Rückmeldung.</p>');
+              return;
+            }
+            if (callbackInProgress || settled) {
+              respond(409, '<!doctype html><meta charset="utf-8"><p>Diese Rückmeldung wird bereits verarbeitet.</p>');
+              return;
+            }
+            callbackInProgress = true;
             const code = url.searchParams.get('code');
             const oauthError = url.searchParams.get('error');
             if (oauthError) throw new Error(`Spotify hat die Verbindung abgelehnt: ${oauthError}`);
-            if (returnedState !== state) throw new Error('State stimmt nicht überein (möglicher CSRF).');
             if (!code) throw new Error('Kein Autorisierungscode empfangen.');
 
             const tokens = await exchangeCode(p, { code, redirectUri, verifier }, this.fetchFn);

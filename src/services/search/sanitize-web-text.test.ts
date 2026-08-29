@@ -58,10 +58,11 @@ describe('sanitizeResults', () => {
     expect(out.length).toBeLessThan(8);
   });
 
-  it('rejects non-http(s) and unparseable URLs', () => {
+  it('rejects non-HTTPS and unparseable URLs', () => {
     expect(sanitizeResults([raw('ok', 's', 'javascript:alert(1)')])).toHaveLength(0);
     expect(sanitizeResults([raw('ok', 's', 'nicht mal eine url')])).toHaveLength(0);
-    expect(sanitizeResults([raw('ok', 's', 'http://ok.example/x')])).toHaveLength(1);
+    expect(sanitizeResults([raw('ok', 's', 'http://ok.example/x')])).toHaveLength(0);
+    expect(sanitizeResults([raw('ok', 's', 'https://ok.example/x')])).toHaveLength(1);
   });
 
   it('keeps hostile instruction text as harmless data (quarantine happens downstream)', () => {

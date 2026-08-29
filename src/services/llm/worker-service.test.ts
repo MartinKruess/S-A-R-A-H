@@ -28,4 +28,17 @@ describe('WorkerService', () => {
       'Worker returned an empty response',
     );
   });
+
+  it('forwards an explicit effective response cap instead of the style default', async () => {
+    const provider = providerReturning('Antwort');
+    const worker = new WorkerService(provider);
+
+    await worker.stream(messages, 'ausführlich', () => {}, undefined, 640);
+
+    expect(provider.chat).toHaveBeenCalledWith(
+      messages,
+      expect.any(Function),
+      expect.objectContaining({ num_predict: 640 }),
+    );
+  });
 });

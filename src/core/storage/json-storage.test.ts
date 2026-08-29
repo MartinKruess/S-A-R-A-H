@@ -61,4 +61,48 @@ describe('JsonStorage', () => {
     expect(fs.existsSync(newPath)).toBe(true);
     await s.close();
   });
+
+  it('recovers the last valid snapshot when the primary file is corrupt', async () => {
+    await storage.set('version', 1);
+    await storage.set('version', 2);
+    fs.writeFileSync(filePath, '{broken', 'utf-8');
+
+    const recovered = new JsonStorage(filePath);
+
+    expect(await recovered.get('version')).toBe(2);
+    expect(recovered.getRecoveryIssues()).toHaveLength(1);
+    expect(recovered.requiresFailClosedDefaults()).toBe(false);
+    await recovered.close();
+  });
+
+  it('reports an unrecoverable primary without silently treating it as a clean empty config', async () => {
+    fs.writeFileSync(filePath, '{broken', 'utf-8');
+
+    const recovered = new JsonStorage(filePath);
+
+    expect(recovered.getRecoveryIssues()).toHaveLength(1);
+    expect(recovered.requiresFailClosedDefaults()).toBe(true);
+    await recovered.close();
+  });
+
+  it('loads a valid backup when the primary config is missing', async () => {
+    fs.writeFileSync(`${filePath}.bak`, JSON.stringify({ trust: { memoryAllowed: false } }), 'utf-8');
+
+    const recovered = new JsonStorage(filePath);
+
+    expect(await recovered.get('trust.memoryAllowed')).toBe(false);
+    expect(recovered.requiresFailClosedDefaults()).toBe(false);
+    expect(recovered.getRecoveryIssues()).toEqual([expect.stringContaining('fehlte')]);
+    await recovered.close();
+  });
+
+  it('fails closed when the primary is missing and the backup is corrupt', async () => {
+    fs.writeFileSync(`${filePath}.bak`, '{broken', 'utf-8');
+
+    const recovered = new JsonStorage(filePath);
+
+    expect(recovered.requiresFailClosedDefaults()).toBe(true);
+    expect(recovered.getRecoveryIssues()).toEqual([expect.stringContaining('nicht lesbar')]);
+    await recovered.close();
+  });
 });

@@ -4,6 +4,7 @@ import type { ChatMessage, ChatOptions, LlmProvider } from './llm-provider.inter
 import { ModelRuntime } from './model-runtime.js';
 import type { VramManager } from './vram-manager.js';
 import { abortError } from '../../core/abort-utils.js';
+import { OllamaPrerequisiteError } from './ollama-container-manager.js';
 
 const config: LlmConfig = {
   baseUrl: 'http://ollama.test',
@@ -81,6 +82,32 @@ describe('ModelRuntime', () => {
     expect(memory.waitForModel).not.toHaveBeenCalled();
     expect(memory.unloadModel).not.toHaveBeenCalled();
     expect(runtime.snapshot.activeRole).toBe('local_worker');
+  });
+
+  it('passes an effective context-window response cap through to the worker provider', async () => {
+    const worker = provider('worker');
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: provider('router'),
+      workerProvider: worker,
+      vramManager: vram(),
+      eagerLoadTransitions: false,
+    });
+    await runtime.init();
+
+    await runtime.streamWorker(
+      [{ role: 'user', content: 'question' }],
+      'ausführlich',
+      () => {},
+      undefined,
+      640,
+    );
+
+    expect(worker.chat).toHaveBeenCalledWith(
+      [{ role: 'user', content: 'question' }],
+      expect.any(Function),
+      expect.objectContaining({ num_predict: 640 }),
+    );
   });
 
   it('keeps router operation available while reporting a missing worker as degraded', async () => {
@@ -245,6 +272,57 @@ describe('ModelRuntime', () => {
     });
     expect(runtime.snapshot.state).toBe('ready');
     await runtime.destroy();
+  });
+
+  it('stops transient runtime rechecks at the configured limit and allows a manual retry', async () => {
+    vi.useFakeTimers();
+    const router = provider('router');
+    (router.isAvailable as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    const runtime = new ModelRuntime({
+      config,
+      routerProvider: router,
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      runtimeRecheckDelayMs: 5,
+      runtimeRecheckMaxAttempts: 2,
+    });
+
+    await expect(runtime.init()).rejects.toThrow('Router model unavailable');
+    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(router.isAvailable).toHaveBeenCalledTimes(3);
+
+    (router.isAvailable as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    await expect(runtime.retryRecovery()).resolves.toMatchObject({ state: 'ready' });
+    expect(router.isAvailable).toHaveBeenCalledTimes(4);
+    await runtime.destroy();
+    vi.useRealTimers();
+  });
+
+  it('terminalizes a missing Ollama prerequisite until manual recovery is requested', async () => {
+    vi.useFakeTimers();
+    const ensureRunning = vi.fn().mockRejectedValue(
+      new OllamaPrerequisiteError('not-installed', 'Docker Desktop ist nicht installiert.'),
+    );
+    const runtime = new ModelRuntime({
+      config,
+      containerManager: { ensureRunning },
+      routerProvider: provider('router'),
+      workerProvider: provider('worker'),
+      vramManager: vram(),
+      runtimeRecheckDelayMs: 5,
+    });
+
+    await expect(runtime.init()).rejects.toThrow('nicht installiert');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ensureRunning).toHaveBeenCalledOnce();
+
+    ensureRunning.mockResolvedValue(undefined);
+    await expect(runtime.retryRecovery()).resolves.toMatchObject({ state: 'ready' });
+    expect(ensureRunning).toHaveBeenCalledTimes(2);
+    await runtime.destroy();
+    vi.useRealTimers();
   });
 
   it('keeps rechecking an initially missing worker without taking the router offline', async () => {

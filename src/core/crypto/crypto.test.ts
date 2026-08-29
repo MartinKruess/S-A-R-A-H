@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encrypt, decrypt } from './crypto.js';
+import { CryptoEnvelopeError, encrypt, decrypt } from './crypto.js';
 import { randomBytes } from 'crypto';
 
 describe('crypto', () => {
@@ -47,5 +47,23 @@ describe('crypto', () => {
     const text = 'Schöne Grüße aus Köln 🚀';
     const encrypted = encrypt(text, key);
     expect(decrypt(encrypted, key)).toBe(text);
+  });
+
+  it.each([
+    '',
+    'not-base64',
+    'AAAA',
+    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA===',
+    `${Buffer.alloc(27).toString('base64')}\n`,
+  ])('rejects malformed or undersized envelopes with a stable error: %s', (ciphertext) => {
+    expect(() => decrypt(ciphertext, key)).toThrow(CryptoEnvelopeError);
+    try {
+      decrypt(ciphertext, key);
+    } catch (error) {
+      expect(error).toMatchObject({
+        name: 'CryptoEnvelopeError',
+        code: 'INVALID_CRYPTO_ENVELOPE',
+      });
+    }
   });
 });
