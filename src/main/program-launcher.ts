@@ -2,6 +2,7 @@
 import { spawn as nodeSpawn, execFile as nodeExecFile } from 'child_process';
 import type { ProgramEntry } from '../core/config-schema.js';
 import { abortableDelay, abortError, throwIfAborted } from '../core/abort-utils.js';
+import { classifyProgramPath, verifyProgramPath } from './program-utils.js';
 
 export type { ProgramEntry } from '../core/config-schema.js';
 
@@ -54,6 +55,26 @@ type SpawnFn = typeof nodeSpawn;
 type ExecFileFn = (cmd: string, args: string[], cb: (err: Error | null) => void) => void;
 /** Verifies a process is running by image name (e.g. "Spotify.exe"). */
 type ProcessCheckFn = (imageName: string, signal?: AbortSignal) => Promise<boolean>;
+type PathCheckFn = (programPath: string) => boolean;
+type PathClassifier = typeof classifyProgramPath;
+
+/**
+ * Normalizes launcher-controlled display text and removes prompt/log control characters.
+ *
+ * @category Validation
+ */
+export function sanitizeLauncherText(value: string, maxLength = 100): string {
+  return value
+    .normalize('NFKC')
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function displayProgramName(value: string): string {
+  return sanitizeLauncherText(value, 80) || 'das Programm';
+}
 
 /**
  * Fallback map for well-known Store apps whose process name can't be derived
@@ -90,31 +111,52 @@ export class ProgramLauncher {
     },
     private verifyProcess: ProcessCheckFn = defaultProcessCheck,
     private appxVerifyDelayMs = 2500,
+    private verifyPath: PathCheckFn = verifyProgramPath,
+    private classifyPath: PathClassifier = classifyProgramPath,
   ) {}
 
   async launch(query: string, programs: ProgramEntry[], signal?: AbortSignal): Promise<LaunchResult> {
     throwIfAborted(signal);
-    const match = matchProgram(query, programs);
+    const safeQuery = sanitizeLauncherText(query);
+    const match = matchProgram(safeQuery, programs);
     console.log(
-      `[ProgramLauncher] query=${JSON.stringify(query)} programs=${programs.length} → ${match.kind}` +
-        (match.kind === 'hit' ? ` (${match.program.name}, type=${match.program.type}, path=${match.program.path})` : ''),
+      `[ProgramLauncher] query=${JSON.stringify(safeQuery)} programs=${programs.length} → ${match.kind}` +
+        (match.kind === 'hit'
+          ? ` (${displayProgramName(match.program.name)}, type=${match.program.type}, path=${JSON.stringify(match.program.path)})`
+          : ''),
     );
     if (match.kind === 'ambiguous') {
-      return { ok: false, speak: `Ich habe mehrere Treffer: ${match.candidates.join(' und ')}. Welches meinst du?` };
+      const candidates = match.candidates
+        .slice(0, 5)
+        .map(displayProgramName)
+        .join(' und ');
+      const suffix = match.candidates.length > 5 ? ' und weitere' : '';
+      return { ok: false, speak: `Ich habe mehrere Treffer: ${candidates}${suffix}. Welches meinst du?` };
     }
     if (match.kind === 'miss') {
-      const hint = match.suggestion ? ` Meintest du ${match.suggestion}?` : '';
-      return { ok: false, speak: `Ich habe „${query}" nicht gefunden.${hint}` };
+      const hint = match.suggestion ? ` Meintest du ${displayProgramName(match.suggestion)}?` : '';
+      return { ok: false, speak: `Ich habe „${safeQuery || 'dieses Programm'}" nicht gefunden.${hint}` };
     }
 
     const program = match.program;
-    if (program.type === 'updater') {
-      return { ok: false, speak: `Der Eintrag für ${program.name} zeigt auf einen Updater — ich starte den nicht.` };
+    const safeProgram = { ...program, name: displayProgramName(program.name) };
+    const currentType = this.classifyPath(program.path);
+    if (program.type === 'updater' || currentType === 'updater') {
+      return { ok: false, speak: `Der Eintrag für ${safeProgram.name} zeigt auf einen Updater — ich starte den nicht.` };
     }
-    if (program.type === 'appx') {
-      return this.launchAppx(program, signal);
+    if (currentType !== program.type) {
+      return { ok: false, speak: `Der Eintrag für ${safeProgram.name} hat widersprüchliche Startdaten — ich starte den nicht.` };
     }
-    return this.launchExe(program);
+    if (currentType === 'appx') {
+      if (!program.verified) {
+        return { ok: false, speak: `Der Eintrag für ${safeProgram.name} ist nicht verifiziert — ich starte den nicht.` };
+      }
+      return this.launchAppx(safeProgram, signal);
+    }
+    if (!this.verifyPath(program.path)) {
+      return { ok: false, speak: `${safeProgram.name} ist am gespeicherten Ort nicht mehr verfügbar.` };
+    }
+    return this.launchExe(safeProgram);
   }
 
   /**
@@ -123,7 +165,8 @@ export class ProgramLauncher {
    * non-zero while the shell service still launches the app = false negative,
    * which is the "Spotify läuft, meldet aber nicht installiert"-Bug). So we
    * ignore the exit code and verify via a process check when we know the image
-   * name — otherwise stay optimistic instead of emitting a false failure.
+   * name. Without a process identity we report that the delegated launch could
+   * not be verified instead of claiming success without evidence.
    */
   private launchAppx(program: ProgramEntry, signal?: AbortSignal): Promise<LaunchResult> {
     const aumid = program.path.replace(/^appx:/, '');
@@ -155,9 +198,11 @@ export class ProgramLauncher {
         if (err) console.warn('[ProgramLauncher] launchAppx explorer exit non-zero (ignored):', aumid, err.message);
 
         if (!processName) {
-          // Can't verify — never emit a false "not installed" for a delegated launch.
-          console.log('[ProgramLauncher] launchAppx no processName → optimistic ok');
-          finish({ ok: true });
+          console.warn('[ProgramLauncher] launchAppx no processName → launch not verifiable');
+          finish({
+            ok: false,
+            speak: `Ich habe ${program.name} zum Starten übergeben, konnte den Start aber nicht bestätigen.`,
+          });
           return;
         }
 

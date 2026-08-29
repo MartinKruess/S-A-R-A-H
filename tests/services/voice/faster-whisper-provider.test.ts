@@ -17,6 +17,7 @@ vi.mock('node:fs', () => ({
 
 import { spawn } from 'node:child_process';
 import {
+  existsSync,
   lstatSync,
   mkdtempSync,
   readdirSync,
@@ -61,6 +62,7 @@ describe('FasterWhisperProvider runtime ownership', () => {
 
   beforeEach(() => {
     spawnMock.mockReset();
+    vi.mocked(existsSync).mockReset().mockReturnValue(true);
     vi.mocked(mkdtempSync).mockReset().mockReturnValue('C:/temp/sarah-private-stt-123-private');
     vi.mocked(readdirSync).mockReset().mockReturnValue([]);
     vi.mocked(lstatSync).mockReset().mockReturnValue({
@@ -321,6 +323,47 @@ describe('FasterWhisperProvider runtime ownership', () => {
     await vi.waitFor(() => expect(states.at(-1)).toEqual({ available: true }));
 
     expect(spawnMock).toHaveBeenCalledTimes(2);
+    await provider.destroy();
+  });
+
+  it('does not loop on a missing Whisper prerequisite and supports an explicit retry', async () => {
+    vi.useFakeTimers();
+    vi.mocked(existsSync).mockReturnValue(false);
+    const provider = new FasterWhisperProvider('C:/fake/resources');
+
+    await expect(provider.init()).rejects.toThrow('server script not found');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    const process = new MockWhisperProcess();
+    vi.mocked(existsSync).mockReturnValue(true);
+    spawnMock.mockReturnValue(process as unknown as ChildProcess);
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => (
+      String(input).endsWith('/health')
+        ? Promise.resolve(response(true))
+        : Promise.reject(new Error('no previous server'))
+    ));
+    await expect(provider.retry()).resolves.toBeUndefined();
+    expect(spawnMock).toHaveBeenCalledOnce();
+    await provider.destroy();
+  });
+
+  it('caps automatic restarts after repeated transient startup failures', async () => {
+    vi.useFakeTimers();
+    const provider = new FasterWhisperProvider('C:/fake/resources');
+    const init = vi.spyOn(provider, 'init').mockResolvedValue(undefined);
+    const scheduleRestart = (): void => {
+      (provider as unknown as { scheduleRestart(): void }).scheduleRestart();
+    };
+
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 16_000]) {
+      scheduleRestart();
+      await vi.advanceTimersByTimeAsync(delay);
+    }
+    scheduleRestart();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(init).toHaveBeenCalledTimes(5);
     await provider.destroy();
   });
 

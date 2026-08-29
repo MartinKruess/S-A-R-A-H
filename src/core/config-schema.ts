@@ -63,8 +63,8 @@ export const PdfCategorySchema = z.object({
 });
 
 export const CustomCommandSchema = z.object({
-  command: z.string(),
-  prompt: z.string(),
+  command: z.string().trim().regex(/^\/[a-z0-9_-]{1,50}$/iu),
+  prompt: z.string().trim().min(1).max(2_000),
 });
 
 export const ResourcesSchema = z.object({
@@ -85,6 +85,7 @@ const MemoryExclusionSchema = z.string()
 
 export const TrustSchema = z.object({
   memoryAllowed: z.boolean().default(true),
+  webAccessAllowed: z.boolean().default(true),
   fileAccess: z.preprocess(
     (val) => (val === 'full' ? 'all' : val),
     z.enum(['specific-folders', 'all', 'none']).default('specific-folders'),
@@ -103,7 +104,7 @@ export const TrustSchema = z.object({
 export const PersonalizationSchema = z.object({
   accentColor: z.string().default('#00d4ff'),
   voice: z.string().default('default-female-de'),
-  speechRate: z.number().default(1),
+  speechRate: z.number().min(0.5).max(2).default(1),
   chatFontSize: z.enum(['small', 'default', 'large']).default('default'),
   chatAlignment: z.enum(['stacked', 'bubbles']).default('stacked'),
   emojisEnabled: z.boolean().default(true),
@@ -125,8 +126,8 @@ export const ControlsSchema = z.object({
     'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
     'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
   ]).default('F9'),
-  quietModeDuration: z.number().default(30),
-  customCommands: z.array(CustomCommandSchema).default([]),
+  quietModeDuration: z.number().int().min(1).max(24 * 60).default(30),
+  customCommands: z.array(CustomCommandSchema).max(64).default([]),
 });
 
 export const AudioSchema = z.object({
@@ -156,10 +157,23 @@ export function isAudioConfigEqual(a: AudioConfig, b: AudioConfig): boolean {
   );
 }
 
+const OllamaBaseUrlSchema = z.string().trim().min(1).max(2_048).refine((value) => {
+  try {
+    const protocol = new URL(value).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'Ollama-Adresse muss eine gültige HTTP(S)-URL sein');
+
+const ModelNameSchema = z.string().trim().min(1).max(200);
+const MAX_LLM_CONTEXT_TOKENS = 262_144;
+
 export const LlmSchema = z.object({
-  baseUrl: z.string().default(DEFAULT_LLM_CONFIG.baseUrl),
-  routerModel: z.string().default(DEFAULT_LLM_CONFIG.routerModel),
-  workerModel: z.string().default(DEFAULT_LLM_CONFIG.workerModel),
+  // Remote Ollama remains supported; only malformed/non-HTTP endpoints are rejected.
+  baseUrl: OllamaBaseUrlSchema.default(DEFAULT_LLM_CONFIG.baseUrl),
+  routerModel: ModelNameSchema.default(DEFAULT_LLM_CONFIG.routerModel),
+  workerModel: ModelNameSchema.default(DEFAULT_LLM_CONFIG.workerModel),
   performanceProfile: z
     .enum(['leistung', 'schnell', 'normal', 'sparsam'])
     .default(DEFAULT_LLM_CONFIG.performanceProfile),
@@ -167,14 +181,15 @@ export const LlmSchema = z.object({
     .object({
       // Floor = largest response reserve (NUM_PREDICT_MAP.ausführlich 3000 +
       // RESPONSE_SAFETY_TOKENS 256) plus headroom for system prompt + history (H3).
-      num_ctx: z.number().int().min(4096).default(DEFAULT_LLM_CONFIG.workerOptions.num_ctx),
+      num_ctx: z.number().int().min(4096).max(MAX_LLM_CONTEXT_TOKENS)
+        .default(DEFAULT_LLM_CONFIG.workerOptions.num_ctx),
     })
     .default({ ...DEFAULT_LLM_CONFIG.workerOptions }),
   options: z
     .object({
-      temperature: z.number().optional(),
-      num_predict: z.number().optional(),
-      num_ctx: z.number().optional(),
+      temperature: z.number().min(0).max(2).optional(),
+      num_predict: z.number().int().min(1).max(16_384).optional(),
+      num_ctx: z.number().int().min(4096).max(MAX_LLM_CONTEXT_TOKENS).optional(),
     })
     .default({ ...DEFAULT_LLM_CONFIG.options }),
 });
@@ -251,9 +266,61 @@ export const SarahConfigSchema = z.preprocess(
 // ── Inferred Types ──
 
 export type SarahConfig = z.infer<typeof SarahConfigSchema>;
-export type SarahConfigPatch = Omit<Partial<SarahConfig>, 'audio'> & {
-  audio?: Partial<AudioConfig>;
+type FlatSarahConfigPatch = {
+  [Section in keyof SarahConfig]?: Partial<SarahConfig[Section]>;
 };
+export type SarahConfigPatch = Omit<FlatSarahConfigPatch, 'system' | 'llm'> & {
+  system?: Partial<Omit<SarahConfig['system'], 'folders'>> & {
+    folders?: Partial<SarahConfig['system']['folders']>;
+  };
+  llm?: Partial<Omit<SarahConfig['llm'], 'workerOptions' | 'options'>> & {
+    workerOptions?: Partial<SarahConfig['llm']['workerOptions']>;
+    options?: Partial<SarahConfig['llm']['options']>;
+  };
+};
+
+/**
+ * @param current - Vollstaendig validierter, aktuell aktiver Config-Snapshot.
+ * @param patch - IPC-Teilupdate einer oder mehrerer Config-Sektionen.
+ *
+ * - Fuehrt jede Root-Sektion feldweise mit dem aktiven Snapshot zusammen.
+ * - Fuehrt die verschachtelten System- und LLM-Optionen ebenfalls feldweise zusammen.
+ * - Validiert und kanonisiert das Ergebnis vor Persistenz und Aktivierung.
+ *
+ * @returns Vollstaendige Config ohne Default-Reset durch fehlende Patch-Felder.
+ *
+ * @category Validation Transformation
+ */
+export function mergeSarahConfigPatch(
+  current: SarahConfig,
+  patch: SarahConfigPatch,
+): SarahConfig {
+  return SarahConfigSchema.parse({
+    ...current,
+    ...patch,
+    onboarding: { ...current.onboarding, ...patch.onboarding },
+    system: {
+      ...current.system,
+      ...patch.system,
+      folders: { ...current.system.folders, ...patch.system?.folders },
+    },
+    profile: { ...current.profile, ...patch.profile },
+    skills: { ...current.skills, ...patch.skills },
+    resources: { ...current.resources, ...patch.resources },
+    trust: { ...current.trust, ...patch.trust },
+    personalization: { ...current.personalization, ...patch.personalization },
+    controls: { ...current.controls, ...patch.controls },
+    audio: { ...current.audio, ...patch.audio },
+    llm: {
+      ...current.llm,
+      ...patch.llm,
+      workerOptions: { ...current.llm.workerOptions, ...patch.llm?.workerOptions },
+      options: { ...current.llm.options, ...patch.llm?.options },
+    },
+    integrations: { ...current.integrations, ...patch.integrations },
+  });
+}
+
 export type Profile = z.infer<typeof ProfileSchema>;
 export type LinkPreference = z.infer<typeof LinkPreferenceSchema>;
 export type Skills = z.infer<typeof SkillsSchema>;

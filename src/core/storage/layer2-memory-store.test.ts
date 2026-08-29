@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -64,6 +64,7 @@ describe('Layer2MemoryStore', () => {
   });
 
   it('supports explicit show, correct, forget and hard-delete lifecycle', async () => {
+    const finalizePrivacyDeletion = vi.spyOn(db, 'finalizePrivacyDeletion').mockResolvedValue();
     const policy = { allowed: true, exclusions: [] } as const;
     const id = await store.rememberExplicit({
       kind: 'explicit', content: 'Martin bevorzugt kurze Antworten.', sourceConversationId: 1,
@@ -74,8 +75,48 @@ describe('Layer2MemoryStore', () => {
     expect(await store.correct(id!, 'Martin bevorzugt mittellange Antworten.', policy)).toBe(true);
     expect((await store.list())[0].content).toContain('mittellange');
     expect(await store.forget(id!)).toBe(true);
+    expect(finalizePrivacyDeletion).not.toHaveBeenCalled();
     expect(await store.list()).toEqual([]);
+    expect(await store.list({ includeDeleted: true })).toMatchObject([{ id }]);
     expect(await store.delete(id!)).toBe(true);
+    expect(finalizePrivacyDeletion).toHaveBeenCalledTimes(1);
+  });
+
+  it('atomically deletes the complete confirmed curated-memory set', async () => {
+    const finalizePrivacyDeletion = vi.spyOn(db, 'finalizePrivacyDeletion').mockResolvedValue();
+    const policy = { allowed: true, exclusions: [] } as const;
+    const first = await store.rememberExplicit({
+      kind: 'explicit', content: 'Erste Erinnerung.', sourceConversationId: 1,
+      sourceTurnId: 'turn-first', confidence: 1,
+    }, policy);
+    const second = await store.rememberExplicit({
+      kind: 'explicit', content: 'Zweite Erinnerung.', sourceConversationId: 1,
+      sourceTurnId: 'turn-second', confidence: 1,
+    }, policy);
+    if (first == null || second == null) throw new Error('Expected stored memories');
+    await store.forget(first);
+
+    expect(await store.deleteAll([first, second])).toBe(2);
+    expect(await store.list({ includeDeleted: true })).toEqual([]);
+    expect(finalizePrivacyDeletion).toHaveBeenCalledTimes(1);
+  });
+
+  it('deletes nothing when curated memories changed after confirmation', async () => {
+    const policy = { allowed: true, exclusions: [] } as const;
+    const confirmed = await store.rememberExplicit({
+      kind: 'explicit', content: 'Bestätigte Erinnerung.', sourceConversationId: 1,
+      sourceTurnId: 'turn-confirmed', confidence: 1,
+    }, policy);
+    if (confirmed == null) throw new Error('Expected stored memory');
+    await store.rememberExplicit({
+      kind: 'explicit', content: 'Später gespeicherte Erinnerung.', sourceConversationId: 1,
+      sourceTurnId: 'turn-later', confidence: 1,
+    }, policy);
+
+    await expect(store.deleteAll([confirmed])).rejects.toThrow(
+      'Curated memories changed after deletion was requested',
+    );
+    expect(await store.list({ includeDeleted: true })).toHaveLength(2);
   });
 
   it('recovers an interrupted staging lease for restart processing', async () => {
@@ -289,7 +330,7 @@ describe('Layer2MemoryStore', () => {
     expect(await db.query('storage_quarantine')).toEqual([]);
   });
 
-  it('purges all readable, unreadable and quarantined memory when memory is disabled', async () => {
+  it('pauses memory without deleting existing readable or quarantined data', async () => {
     const encryptedDb = new EncryptedStorage(db, Buffer.alloc(32, 78));
     const encryptedStore = new Layer2MemoryStore(encryptedDb);
     await encryptedStore.persistTurn(1, 'turn-disable', [
@@ -302,14 +343,14 @@ describe('Layer2MemoryStore', () => {
 
     const result = await encryptedStore.applyPolicy({ allowed: false, exclusions: [] });
 
-    expect(result).toEqual({ turns: 1, staging: 1, memories: 0 });
-    expect(await db.query('messages')).toEqual([]);
-    expect(await db.query('memory_staging')).toEqual([]);
+    expect(result).toEqual({ turns: 0, staging: 0, memories: 0 });
+    expect(await db.query('messages')).toHaveLength(1);
+    expect(await db.query('memory_staging')).toHaveLength(1);
     expect(await db.query('curated_memories')).toEqual([]);
-    expect(await db.query('storage_quarantine')).toEqual([]);
+    expect(await db.query('storage_quarantine')).toHaveLength(1);
   });
 
-  it('clears every conversation summary and its quarantine when memory is disabled', async () => {
+  it('keeps conversation summaries untouched while memory is paused', async () => {
     const encryptedDb = new EncryptedStorage(db, Buffer.alloc(32, 80));
     const encryptedStore = new Layer2MemoryStore(encryptedDb);
     await encryptedDb.update('conversations', { id: 1 }, { summary: 'Persistierte Zusammenfassung.' });
@@ -328,12 +369,26 @@ describe('Layer2MemoryStore', () => {
     await encryptedStore.applyPolicy({ allowed: false, exclusions: [] });
 
     const summaries = await encryptedDb.query<{ summary: string }>('conversations');
-    expect(summaries.map((row) => row.summary)).toEqual(['', '']);
+    expect(summaries[0].summary).toBe('Persistierte Zusammenfassung.');
+    expect(summaries).toHaveLength(1);
     const rawSummaries = await db.query<{ summary: string }>('conversations');
     expect(rawSummaries.every((row) => row.summary.startsWith('sarah-enc:v2:'))).toBe(true);
     expect(await db.query('storage_quarantine', {
       source_table: 'conversations', column_name: 'summary',
-    })).toEqual([]);
+    })).toHaveLength(1);
+  });
+
+  it('recovers retained failed curation jobs on a later startup', async () => {
+    await store.stageTurn(1, 'turn-failed', [
+      { role: 'user', content: 'Ich interessiere mich für Astronomie.' },
+    ], { allowed: true, exclusions: [] });
+    const job = await store.claimNext();
+    expect(job).not.toBeNull();
+    await store.fail(job!.id);
+
+    expect(await store.hasPending()).toBe(false);
+    expect(await store.recoverFailedJobs()).toBe(1);
+    expect(await store.hasPending()).toBe(true);
   });
 
   it('does not let explicit writes bypass exclusions or immutable secret policy', async () => {

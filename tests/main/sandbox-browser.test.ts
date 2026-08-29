@@ -9,11 +9,18 @@ class FakeWebContents extends EventEmitter {
   session = {
     clearStorageData: vi.fn().mockResolvedValue(undefined),
     clearCache: vi.fn().mockResolvedValue(undefined),
+    webRequest: { onBeforeRequest: vi.fn() },
     resolveHost: undefined as undefined | ((hostname: string) => Promise<{
       endpoints: Array<{ address: string }>;
     }>),
     cookies: { set: vi.fn().mockResolvedValue(undefined) },
   };
+}
+
+async function runBeforeRequest(win: FakeWindow, url: string): Promise<{ cancel: boolean }> {
+  const listener = win.webContents.session.webRequest.onBeforeRequest.mock.calls.at(-1)?.[1];
+  if (!listener) throw new Error('Expected request boundary to be installed');
+  return await new Promise((resolve) => listener({ url }, resolve));
 }
 
 class FakeWindow extends EventEmitter implements SandboxWindow {
@@ -244,7 +251,7 @@ describe('SandboxBrowser.show', () => {
     await expect(browser.show('javascript:alert(1)')).resolves.toBe(false);
   });
 
-  it('hides a previously visible result when the next display fails', async () => {
+  it('destroys a previously visible result when the next display fails', async () => {
     const { browser, windows } = makeBrowser();
     const first = browser.show('https://example.com/first');
     await vi.waitFor(() => expect(windows).toHaveLength(1));
@@ -252,14 +259,88 @@ describe('SandboxBrowser.show', () => {
     await expect(first).resolves.toBe(true);
 
     await expect(browser.show('http://example.com/blocked')).resolves.toBe(false);
-    expect(windows[0].hide).toHaveBeenCalledTimes(1);
+    expect(windows[0].destroy).toHaveBeenCalledTimes(1);
 
     const failedNavigation = browser.show('https://example.com/second');
-    await vi.waitFor(() => expect(windows[0].loadURL).toHaveBeenCalledWith('https://example.com/second'));
-    windows[0].webContents.emit('did-fail-load', {}, -105, 'NAME_NOT_RESOLVED');
+    await vi.waitFor(() => expect(windows).toHaveLength(2));
+    await vi.waitFor(() => expect(windows[1].loadURL).toHaveBeenCalledWith('https://example.com/second'));
+    windows[1].webContents.emit('did-fail-load', {}, -105, 'NAME_NOT_RESOLVED');
 
     await expect(failedNavigation).resolves.toBe(false);
-    expect(windows[0].hide).toHaveBeenCalledTimes(2);
+    expect(windows[1].destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows public subresources and fails closed for private, loopback, link-local and DNS failures', async () => {
+    const win = new FakeWindow();
+    win.webContents.session.resolveHost = vi.fn(async (hostname: string) => {
+      const addresses: Record<string, string[]> = {
+        'public.test': ['93.184.216.34'],
+        'private.test': ['192.168.1.20'],
+        'loopback.test': ['127.0.0.1'],
+        'metadata.test': ['169.254.169.254'],
+        'mixed.test': ['93.184.216.34', '10.0.0.2'],
+      };
+      const endpoints = addresses[hostname];
+      if (!endpoints) throw new Error('DNS failed');
+      return { endpoints: endpoints.map((address) => ({ address })) };
+    });
+    const browser = new SandboxBrowser(() => win, async () => ['93.184.216.34']);
+    const showing = browser.show('https://public.test/');
+    await vi.waitFor(() => expect(win.loadURL).toHaveBeenCalled());
+    win.webContents.emit('did-finish-load');
+    await expect(showing).resolves.toBe(true);
+
+    await expect(runBeforeRequest(win, 'https://public.test/image.png')).resolves.toEqual({ cancel: false });
+    await expect(runBeforeRequest(win, 'https://private.test/admin')).resolves.toEqual({ cancel: true });
+    await expect(runBeforeRequest(win, 'http://loopback.test:11434/api/chat')).resolves.toEqual({ cancel: true });
+    await expect(runBeforeRequest(win, 'https://metadata.test/latest/meta-data')).resolves.toEqual({ cancel: true });
+    await expect(runBeforeRequest(win, 'wss://mixed.test/socket')).resolves.toEqual({ cancel: true });
+    await expect(runBeforeRequest(win, 'https://dns-failure.test/')).resolves.toEqual({ cancel: true });
+    await expect(runBeforeRequest(win, 'https://[::ffff:7f00:1]/')).resolves.toEqual({ cancel: true });
+  });
+
+  it('blocks unsafe frame targets synchronously while DNS hostnames remain request-gated', async () => {
+    const { browser, windows } = makeBrowser();
+    const showing = browser.show('https://example.com/');
+    await vi.waitFor(() => expect(windows).toHaveLength(1));
+    windows[0].webContents.emit('did-finish-load');
+    await expect(showing).resolves.toBe(true);
+
+    for (const target of [
+      'file:///C:/Windows/System32/drivers/etc/hosts',
+      'http://localhost:11434/api/chat',
+      'https://192.168.178.1/admin',
+      'https://[::1]/',
+    ]) {
+      const event = { preventDefault: vi.fn() };
+      windows[0].webContents.emit('will-frame-navigate', event, { url: target });
+      expect(event.preventDefault, target).toHaveBeenCalledOnce();
+    }
+
+    const publicEvent = { preventDefault: vi.fn() };
+    windows[0].webContents.emit('will-frame-navigate', publicEvent, { url: 'https://public.test/frame' });
+    expect(publicEvent.preventDefault).not.toHaveBeenCalled();
+    await expect(runBeforeRequest(windows[0], 'https://public.test/frame')).resolves.toEqual({ cancel: false });
+
+    const blankEvent = { preventDefault: vi.fn() };
+    windows[0].webContents.emit('will-frame-navigate', blankEvent, { url: 'about:blank' });
+    expect(blankEvent.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('destroys the isolated page and session when display mode ends', async () => {
+    const { browser, windows } = makeBrowser();
+    const first = browser.show('https://example.com/first');
+    await vi.waitFor(() => expect(windows).toHaveLength(1));
+    windows[0].webContents.emit('did-finish-load');
+    await expect(first).resolves.toBe(true);
+
+    browser.hide();
+
+    expect(windows[0].destroy).toHaveBeenCalledOnce();
+    const second = browser.show('https://example.com/second');
+    await vi.waitFor(() => expect(windows).toHaveLength(2));
+    windows[1].webContents.emit('did-finish-load');
+    await expect(second).resolves.toBe(true);
   });
 
   it('continues a validated display redirect after the replaced load reports ERR_ABORTED', async () => {

@@ -68,10 +68,32 @@ describe('EncryptedStorage', () => {
       await expect(storage.get('legacy')).rejects.toThrow('failed authentication');
     });
 
-    it('reads legacy unversioned ciphertext', async () => {
+    it('rejects legacy config ciphertext during normal reads and migrates it only through validation', async () => {
       await rawStorage.set('legacy', encrypt(JSON.stringify({ value: 7 }), keyManager.getOrCreateKey()));
+
+      await expect(storage.get('legacy')).rejects.toThrow('failed authentication');
+      await expect(storage.migrateLegacyConfigValue('legacy', (value) => {
+        if (value === null || typeof value !== 'object' || !('value' in value)) {
+          throw new Error('Unexpected legacy shape');
+        }
+        return value;
+      })).resolves.toBe(true);
+
       expect(await storage.get('legacy')).toEqual({ value: 7 });
       expect(await rawStorage.get<string>('legacy')).toMatch(/^sarah-enc:v2:/);
+    });
+
+    it('does not legitimize a legacy config value that fails key-specific validation', async () => {
+      const legacy = encrypt(JSON.stringify('wrong shape'), keyManager.getOrCreateKey());
+      await rawStorage.set('root', legacy);
+
+      await expect(storage.migrateLegacyConfigValue('root', (value) => {
+        if (value === null || typeof value !== 'object') throw new Error('Config object required');
+        return value;
+      })).rejects.toThrow('Config object required');
+
+      expect(await rawStorage.get('root')).toBe(legacy);
+      await expect(storage.get('root')).rejects.toThrow('failed authentication');
     });
 
     it('recovers authenticated ciphertext corruption from the last valid JSON snapshot', async () => {
@@ -79,7 +101,12 @@ describe('EncryptedStorage', () => {
       const ciphertext = await rawStorage.get<string>('secret');
       expect(ciphertext).toBeTruthy();
       const replacement = ciphertext!.endsWith('A') ? 'B' : 'A';
-      await rawStorage.set('secret', `${ciphertext!.slice(0, -1)}${replacement}`);
+      const configPath = path.join(tmpDir, 'config.json');
+      const primary = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      primary.secret = `${ciphertext!.slice(0, -1)}${replacement}`;
+      fs.writeFileSync(configPath, JSON.stringify(primary), 'utf-8');
+      rawStorage = new JsonStorage(configPath);
+      storage = new EncryptedStorage(rawStorage, keyManager.getOrCreateKey());
 
       await expect(storage.get('secret')).resolves.toBe('sicher');
       expect(storage.getIntegrityFailures()).toEqual([
@@ -95,6 +122,7 @@ describe('EncryptedStorage', () => {
       const primary = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
       primary.secret = 'sarah-enc:v2:invalid-authenticated-ciphertext';
       fs.writeFileSync(configPath, JSON.stringify(primary), 'utf-8');
+      fs.writeFileSync(`${configPath}.bak`, JSON.stringify({ other: 'backup-only' }), 'utf-8');
 
       const recovered = new EncryptedStorage(
         new JsonStorage(configPath),

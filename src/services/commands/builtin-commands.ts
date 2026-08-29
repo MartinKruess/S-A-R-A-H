@@ -1,6 +1,5 @@
 export const BUILTIN_COMMANDS = [
-  { command: '/anonymous', description: 'Vertrauliche Nachricht oder Inkognito-Modus ein/aus', available: true },
-  { command: '/incognito', description: 'Inkognito-Modus ein/aus', available: true },
+  { command: '/anonymous', description: 'Vertrauliche Nachricht oder Anonymous-Modus ein/aus', available: true },
   { command: '/confirm', description: 'Bestätigt eine zuvor angefragte Aktion', available: true },
   { command: '/showcontext', description: 'Zeigt Sarahs kuratierte Erinnerungen', available: true },
   { command: '/remember', description: 'Speichert eine ausdrückliche Erinnerung', available: true },

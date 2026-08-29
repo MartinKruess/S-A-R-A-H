@@ -13,11 +13,13 @@ export interface ActionPermissionMetadata {
   externalCommitment: boolean;
   mayCostMoney: boolean;
   dataDisclosure: 'none' | 'query' | 'personal';
+  persistentGrant?: 'web-access';
 }
 
 export interface ActionPolicyContext {
   confirmationLevel: ConfirmationLevel;
   fileAccess: Trust['fileAccess'];
+  webAccessAllowed?: boolean;
   /** Set by a future file boundary after resolving an allowed-folder grant. */
   fileTargetAllowed?: boolean;
 }
@@ -30,8 +32,8 @@ export interface ActionPolicyDecision {
 
 export const ACTION_PERMISSION_METADATA: Record<ActionName, ActionPermissionMetadata> = {
   open_program: { permission: 'application.launch', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
-  web_search: { permission: 'network.search', risk: 'read', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'query' },
-  show_browser: { permission: 'network.open_result', risk: 'read', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
+  web_search: { permission: 'network.search', risk: 'read', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'query', persistentGrant: 'web-access' },
+  show_browser: { permission: 'network.open_result', risk: 'read', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none', persistentGrant: 'web-access' },
   set_volume: { permission: 'system.volume', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   spotify_volume: { permission: 'spotify.volume', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   spotify_volume_adjust: { permission: 'spotify.volume', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
@@ -54,6 +56,11 @@ export function evaluatePermissionMetadata(
   metadata: ActionPermissionMetadata,
   context: ActionPolicyContext,
 ): ActionPolicyDecision {
+  if (metadata.persistentGrant === 'web-access') {
+    return context.webAccessAllowed === false
+      ? { effect: 'deny', metadata, reason: 'web_access_disabled' }
+      : { effect: 'allow', metadata, reason: 'persistent_web_access_grant' };
+  }
   if (metadata.filePermission !== 'none') {
     if (context.fileAccess === 'none') {
       return { effect: 'deny', metadata, reason: 'file_access_disabled' };
@@ -65,11 +72,18 @@ export function evaluatePermissionMetadata(
   if (metadata.mayCostMoney || metadata.externalCommitment) {
     return { effect: 'prepare_only', metadata, reason: 'binding_external_action' };
   }
-  const mustConfirm = metadata.risk === 'critical'
+  const mustConfirm = metadata.dataDisclosure !== 'none'
+    || metadata.risk === 'critical'
     || (context.confirmationLevel === 'standard' && metadata.risk === 'sensitive')
     || context.confirmationLevel === 'maximal';
   return mustConfirm
-    ? { effect: 'confirm', metadata, reason: 'confirmation_required' }
+    ? {
+        effect: 'confirm',
+        metadata,
+        reason: metadata.dataDisclosure !== 'none'
+          ? 'data_disclosure_confirmation_required'
+          : 'confirmation_required',
+      }
     : { effect: 'allow', metadata, reason: 'policy_allows' };
 }
 

@@ -4,8 +4,14 @@ import type { OAuthConnectionService } from '../integrations/oauth-connection-se
 
 type FetchFn = typeof fetch;
 
-function fakeOAuth(token: string | null): OAuthConnectionService {
-  return { getAccessToken: vi.fn().mockResolvedValue(token) } as unknown as OAuthConnectionService;
+function fakeOAuth(
+  token: string | null,
+  failure: 'not-connected' | 'temporarily-unavailable' = 'not-connected',
+): OAuthConnectionService {
+  return {
+    getAccessToken: vi.fn().mockResolvedValue(token),
+    getAccessTokenFailure: vi.fn().mockReturnValue(failure),
+  } as unknown as OAuthConnectionService;
 }
 
 /** Minimal Response-like stub — only the fields SpotifyActions reads. */
@@ -59,6 +65,14 @@ describe('SpotifyActions.setVolume', () => {
     const fetchFn = vi.fn<FetchFn>().mockRejectedValue(new Error('ECONNRESET'));
     const spotify = new SpotifyActions(fakeOAuth('tok'), fetchFn);
     expect(await spotify.setVolume(30)).toEqual({ ok: false, speak: 'Das hat bei Spotify gerade nicht geklappt.' });
+  });
+
+  it('temporary refresh failure does not claim that Spotify is disconnected', async () => {
+    const spotify = new SpotifyActions(fakeOAuth(null, 'temporarily-unavailable'), vi.fn<FetchFn>());
+    await expect(spotify.setVolume(50)).resolves.toEqual({
+      ok: false,
+      speak: 'Spotify ist gerade nicht erreichbar. Die Verbindung bleibt gespeichert; versuche es bitte später erneut.',
+    });
   });
 
   it('propagates shutdown abort instead of converting it into a Spotify error', async () => {

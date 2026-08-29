@@ -172,14 +172,15 @@ export function createFinishStep(data: WizardData): HTMLElement {
   // Trust
   const trustRows: [string, string][] = [
     ['Memory', data.trust.memoryAllowed ? 'Erlaubt' : 'Nicht erlaubt'],
-    ['Dateizugriff', FILE_ACCESS_LABELS[data.trust.fileAccess] ?? data.trust.fileAccess],
+    ['Browser', data.trust.webAccessAllowed ? 'Erlaubt' : 'Nicht erlaubt'],
+    ['Programmerkennung', FILE_ACCESS_LABELS[data.trust.fileAccess] ?? data.trust.fileAccess],
     ['Bestätigungen', CONFIRM_LABELS[data.trust.confirmationLevel] ?? 'Standard'],
   ];
   if (data.trust.memoryExclusions.length > 0) {
     trustRows.push(['Ausnahmen', data.trust.memoryExclusions.join(', ')]);
   }
   trustRows.push(['/showcontext', data.trust.showContextEnabled ? 'Aktiv' : 'Aus']);
-  trustRows.push(['/anonymous & /incognito', data.trust.anonymousEnabled ? 'Aktiv' : 'Aus']);
+  trustRows.push(['/anonymous', data.trust.anonymousEnabled ? 'Aktiv' : 'Aus']);
   addSection(finish, 'Vertrauen', trustRows);
 
   // Personalization

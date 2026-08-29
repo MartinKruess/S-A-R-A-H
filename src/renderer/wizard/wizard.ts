@@ -70,6 +70,7 @@ const wizardData: WizardData = {
   },
   trust: {
     memoryAllowed: true,
+    webAccessAllowed: true,
     fileAccess: 'specific-folders',
     confirmationLevel: 'standard',
     memoryExclusions: [],

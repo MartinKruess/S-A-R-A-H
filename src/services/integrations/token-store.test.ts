@@ -5,6 +5,7 @@ import * as os from 'os';
 import { createCipheriv } from 'crypto';
 import { TokenStore, type StoredToken } from './token-store.js';
 import type { KeyManager } from '../../core/crypto/key-manager.js';
+import { encrypt } from '../../core/crypto/crypto.js';
 
 /** Stub KeyManager with a fixed 32-byte key (no filesystem key involved). */
 function stubKeyManager(): KeyManager {
@@ -26,6 +27,26 @@ function writeV1Store(filePath: string, data: Record<string, StoredToken>): void
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf-8'), cipher.final()]);
   const wrapped = Buffer.concat([iv, encrypted, cipher.getAuthTag()]).toString('base64');
   fs.writeFileSync(filePath, `sarah-oauth:v1:${wrapped}`, 'utf-8');
+}
+
+function writeV2Store(filePath: string, data: Record<string, StoredToken>, generation = 4): void {
+  const wrapped = encrypt(JSON.stringify({
+    version: 2,
+    generation,
+    commitId: 'legacy-v2-commit',
+    data,
+  }), Buffer.alloc(32, 7));
+  fs.writeFileSync(filePath, `sarah-oauth:v2:${wrapped}`, 'utf-8');
+}
+
+function writeUnboundV3Store(filePath: string, data: Record<string, StoredToken>): void {
+  const wrapped = encrypt(JSON.stringify({
+    version: 3,
+    generation: 1,
+    commitId: 'unbound-v3-commit',
+    data,
+  }), Buffer.alloc(32, 7));
+  fs.writeFileSync(filePath, `sarah-oauth:v3:${wrapped}`, 'utf-8');
 }
 
 describe('TokenStore', () => {
@@ -59,7 +80,7 @@ describe('TokenStore', () => {
     expect(raw).not.toContain('refresh-secret-abc');
     expect(raw).not.toContain('access-secret-xyz');
     expect(raw).not.toContain('spotify');
-    expect(raw.startsWith('sarah-oauth:v2:')).toBe(true);
+    expect(raw.startsWith('sarah-oauth:v3:')).toBe(true);
   });
 
   it.each([
@@ -160,17 +181,39 @@ describe('TokenStore', () => {
     expect(recovered.getStatus()).toEqual(expect.objectContaining({ state: 'recovered' }));
   });
 
-  it('reads a V1 store and migrates both copies to a V2 commit on the next write', () => {
+  it('reads a V1 store only as a migration source and immediately publishes both V3 copies', () => {
     const filePath = path.join(tmpDir, 'connections.enc');
     writeV1Store(filePath, { spotify: token });
     const store = new TokenStore(tmpDir, keyManager);
 
     expect(store.get('spotify')).toEqual(token);
-    store.set('spotify', { ...token, accessToken: 'migrated-access' });
+    expect(store.getStatus()).toEqual(expect.objectContaining({ state: 'recovered' }));
 
-    expect(fs.readFileSync(filePath, 'utf-8')).toMatch(/^sarah-oauth:v2:/);
-    expect(fs.readFileSync(`${filePath}.bak`, 'utf-8')).toMatch(/^sarah-oauth:v2:/);
-    expect(new TokenStore(tmpDir, keyManager).get('spotify')?.accessToken).toBe('migrated-access');
+    expect(fs.readFileSync(filePath, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
+    expect(fs.readFileSync(`${filePath}.bak`, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
+    expect(new TokenStore(tmpDir, keyManager).get('spotify')).toEqual(token);
+  });
+
+  it('migrates an authenticated V2 envelope to AAD-bound V3 during the first read', () => {
+    const filePath = path.join(tmpDir, 'connections.enc');
+    writeV2Store(filePath, { spotify: token });
+
+    const store = new TokenStore(tmpDir, keyManager);
+
+    expect(store.get('spotify')).toEqual(token);
+    expect(fs.readFileSync(filePath, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
+    expect(fs.readFileSync(`${filePath}.bak`, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
+  });
+
+  it('rejects a V3 envelope that was not bound to the fixed product/store/schema context', () => {
+    const filePath = path.join(tmpDir, 'connections.enc');
+    writeUnboundV3Store(filePath, { spotify: token });
+
+    const store = new TokenStore(tmpDir, keyManager);
+
+    expect(store.get('spotify')).toBeUndefined();
+    expect(store.getStatus()).toEqual(expect.objectContaining({ state: 'degraded' }));
+    expect(fs.readFileSync(filePath, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
   });
 
   it('uses a divergent V1 backup as the newer partially published snapshot', () => {
@@ -191,5 +234,18 @@ describe('TokenStore', () => {
     expect(recovered.get('spotify')).toBeUndefined();
     expect(recovered.getStatus()).toEqual(expect.objectContaining({ state: 'degraded' }));
     expect(() => recovered.set('spotify', token)).toThrow('nicht lesbar');
+  });
+
+  it('reports a stable malformed-envelope failure for an undersized V3 payload', () => {
+    const filePath = path.join(tmpDir, 'connections.enc');
+    fs.writeFileSync(filePath, `sarah-oauth:v3:${Buffer.alloc(27).toString('base64')}`, 'utf-8');
+    const store = new TokenStore(tmpDir, keyManager);
+
+    expect(store.get('spotify')).toBeUndefined();
+    expect(store.getStatus()).toMatchObject({
+      state: 'degraded',
+      message: expect.stringContaining('Encrypted envelope'),
+    });
+    expect(fs.readFileSync(filePath, 'utf-8')).toMatch(/^sarah-oauth:v3:/);
   });
 });

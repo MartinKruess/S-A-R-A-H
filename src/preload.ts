@@ -42,6 +42,8 @@ const api: SarahApi = {
   },
   getConfig: () => ipcRenderer.invoke('get-config'),
   getRuntimeStatus: () => ipcRenderer.invoke('get-runtime-status'),
+  retryRuntimeRecovery: () => ipcRenderer.invoke('retry-runtime-recovery'),
+  getPrivacyState: () => ipcRenderer.invoke('get-privacy-state'),
   onRuntimeStatus: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: RuntimeSnapshot) => callback(data);
     ipcRenderer.on('runtime-status', handler);
@@ -166,6 +168,7 @@ const api: SarahApi = {
   connections: {
     list: () => ipcRenderer.invoke('connections-list'),
     connect: (id) => ipcRenderer.invoke('connection-connect', id),
+    cancel: (id) => ipcRenderer.invoke('connection-cancel', id),
     disconnect: (id) => ipcRenderer.invoke('connection-disconnect', id),
   },
 };

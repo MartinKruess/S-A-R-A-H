@@ -25,9 +25,9 @@ export const QUIRK_LABELS: Record<string, string> = {
 };
 
 export const FILE_ACCESS_LABELS: Record<string, string> = {
-  all: 'Alle Dateien',
-  'specific-folders': 'Nur bestimmte Ordner',
-  none: 'Kein Zugriff',
+  all: 'Systemweit installierte Programme',
+  'specific-folders': 'Nur ausgewählte Programmordner',
+  none: 'Keine Programmerkennung',
 };
 
 export const CONFIRM_LABELS: Record<string, string> = {

@@ -328,6 +328,21 @@ Später:
 
 Das wäre dann schon die sehr schöne Jarvis-Stufe.
 
+### Zukunftspunkt: vollständiger Werksreset und große Versionssprünge
+
+In den Einstellungen soll später ein ausdrücklich bestätigter **Werksreset** möglich sein. Er ist für Fälle gedacht, in denen der Nutzer bewusst vollständig neu anfangen möchte, das Gerät verkauft oder weitergibt oder eine fehlgeleitete Einrichtung vollständig verwerfen will.
+
+Der genaue Löschumfang muss vor der Umsetzung verbindlich festgelegt und vor der Bestätigung verständlich angezeigt werden. Voraussichtlich umfasst er mindestens:
+
+- Gesprächs- und Memory-Datenbank einschließlich kuratierter Erinnerungen,
+- persönliche Einstellungen und Stammdaten,
+- gespeicherte Integrationen und OAuth-Verbindungen,
+- lokale Schlüssel und weitere Sarah-bezogene Nutzerdaten.
+
+Nach erfolgreichem Reset startet Sarah wie bei einer Neuinstallation und führt den Einrichtungsassistenten erneut aus. Vorher sind – soweit die Daten noch lesbar sind – Export- oder Sicherungsmöglichkeiten anzubieten. Der Reset darf nicht als gewöhnlicher Fehler-Recovery-Schritt erscheinen und benötigt eine eindeutige Warnung sowie eine separate destruktive Bestätigung.
+
+Ein großer, manuell gestarteter Versionssprung, beispielsweise von V3 auf V4, darf denselben Reset-Ablauf über ein versioniertes Update-Flag **anfordern**, aber niemals im Hintergrund selbst ausführen. Bereits vor Download beziehungsweise Installation muss sichtbar sein, wenn das Update eine Neueinrichtung oder Datenlöschung erfordert. Kleine Funktions- und Sicherheitsupdates sollen vorhandene Daten dagegen über kontrollierte Migrationen erhalten. Ein Werksreset bleibt die letzte Option, wenn eine sichere Migration technisch nicht vertretbar ist.
+
 12. Phase-1-Abnahmetests
 
 Und das würde ich ganz am Ende noch darüberlegen.

@@ -3,6 +3,8 @@ import { AppContext, bootstrap, repairInvalidConfig } from './bootstrap.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { KeyManager } from './crypto/key-manager.js';
+import { encrypt } from './crypto/crypto.js';
 
 describe('bootstrap', () => {
   let tmpDir: string;
@@ -29,9 +31,45 @@ describe('bootstrap', () => {
     expect(ctx.configErrors).toBeNull();
     expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
       memoryAllowed: true,
+      webAccessAllowed: true,
       fileAccess: 'specific-folders',
       confirmationLevel: 'standard',
     }));
+  });
+
+  it('migrates a legacy config only through the explicit boot path and keeps trust fail-closed for review', async () => {
+    const legacyConfig = {
+      ...ctx.parsedConfig,
+      profile: { ...ctx.parsedConfig.profile, displayName: 'Legacy Martin' },
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: true,
+        fileAccess: 'all' as const,
+        confirmationLevel: 'minimal' as const,
+      },
+    };
+    await ctx.shutdown();
+    const key = new KeyManager(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) }).getOrCreateKey();
+    const legacyRoot = encrypt(JSON.stringify(legacyConfig), key);
+    const configPath = path.join(tmpDir, 'config.json');
+    const stored: Record<string, unknown> = { root: legacyRoot };
+    fs.writeFileSync(configPath, JSON.stringify(stored), 'utf-8');
+    fs.writeFileSync(`${configPath}.bak`, JSON.stringify(stored), 'utf-8');
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.parsedConfig.profile.displayName).toBe('Legacy Martin');
+    expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
+      memoryAllowed: false,
+      webAccessAllowed: false,
+      fileAccess: 'none',
+      confirmationLevel: 'maximal',
+    }));
+    expect(ctx.configErrors).toEqual(expect.arrayContaining([
+      expect.stringContaining('nicht positionsgebundene Konfiguration'),
+    ]));
+    const migratedFile = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { root?: string };
+    expect(migratedFile.root).toMatch(/^sarah-enc:v2:/);
   });
 
   it('config can set and get values', async () => {
@@ -108,10 +146,12 @@ describe('bootstrap', () => {
     expect(ctx.configErrors).not.toBeNull();
     expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
       memoryAllowed: false,
+      webAccessAllowed: false,
       fileAccess: 'none',
       confirmationLevel: 'maximal',
     }));
     expect(ctx.lifecycle.snapshot.capabilities.storage?.state).toBe('degraded');
+    expect(ctx.memoryRecoveryGuardActive).toBe(true);
   });
 
   it('fails closed when persisted config material has no root value', async () => {
@@ -123,9 +163,45 @@ describe('bootstrap', () => {
     expect(ctx.configErrors).toEqual(expect.arrayContaining([expect.stringContaining('root-Wert')]));
     expect(ctx.parsedConfig.trust).toEqual(expect.objectContaining({
       memoryAllowed: false,
+      webAccessAllowed: false,
       fileAccess: 'none',
       confirmationLevel: 'maximal',
     }));
+    expect(ctx.memoryRecoveryGuardActive).toBe(true);
+  });
+
+  it('persists the Layer-2 recovery guard before accepting a fail-closed memory policy', async () => {
+    await ctx.shutdown();
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), '{broken', 'utf-8');
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+    await repairInvalidConfig(ctx);
+    await ctx.shutdown();
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+    expect(ctx.configErrors).toBeNull();
+    expect(ctx.parsedConfig.trust.memoryAllowed).toBe(false);
+    expect(ctx.memoryRecoveryGuardActive).toBe(true);
+  });
+
+  it('guards Layer-2 data when an invalid exclusion contract disables memory during repair', async () => {
+    await ctx.config.set('root', {
+      ...ctx.parsedConfig,
+      trust: {
+        ...ctx.parsedConfig.trust,
+        memoryAllowed: true,
+        memoryExclusions: 'Finanzen',
+      },
+    });
+    await ctx.shutdown();
+
+    ctx = await bootstrap(tmpDir, { testWrappingKey: Buffer.alloc(32, 93) });
+
+    expect(ctx.configErrors).toEqual(expect.arrayContaining([
+      expect.stringContaining('trust.memoryExclusions'),
+    ]));
+    expect(ctx.parsedConfig.trust.memoryAllowed).toBe(false);
+    expect(ctx.memoryRecoveryGuardActive).toBe(true);
   });
 
   it('loads the valid config backup when the primary file is missing', async () => {
@@ -210,6 +286,7 @@ describe('bootstrap', () => {
       expect.stringContaining('kryptografisch ungültig'),
     ]));
     expect(ctx.lifecycle.snapshot.capabilities.storage?.state).toBe('degraded');
+    expect(ctx.memoryRecoveryGuardActive).toBe(true);
   });
 
   it('shutdown is safe when called repeatedly', async () => {
@@ -217,13 +294,22 @@ describe('bootstrap', () => {
     expect(ctx.lifecycle.snapshot.state).toBe('stopped');
   });
 
-  it('releases partial storage resources when database bootstrap fails', async () => {
+  it('preserves a broken database and starts with explicitly degraded volatile storage', async () => {
     const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-broken-'));
     const dbPath = path.join(brokenDir, 'sarah.db');
+    const wrappingKey = Buffer.alloc(32, 93);
+    const initial = await bootstrap(brokenDir, { testWrappingKey: wrappingKey });
+    await initial.shutdown();
     fs.writeFileSync(dbPath, 'not a sqlite database');
 
-    await expect(bootstrap(brokenDir, { testWrappingKey: Buffer.alloc(32, 93) })).rejects.toThrow();
+    const degraded = await bootstrap(brokenDir, { testWrappingKey: wrappingKey });
 
+    expect(degraded.lifecycle.snapshot.capabilities.storage).toMatchObject({
+      state: 'degraded',
+      message: expect.stringContaining('Datenbank ist nicht verfügbar'),
+    });
+    expect(fs.readFileSync(dbPath, 'utf-8')).toBe('not a sqlite database');
+    await degraded.shutdown();
     expect(() => fs.rmSync(brokenDir, { recursive: true, force: true })).not.toThrow();
   });
 });

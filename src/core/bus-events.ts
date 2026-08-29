@@ -18,6 +18,7 @@ import type { ActionConfirmationReference } from './action-confirmation.js';
 export type BusEvents = {
   'chat:message':        TurnRequest;
   'turn:accepted':       { turnId: TurnId; source: TurnSource; mode: TurnMode };
+  'turn:output-policy':  { turnId: TurnId; speech: 'suppress' };
   'turn:cancel':         { turnId: TurnId; reason: string };
   'turn:terminal':       { turnId: TurnId; status: TurnTerminalStatus; message?: string };
   'llm:chunk':           { turnId: TurnId; outputId: OutputId; sequence: number; text: string };

@@ -66,7 +66,7 @@ interface DecryptedValue {
  * Transparent authenticated-encryption wrapper.
  *
  * - V2 binds every protected value to its config key or table/row/column identity.
- * - Authenticated V1 values migrate in place after a successful read.
+ * - Unbound config V1 values require the explicit, key-validated migration path.
  * - Plaintext and object downgrades fail closed.
  *
  * @category Data Access Security
@@ -85,8 +85,7 @@ export class EncryptedStorage implements StorageProvider {
     if (raw === undefined) return undefined;
     const aad = this.keyAad(key);
     try {
-      const decrypted = this.decryptValue(raw, aad, true);
-      if (decrypted.legacy) await this.inner.set(key, this.encryptValue(decrypted.value, aad));
+      const decrypted = this.decryptValue(raw, aad);
       return decrypted.value as T;
     } catch (error) {
       if (!(error instanceof StorageIntegrityError) || !this.inner.recoverLastValidSnapshot) throw error;
@@ -94,10 +93,44 @@ export class EncryptedStorage implements StorageProvider {
       if (!recovered) throw error;
       const backupRaw = await this.inner.get(key);
       if (backupRaw === undefined) throw error;
-      const decrypted = this.decryptValue(backupRaw, aad, true);
-      if (decrypted.legacy) await this.inner.set(key, this.encryptValue(decrypted.value, aad));
+      const decrypted = this.decryptValue(backupRaw, aad);
       return decrypted.value as T;
     }
+  }
+
+  /**
+   * @param key - Erwarteter Config-Schluessel des ungebundenen Altwerts.
+   * @param validate - Schluesselspezifische Validierung vor der Positionsbindung.
+   *
+   * - Entschluesselt ausschliesslich V1- oder unversionierte Legacy-Ciphertexte.
+   * - Persistiert erst nach erfolgreicher semantischer Validierung als AAD-gebundenes V2.
+   * - Laesst normale `get`-Aufrufe ungebundene Werte weiterhin strikt ablehnen.
+   *
+   * @returns `true`, wenn ein Legacy-Wert explizit migriert wurde.
+   *
+   * @category Data Access Security
+   */
+  async migrateLegacyConfigValue<T>(
+    key: string,
+    validate: (value: unknown) => T,
+  ): Promise<boolean> {
+    const raw = await this.inner.get(key);
+    if (typeof raw !== 'string') return false;
+
+    let legacyCiphertext: string;
+    if (raw.startsWith(ENCRYPTED_VALUE_PREFIX_V1)) {
+      legacyCiphertext = raw.slice(ENCRYPTED_VALUE_PREFIX_V1.length);
+    } else if (this.looksLikeLegacyCiphertext(raw)) {
+      legacyCiphertext = raw;
+    } else {
+      return false;
+    }
+
+    const location = `legacy-config-review:${key}`;
+    const value = this.decryptAuthenticated(legacyCiphertext, location);
+    const validated = validate(value);
+    await this.inner.set(key, this.encryptValue(validated, this.keyAad(key)));
+    return true;
   }
 
   async set(key: string, value: unknown): Promise<void> {
@@ -214,6 +247,13 @@ export class EncryptedStorage implements StorageProvider {
     })));
   }
 
+  async deleteAllCuratedMemories(expectedIds: readonly number[]): Promise<number> {
+    if (!this.inner.deleteAllCuratedMemories) {
+      throw new Error('Storage provider does not support atomic curated-memory deletion');
+    }
+    return this.inner.deleteAllCuratedMemories(expectedIds);
+  }
+
   async purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
     return this.inner.purgeQuarantinedLayer2Memory();
   }
@@ -292,6 +332,10 @@ export class EncryptedStorage implements StorageProvider {
 
   async delete(table: string, filter: Filter): Promise<number> {
     return this.inner.delete(table, filter);
+  }
+
+  async finalizePrivacyDeletion(): Promise<void> {
+    await this.inner.finalizePrivacyDeletion?.();
   }
 
   async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {

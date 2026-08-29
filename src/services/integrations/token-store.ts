@@ -1,17 +1,19 @@
 // src/services/integrations/token-store.ts
-// Encrypted at-rest store for OAuth tokens. Mirrors the AES-256-GCM fallback
-// pattern in core/crypto/key-manager.ts: 12-byte random IV prepended, 16-byte
-// auth tag appended, whole blob base64 into `<storageDir>/connections.enc`.
-// Never writes plaintext tokens to disk.
+// Encrypted at-rest store for OAuth tokens. V3 uses the shared AES-256-GCM
+// envelope with fixed product/store/schema AAD and keeps a durable backup copy.
+// V1/V2 remain readable only as controlled migration sources.
 
-import { randomBytes, randomUUID, createCipheriv, createDecipheriv } from 'crypto';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { KeyManager } from '../../core/crypto/key-manager.js';
+import { decrypt, encrypt } from '../../core/crypto/crypto.js';
 
 const STORE_FILE = 'connections.enc';
 const STORE_PREFIX_V1 = 'sarah-oauth:v1:';
 const STORE_PREFIX_V2 = 'sarah-oauth:v2:';
+const STORE_PREFIX_V3 = 'sarah-oauth:v3:';
+const STORE_V3_AAD = 'sarah:oauth-token-store:connections:v3';
 
 export type StoredToken = {
   refreshToken: string;
@@ -22,8 +24,8 @@ export type StoredToken = {
 
 type StoreData = Record<string, StoredToken>;
 
-type StoreEnvelopeV2 = {
-  version: 2;
+type StoreEnvelope = {
+  version: 2 | 3;
   generation: number;
   commitId: string;
   data: StoreData;
@@ -33,7 +35,7 @@ type StoreSnapshot = {
   data: StoreData;
   generation: number;
   commitId?: string;
-  format: 1 | 2;
+  format: 1 | 2 | 3;
 };
 
 export type TokenStoreFaultPoint = 'after-backup-publish';
@@ -153,8 +155,31 @@ export class TokenStore {
 
     this.data = selected.data;
     this.generation = selected.generation;
+    if (selected.format < 3) {
+      // V1/V2 are accepted only as a one-time authenticated migration source.
+      // Publishing both V3 copies immediately closes the unbound legacy read window.
+      this.status = { state: 'ready' };
+      try {
+        this.generation = this.persist(selected.data);
+        this.data = selected.data;
+        this.status = {
+          state: 'recovered',
+          message: 'Der OAuth-Token-Speicher wurde in das aktuelle, kontextgebundene Format migriert.',
+        };
+        return this.data;
+      } catch (error) {
+        this.data = selected.data;
+        this.generation = selected.generation;
+        this.status = {
+          state: 'recovered',
+          message: `Der OAuth-Token-Speicher ist lesbar, konnte aber noch nicht in V3 migriert werden (${error instanceof Error ? error.message : 'unbekannter Fehler'}).`,
+        };
+        return this.data;
+      }
+    }
+
     const bothCurrent = primary !== undefined && backup !== undefined &&
-      primary.format === 2 && backup.format === 2 &&
+      primary.format === 3 && backup.format === 3 &&
       primary.generation === backup.generation && primary.commitId === backup.commitId;
     this.status = bothCurrent
       ? { state: 'ready' }
@@ -177,14 +202,14 @@ export class TokenStore {
     const tempPath = path.join(this.storageDir, `.${STORE_FILE}.${process.pid}.${randomUUID()}.tmp`);
     const backupTempPath = `${backupPath}.${process.pid}.${randomUUID()}.tmp`;
     const nextGeneration = this.generation + 1;
-    const envelope: StoreEnvelopeV2 = {
-      version: 2,
+    const envelope: StoreEnvelope = {
+      version: 3,
       generation: nextGeneration,
       commitId: randomUUID(),
       data,
     };
     try {
-      const wrapped = `${STORE_PREFIX_V2}${this.encrypt(JSON.stringify(envelope))}`;
+      const wrapped = `${STORE_PREFIX_V3}${this.encryptV3(JSON.stringify(envelope))}`;
       this.writeDurably(tempPath, wrapped);
       this.writeDurably(backupTempPath, wrapped);
 
@@ -206,38 +231,30 @@ export class TokenStore {
     }
   }
 
-  private encrypt(plaintext: string): string {
-    const key = this.keyManager.getOrCreateKey();
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return Buffer.concat([iv, encrypted, tag]).toString('base64');
+  private encryptV3(plaintext: string): string {
+    return encrypt(plaintext, this.keyManager.getOrCreateKey(), STORE_V3_AAD);
   }
 
-  private decrypt(wrapped: string): string {
-    const key = this.keyManager.getOrCreateKey();
-    const data = Buffer.from(wrapped, 'base64');
-    const iv = data.subarray(0, 12);
-    const tag = data.subarray(data.length - 16);
-    const encrypted = data.subarray(12, data.length - 16);
-    const decipher = createDecipheriv('aes-256-gcm', key, iv);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf-8');
+  private decryptEnvelope(wrapped: string, aad?: string): string {
+    return decrypt(wrapped, this.keyManager.getOrCreateKey(), aad);
   }
 
   private readStore(filePath: string): StoreSnapshot {
     const wrapped = fs.readFileSync(filePath, 'utf-8');
+    const isV3 = wrapped.startsWith(STORE_PREFIX_V3);
     const isV2 = wrapped.startsWith(STORE_PREFIX_V2);
-    const ciphertext = isV2
+    const ciphertext = isV3
+      ? wrapped.slice(STORE_PREFIX_V3.length)
+      : isV2
       ? wrapped.slice(STORE_PREFIX_V2.length)
       : wrapped.startsWith(STORE_PREFIX_V1)
         ? wrapped.slice(STORE_PREFIX_V1.length)
         : wrapped;
-    const parsed = JSON.parse(this.decrypt(ciphertext)) as object;
-    if (isV2) {
-      const envelope = this.parseV2Envelope(parsed);
-      return { ...envelope, format: 2 };
+    const parsed = JSON.parse(this.decryptEnvelope(ciphertext, isV3 ? STORE_V3_AAD : undefined)) as object;
+    if (isV3 || isV2) {
+      const format = isV3 ? 3 : 2;
+      const envelope = this.parseEnvelope(parsed, format);
+      return { ...envelope, format };
     }
 
     return {
@@ -247,11 +264,11 @@ export class TokenStore {
     };
   }
 
-  private parseV2Envelope(value: object | null): Omit<StoreSnapshot, 'format'> {
+  private parseEnvelope(value: object | null, expectedVersion: 2 | 3): Omit<StoreSnapshot, 'format'> {
     if (value === null || Array.isArray(value)) throw new Error('Token store envelope must be an object');
-    const candidate = value as Partial<Record<keyof StoreEnvelopeV2, object | string | number>>;
+    const candidate = value as Partial<Record<keyof StoreEnvelope, object | string | number>>;
     if (
-      candidate.version !== 2 ||
+      candidate.version !== expectedVersion ||
       typeof candidate.generation !== 'number' ||
       !Number.isSafeInteger(candidate.generation) ||
       candidate.generation < 1 ||
@@ -295,7 +312,7 @@ export class TokenStore {
     if (primary.generation !== backup.generation) {
       return primary.generation > backup.generation ? primary : backup;
     }
-    if (primary.format !== backup.format) return primary.format === 2 ? primary : backup;
+    if (primary.format !== backup.format) return primary.format > backup.format ? primary : backup;
     return primary.commitId === backup.commitId ? primary : undefined;
   }
 

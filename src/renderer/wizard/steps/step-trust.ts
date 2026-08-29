@@ -66,7 +66,7 @@ export function createTrustStep(data: WizardData): HTMLElement {
 
   const notice = document.createElement('div');
   notice.className = 'trust-notice';
-  notice.innerHTML = '<strong>🔒 Datenschutz:</strong> Deine Daten werden lokal auf deinem Computer gespeichert. Wenn du externe KI-Dienste nutzt (z.B. Cloud-Modelle), werden Gesprächsinhalte zur Verarbeitung an diese Anbieter gesendet — aber nicht dort gespeichert. Bei rein lokalem Betrieb (Ollama) verlassen keine Daten deinen Computer.';
+  notice.innerHTML = '<strong>🔒 Datenschutz:</strong> Deine Daten werden lokal auf deinem Computer gespeichert. Wenn du externe KI-Dienste nutzt (z.B. Cloud-Modelle), werden Gesprächsinhalte zur Verarbeitung an diese Anbieter gesendet. Bei lokalem KI-Betrieb (Ollama) bleiben Gesprächsinhalte auf deinem Computer. Von dir aktivierte Online-Funktionen, etwa eine Websuche, senden die dafür benötigte Anfrage an den jeweiligen Anbieter.';
 
   // === SECTION: Gedächtnis ===
   const sectionGedaechtnis = createSectionHeading('Gedächtnis');
@@ -101,12 +101,19 @@ export function createTrustStep(data: WizardData): HTMLElement {
   // === SECTION: Zugriff ===
   const sectionZugriff = createSectionHeading('Zugriff');
 
+  const webAccessToggle = sarahToggle({
+    label: 'Browser verwenden',
+    description: 'Erlaubt Websuchen und das Öffnen der dazugehörigen Suchergebnisse. OAuth-Anmeldungen werden separat gesteuert.',
+    checked: data.trust.webAccessAllowed,
+    onChange: (value) => { data.trust.webAccessAllowed = value; },
+  });
+
   const fileAccessSelect = sarahSelect({
-    label: 'Darf ich Dateien analysieren?',
+    label: 'Wo darf ich Programme erkennen?',
     options: [
-      { value: 'all', label: 'Ja, alle Dateien' },
-      { value: 'specific-folders', label: 'Nur bestimmte Ordner' },
-      { value: 'none', label: 'Nein, keinen Zugriff' },
+      { value: 'all', label: 'Systemweit installierte Programme' },
+      { value: 'specific-folders', label: 'Nur ausgewählte Programmordner' },
+      { value: 'none', label: 'Keine Programmerkennung' },
     ],
     value: data.trust.fileAccess,
     onChange: (value) => {
@@ -115,9 +122,13 @@ export function createTrustStep(data: WizardData): HTMLElement {
     },
   });
 
+  const fileAccessHint = document.createElement('div');
+  fileAccessHint.className = 'trust-hint';
+  fileAccessHint.textContent = 'Diese Auswahl steuert nur die Suche nach startbaren Programmen. Dateiinhalte wie Bilder, PDFs oder Projekte werden derzeit nicht analysiert.';
+
   const folderHint = document.createElement('div');
   folderHint.className = 'trust-hint';
-  folderHint.textContent = 'Sarah nutzt die Ordner die du unter Dateien & Apps angegeben hast (Bilder, PDFs, Projekte etc.).';
+  folderHint.textContent = 'Sarah durchsucht dafür nur die Ordner, die du unter Dateien & Programme auswählst.';
   folderHint.style.display = data.trust.fileAccess === 'specific-folders' ? 'block' : 'none';
 
   // === SECTION: Kontrolle ===
@@ -146,7 +157,7 @@ export function createTrustStep(data: WizardData): HTMLElement {
 
   const anonymousToggle = sarahToggle({
     label: 'Vertrauliche Nachrichten',
-    description: '/anonymous <Text> bleibt einmalig flüchtig. /incognito startet und beendet einen privaten Abschnitt, der nie gespeichert oder ausgewertet wird.',
+    description: '/anonymous <Text> bleibt einmalig flüchtig. /anonymous ohne Text startet oder beendet einen privaten Abschnitt, der nie gespeichert oder ausgewertet wird.',
     checked: data.trust.anonymousEnabled,
     onChange: (value) => { data.trust.anonymousEnabled = value; },
   });
@@ -163,7 +174,9 @@ export function createTrustStep(data: WizardData): HTMLElement {
       memoryHint,
       exclusionsWrapper,
       sectionZugriff,
+      webAccessToggle,
       fileAccessSelect,
+      fileAccessHint,
       folderHint,
       sectionKontrolle,
       confirmationSelect,

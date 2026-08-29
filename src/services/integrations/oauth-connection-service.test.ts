@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { OAuthConnectionService } from './oauth-connection-service.js';
 import type { OAuthProvider } from './providers.js';
 import type { TokenStore, StoredToken } from './token-store.js';
+import * as http from 'http';
 
 /** In-memory TokenStore fake (no filesystem, no crypto). */
 function fakeStore(initial: Record<string, StoredToken> = {}): TokenStore {
@@ -45,6 +46,24 @@ function makeService(opts: {
     openExternal: () => {},
     now: opts.now ?? (() => 1_000_000),
     redirectPort: 8888,
+  });
+}
+
+async function freePort(): Promise<number> {
+  const server = http.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!address || typeof address === 'string') throw new Error('No test port assigned');
+  return address.port;
+}
+
+async function request(port: number, path: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    http.get({ hostname: '127.0.0.1', port, path }, (response) => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode ?? 0));
+    }).on('error', reject);
   });
 }
 
@@ -222,13 +241,26 @@ describe('OAuthConnectionService', () => {
     });
     const svc = makeService({ store, now });
     expect(svc.listConnections()).toEqual([
-      { id: 'spotify', displayName: 'Spotify', connected: true, expiresAt: 42 },
+      { id: 'spotify', displayName: 'Spotify', configured: true, connected: true, expiresAt: 42 },
     ]);
 
     await svc.disconnect('spotify');
     expect(svc.listConnections()).toEqual([
-      { id: 'spotify', displayName: 'Spotify', connected: false, expiresAt: undefined },
+      { id: 'spotify', displayName: 'Spotify', configured: true, connected: false, expiresAt: undefined },
     ]);
+  });
+
+  it('reports an unconfigured provider without offering a broken connect flow', () => {
+    const svc = makeService({ store: fakeStore(), provider: { ...spotify, clientId: '' } });
+
+    expect(svc.listConnections()).toEqual([{
+      id: 'spotify',
+      displayName: 'Spotify',
+      configured: false,
+      connected: false,
+      expiresAt: undefined,
+      configurationError: 'Spotify ist in dieser Installation noch nicht eingerichtet.',
+    }]);
   });
 
   it('getStatus returns per-provider info; undefined for unknown provider', () => {
@@ -239,7 +271,67 @@ describe('OAuthConnectionService', () => {
 
   it('connect rejects with a clear error when clientId is empty', async () => {
     const svc = makeService({ store: fakeStore(), provider: { ...spotify, clientId: '' } });
-    await expect(svc.connect('spotify')).rejects.toThrow(/SPOTIFY_CLIENT_ID fehlt/);
+    await expect(svc.connect('spotify')).rejects.toThrow(/noch nicht eingerichtet/);
+  });
+
+  it('ignores a foreign callback and still accepts the state-bound callback', async () => {
+    const port = await freePort();
+    const store = fakeStore();
+    let authorizeUrl = '';
+    const svc = new OAuthConnectionService({
+      providers: [spotify],
+      tokenStore: store,
+      fetchFn: (async () => jsonResponse({
+        access_token: 'access', refresh_token: 'refresh', expires_in: 3600, scope: 's',
+      })) as unknown as typeof fetch,
+      openExternal: (url) => { authorizeUrl = url; },
+      redirectPort: port,
+    });
+
+    const connecting = svc.connect('spotify');
+    await vi.waitFor(() => expect(authorizeUrl).not.toBe(''));
+    expect(await request(port, '/callback')).toBe(400);
+    const state = new URL(authorizeUrl).searchParams.get('state');
+    expect(await request(port, `/callback?state=${encodeURIComponent(state ?? '')}&code=valid`)).toBe(200);
+    await expect(connecting).resolves.toBeUndefined();
+    expect(store.has('spotify')).toBe(true);
+  });
+
+  it('rejects a duplicate valid callback while the first exchange is running', async () => {
+    const port = await freePort();
+    const store = fakeStore();
+    let authorizeUrl = '';
+    let resolveExchange: (response: Response) => void = () => {};
+    const fetchFn = vi.fn(() => new Promise<Response>((resolve) => { resolveExchange = resolve; })) as unknown as typeof fetch;
+    const svc = new OAuthConnectionService({
+      providers: [spotify],
+      tokenStore: store,
+      fetchFn,
+      openExternal: (url) => { authorizeUrl = url; },
+      redirectPort: port,
+    });
+
+    const connecting = svc.connect('spotify');
+    await vi.waitFor(() => expect(authorizeUrl).not.toBe(''));
+    const state = new URL(authorizeUrl).searchParams.get('state');
+    const callback = `/callback?state=${encodeURIComponent(state ?? '')}&code=valid`;
+    const first = request(port, callback);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalledOnce());
+    expect(await request(port, callback)).toBe(409);
+    resolveExchange(jsonResponse({
+      access_token: 'access', refresh_token: 'refresh', expires_in: 3600, scope: 's',
+    }));
+    expect(await first).toBe(200);
+    await expect(connecting).resolves.toBeUndefined();
+  });
+
+  it('allows the user to cancel an active connect flow', async () => {
+    const svc = new OAuthConnectionService({
+      providers: [spotify], tokenStore: fakeStore(), openExternal: () => {}, redirectPort: 0,
+    });
+    const connecting = svc.connect('spotify');
+    await svc.cancelConnect('spotify');
+    await expect(connecting).rejects.toThrow('Verbindung abgebrochen');
   });
 
   it('destroy aborts an active connect flow and rejects future connects', async () => {

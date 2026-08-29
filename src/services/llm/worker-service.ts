@@ -15,8 +15,14 @@ export class WorkerService {
     responseStyle: string,
     onChunk: (text: string) => void,
     signal?: AbortSignal,
+    effectiveNumPredict?: number,
   ): Promise<WorkerResult> {
-    const numPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
+    const styleNumPredict = NUM_PREDICT_MAP[responseStyle] ?? NUM_PREDICT_MAP.mittel;
+    const numPredict = effectiveNumPredict != null
+      && Number.isFinite(effectiveNumPredict)
+      && effectiveNumPredict >= 1
+      ? Math.floor(effectiveNumPredict)
+      : styleNumPredict;
     const start = performance.now();
     const fullText = await chatWithTimeout(this.provider, messages, onChunk, { num_predict: numPredict, signal });
     if (fullText.trim().length === 0) {

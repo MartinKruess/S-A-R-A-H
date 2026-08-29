@@ -17,6 +17,7 @@ const electronMocks = vi.hoisted(() => {
   return {
     handlers,
     getAllWindows: vi.fn(() => []),
+    showErrorBox: vi.fn(),
     ipcMain: {
       handle: (channel: string, handler: Handler) => handlers.set(channel, handler),
       removeHandler: (channel: string) => handlers.delete(channel),
@@ -40,6 +41,7 @@ const electronMocks = vi.hoisted(() => {
 
 vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: electronMocks.getAllWindows },
+  dialog: { showErrorBox: electronMocks.showErrorBox },
   ipcMain: electronMocks.ipcMain,
   screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1920, height: 1080 } }) },
 }));
@@ -51,6 +53,7 @@ describe('main boot sequence splash speech ownership', () => {
     vi.useFakeTimers();
     electronMocks.reset();
     electronMocks.getAllWindows.mockClear();
+    electronMocks.showErrorBox.mockClear();
   });
 
   afterEach(() => {
@@ -170,6 +173,51 @@ describe('main boot sequence splash speech ownership', () => {
 
     expect(electronMocks.handlers.has('get-runtime-status')).toBe(true);
     cleanup();
+  });
+
+  it('exposes manual model and speech recovery through one bounded IPC request', async () => {
+    const retryModel = vi.fn().mockResolvedValue(undefined);
+    const retrySpeech = vi.fn().mockResolvedValue(undefined);
+    const snapshot = {
+      state: 'degraded',
+      capabilities: {
+        router: { state: 'error', message: 'Docker fehlt' },
+        stt: { state: 'unavailable', message: 'Python fehlt' },
+      },
+    };
+    const context = {
+      parsedConfig: { onboarding: { setupComplete: true } },
+      bus: new MessageBus(),
+      lifecycle: { snapshot, subscribe: vi.fn(() => vi.fn()) },
+      registry: {
+        get: vi.fn((id: string) => (
+          id === 'router'
+            ? { retryRuntimeRecovery: retryModel }
+            : id === 'voice'
+              ? { retryRuntimeRecovery: retrySpeech }
+              : undefined
+        )),
+      },
+    };
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => null,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn() } as never,
+    });
+    const handler = electronMocks.handlers.get('retry-runtime-recovery') as unknown as (
+      event: object,
+    ) => Promise<{ ok: boolean; modelRecovered: boolean; sttRecovered: boolean }>;
+
+    await expect(handler({})).resolves.toEqual({
+      ok: true,
+      modelRecovered: true,
+      sttRecovered: true,
+    });
+    expect(retryModel).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(retrySpeech).toHaveBeenCalledWith(expect.any(AbortSignal));
+    cleanup();
+    expect(electronMocks.handlers.has('retry-runtime-recovery')).toBe(false);
   });
 
   it('publishes terminal degraded boot steps when router capability never settles', async () => {
@@ -300,6 +348,131 @@ describe('main boot sequence splash speech ownership', () => {
     const terminalIndex = send.mock.calls.findIndex(([, payload]) => payload.step === 'router-terminal');
     const readyIndex = send.mock.calls.findIndex(([, payload]) => payload.step === 'router-ready');
     expect(readyIndex).toBeGreaterThan(terminalIndex);
+    cleanup();
+  });
+
+  it('accepts a second dashboard boot handshake after the wizard reloads it', async () => {
+    const send = vi.fn();
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      setBounds: vi.fn(),
+    };
+    const snapshot = { state: 'ready', capabilities: { router: { state: 'ready' } } };
+    const lifecycle = {
+      snapshot,
+      start: vi.fn(async () => snapshot),
+      subscribe: vi.fn((listener: (value: typeof snapshot) => void) => {
+        listener(snapshot);
+        return vi.fn();
+      }),
+    };
+    const context = {
+      bus: new MessageBus(),
+      parsedConfig: { onboarding: { setupComplete: true } },
+      registry: { get: vi.fn(() => ({ capabilitySnapshot: { stt: false, tts: false } })) },
+      lifecycle,
+    };
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn(async () => 'gpu') } as never,
+    });
+
+    electronMocks.emit('boot-ready');
+    await vi.waitFor(() => expect(lifecycle.start).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(
+      'boot-status',
+      expect.objectContaining({ step: 'whisper-unavailable' }),
+    ));
+    electronMocks.emit('reveal-done');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(
+      'boot-status',
+      expect.objectContaining({ step: 'piper-unavailable' }),
+    ));
+
+    electronMocks.emit('boot-ready');
+    await vi.waitFor(() => expect(lifecycle.start).toHaveBeenCalledTimes(2));
+    cleanup();
+  });
+
+  it('keeps an already-ready router truthful when the remaining lifecycle start times out', async () => {
+    const send = vi.fn();
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send },
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      setBounds: vi.fn(),
+    };
+    const snapshot = { state: 'starting', capabilities: { router: { state: 'ready' } } };
+    const context = {
+      bus: new MessageBus(),
+      parsedConfig: { onboarding: { setupComplete: true } },
+      registry: { get: vi.fn() },
+      lifecycle: {
+        snapshot,
+        start: vi.fn(() => new Promise<void>(() => {})),
+        subscribe: vi.fn((listener: (value: typeof snapshot) => void) => {
+          listener(snapshot);
+          return vi.fn();
+        }),
+      },
+    };
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn(async () => 'gpu') } as never,
+    });
+
+    electronMocks.emit('boot-ready');
+    await vi.advanceTimersByTimeAsync(330_000);
+    await Promise.resolve();
+
+    expect(send).not.toHaveBeenCalledWith(
+      'boot-status',
+      expect.objectContaining({ step: 'router-terminal' }),
+    );
+    expect(send).toHaveBeenCalledWith(
+      'boot-status',
+      expect.objectContaining({ step: 'router-ready' }),
+    );
+    cleanup();
+  });
+
+  it('shows a visible error when the dashboard transition cannot be loaded', async () => {
+    const mainWindow = {
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send: vi.fn() },
+      loadFile: vi.fn().mockRejectedValue(new Error('disk read failed')),
+      unmaximize: vi.fn(),
+      setSize: vi.fn(),
+      setPosition: vi.fn(),
+    };
+    const context = {
+      bus: new MessageBus(),
+      parsedConfig: { onboarding: { setupComplete: true } },
+      registry: { get: vi.fn() },
+      lifecycle: { snapshot: { state: 'ready', capabilities: {} }, subscribe: vi.fn(() => vi.fn()) },
+    };
+    const cleanup = registerBootHandlers({
+      getMainWindow: () => mainWindow as never,
+      getAppContext: () => context as never,
+      piperProvider: { speak: vi.fn() } as never,
+      containerManager: { checkGpu: vi.fn() } as never,
+    });
+
+    electronMocks.emit('wizard-done');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(electronMocks.showErrorBox).toHaveBeenCalledWith(
+      'Sarah konnte die Oberfläche nicht laden',
+      expect.stringContaining('Das Dashboard konnte nicht geladen werden'),
+    );
     cleanup();
   });
 

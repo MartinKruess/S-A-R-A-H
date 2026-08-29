@@ -19,11 +19,19 @@ const SERVER_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const STARTUP_TIMEOUT_MS = 300_000;
 const HEALTH_POLL_MS = 500;
 const RESTART_MAX_DELAY_MS = 30_000;
+const RESTART_MAX_ATTEMPTS = 5;
 const PROCESS_EXIT_TIMEOUT_MS = 1_000;
 const HTTP_PROBE_TIMEOUT_MS = 5_000;
 const SHUTDOWN_PROBE_TIMEOUT_MS = 1_500;
 const PRIVATE_TEMP_PREFIX = 'sarah-private-stt';
 const PRIVATE_TEMP_DIRECTORY_PATTERN = /^sarah-private-stt-\d+-[a-z0-9_-]{6,}$/iu;
+
+class WhisperPrerequisiteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WhisperPrerequisiteError';
+  }
+}
 
 export class FasterWhisperProvider implements SttProvider {
   readonly id = 'faster-whisper';
@@ -66,7 +74,7 @@ export class FasterWhisperProvider implements SttProvider {
           if (!this.destroyed && error instanceof Error && error.name !== 'AbortError') {
             const message = error instanceof Error ? error.message : String(error);
             this.publishAvailability(false, message);
-            this.scheduleRestart();
+            if (!(error instanceof WhisperPrerequisiteError)) this.scheduleRestart();
           }
           throw error;
         })
@@ -111,7 +119,9 @@ export class FasterWhisperProvider implements SttProvider {
     if (this.serverProcess) return;
 
     if (!fs.existsSync(this.scriptPath)) {
-      throw new Error(`faster-whisper server script not found: ${this.scriptPath}`);
+      throw new WhisperPrerequisiteError(
+        `faster-whisper server script not found: ${this.scriptPath}`,
+      );
     }
 
     // Kill any leftover server from a previous run
@@ -160,7 +170,11 @@ export class FasterWhisperProvider implements SttProvider {
 
     child.on('error', (err) => {
       console.error('[FasterWhisper] Server process error:', err.message);
-      const error = new Error(`Failed to start faster-whisper (is Python in PATH?): ${err.message}`);
+      const code = 'code' in err ? err.code : undefined;
+      const message = `Failed to start faster-whisper (is Python in PATH?): ${err.message}`;
+      const error = code === 'ENOENT' || code === 'EACCES'
+        ? new WhisperPrerequisiteError(message)
+        : new Error(message);
       if (startupComplete) this.handleRuntimeFailure(child, error.message);
       else rejectOnSpawnError(error);
     });
@@ -390,7 +404,7 @@ export class FasterWhisperProvider implements SttProvider {
   }
 
   private scheduleRestart(): void {
-    if (this.destroyed || this.restartTimer) return;
+    if (this.destroyed || this.restartTimer || this.restartAttempt >= RESTART_MAX_ATTEMPTS) return;
     const delayMs = Math.min(1_000 * (2 ** this.restartAttempt), RESTART_MAX_DELAY_MS);
     this.restartAttempt += 1;
     this.restartTimer = setTimeout(() => {
@@ -401,6 +415,14 @@ export class FasterWhisperProvider implements SttProvider {
       });
     }, delayMs);
     this.restartTimer.unref?.();
+  }
+
+  async retry(signal?: AbortSignal): Promise<void> {
+    if (this.destroyed) throw abortError('Faster Whisper has been destroyed');
+    if (this.restartTimer) clearTimeout(this.restartTimer);
+    this.restartTimer = null;
+    this.restartAttempt = 0;
+    await this.init(signal);
   }
 
   private publishAvailability(available: boolean, message?: string): void {

@@ -19,6 +19,8 @@ import {
   MESSAGES_PAGE_MAX_LIMIT,
 } from './storage.interface.js';
 
+export const SQLITE_SCHEMA_VERSION = 1;
+
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS kv_store (
     key   TEXT PRIMARY KEY,
@@ -135,13 +137,40 @@ export class SqliteStorage implements StorageProvider {
     this.dbPath = dbPath;
     const db = new Database(dbPath);
     try {
+      const schemaVersion = db.pragma('user_version', { simple: true }) as number;
+      if (!Number.isSafeInteger(schemaVersion) || schemaVersion < 0) {
+        throw new Error(`SQLite schema version is invalid: ${schemaVersion}`);
+      }
+      if (schemaVersion > SQLITE_SCHEMA_VERSION) {
+        throw new Error(
+          `SQLite database uses newer schema version ${schemaVersion}; this build supports up to ${SQLITE_SCHEMA_VERSION}`,
+        );
+      }
       db.pragma('journal_mode = WAL');
       db.pragma('foreign_keys = OFF');
-      db.exec(SCHEMA);
-      this.migrateConversations(db);
-      this.migrateMessages(db);
-      this.migrateMemoryStaging(db);
-      this.migrateStorageQuarantine(db);
+      const migrate = db.transaction(() => {
+        let version = schemaVersion;
+        while (version < SQLITE_SCHEMA_VERSION) {
+          switch (version) {
+            case 0:
+              db.exec(SCHEMA);
+              this.migrateConversations(db);
+              this.migrateMessages(db);
+              this.migrateMemoryStaging(db);
+              this.migrateStorageQuarantine(db);
+              version = 1;
+              db.pragma(`user_version = ${version}`);
+              break;
+            default:
+              throw new Error(`No SQLite migration path from version ${version} to ${SQLITE_SCHEMA_VERSION}`);
+          }
+        }
+        if (version !== SQLITE_SCHEMA_VERSION) {
+          throw new Error(`No SQLite migration path from version ${version} to ${SQLITE_SCHEMA_VERSION}`);
+        }
+      });
+      migrate();
+      db.pragma('secure_delete = FAST');
       db.pragma('foreign_keys = ON');
       const violations = db.pragma('foreign_key_check') as Array<Record<string, string | number>>;
       if (violations.length > 0) {
@@ -376,20 +405,16 @@ export class SqliteStorage implements StorageProvider {
       if (!staging) throw new Error(`Memory staging item ${stagingId} does not exist`);
       this.db.prepare(`
         UPDATE memory_staging
-        SET state = 'failed', source_content = '', policy_terms = '',
-          lease_started_at = NULL, updated_at = datetime('now')
+        SET state = 'failed', lease_started_at = NULL, updated_at = datetime('now')
         WHERE id = ?
       `).run(stagingId);
-      this.db.prepare(
-        'DELETE FROM messages WHERE conversation_id = ? AND turn_id = ?',
-      ).run(staging.conversation_id, staging.turn_id);
     })();
   }
 
   async purgeAllLayer2Memory(
     conversationSummaries?: readonly ConversationSummaryClear[],
   ): Promise<Layer2MemoryPurgeResult> {
-    return this.db.transaction(() => {
+    const result = this.db.transaction(() => {
       const conversations = this.db.prepare('SELECT id FROM conversations ORDER BY id').all() as Array<{ id: number }>;
       const summaries = conversationSummaries ?? conversations.map(({ id }) => ({ id, value: '' }));
       if (summaries.length !== conversations.length
@@ -463,6 +488,51 @@ export class SqliteStorage implements StorageProvider {
         quarantine: messageQuarantineCount.count + quarantineCount.count,
       };
     })();
+    await this.finalizePrivacyDeletion();
+    return result;
+  }
+
+  /**
+   * @param expectedIds - IDs shown to the user before destructive confirmation.
+   *
+   * - Verifies that the confirmed set still matches the database exactly.
+   * - Deletes curated rows and their recursive quarantine copies in one transaction.
+   *
+   * @returns Number of deleted curated memories.
+   *
+   * @category Data Access Security
+   */
+  async deleteAllCuratedMemories(expectedIds: readonly number[]): Promise<number> {
+    if (expectedIds.some((id) => !Number.isInteger(id) || id <= 0)
+      || new Set(expectedIds).size !== expectedIds.length) {
+      throw new Error('Curated-memory deletion requires unique positive integer IDs');
+    }
+    const confirmedIds = [...expectedIds].sort((left, right) => left - right);
+    const deleted = this.db.transaction(() => {
+      const currentIds = (this.db.prepare(
+        'SELECT id FROM curated_memories ORDER BY id',
+      ).all() as Array<{ id: number }>).map(({ id }) => id);
+      if (currentIds.length !== confirmedIds.length
+        || currentIds.some((id, index) => id !== confirmedIds[index])) {
+        throw new Error('Curated memories changed after deletion was requested');
+      }
+      const result = this.db.prepare('DELETE FROM curated_memories').run();
+      this.db.prepare(`
+        WITH RECURSIVE related(id) AS (
+          SELECT id FROM storage_quarantine
+          WHERE source_table = 'curated_memories'
+          UNION
+          SELECT quarantine.id
+          FROM storage_quarantine AS quarantine
+          JOIN related ON quarantine.source_table = 'storage_quarantine'
+            AND quarantine.source_row_id = related.id
+        )
+        DELETE FROM storage_quarantine WHERE id IN (SELECT id FROM related)
+      `).run();
+      return result.changes;
+    })();
+    if (deleted > 0) await this.finalizePrivacyDeletion();
+    return deleted;
   }
 
   async purgeLayer2LegacyMemory(input: Layer2LegacyPolicyPurgeInput): Promise<number> {
@@ -696,6 +766,27 @@ export class SqliteStorage implements StorageProvider {
     return result.changes;
   }
 
+  /**
+   * Scrubs remnants after an explicit privacy deletion without taxing ordinary deletes.
+   *
+   * - Enables full secure-delete only for the compaction window.
+   * - Truncates WAL before and after a full database rebuild.
+   * - Restores FAST mode for low-cost defense in depth during normal operation.
+   *
+   * @category Data Access Security
+   */
+  async finalizePrivacyDeletion(): Promise<void> {
+    if (this.dbPath === ':memory:') return;
+    this.db.pragma('secure_delete = ON');
+    try {
+      this.requireWalCheckpoint('before privacy VACUUM');
+      this.db.exec('VACUUM');
+      this.requireWalCheckpoint('after privacy VACUUM');
+    } finally {
+      this.db.pragma('secure_delete = FAST');
+    }
+  }
+
   async queryMessagesPage(query: MessagesPageQuery): Promise<MessageRow[]> {
     if (!Number.isInteger(query.limit) || query.limit <= 0 || query.limit > MESSAGES_PAGE_MAX_LIMIT) {
       throw new Error(`Invalid limit: ${query.limit} (must be an integer in 1..${MESSAGES_PAGE_MAX_LIMIT})`);
@@ -854,6 +945,17 @@ export class SqliteStorage implements StorageProvider {
     const columns = db.pragma('table_info(storage_quarantine)') as Array<{ name: string }>;
     if (columns.some((column) => column.name === 'row_data')) return;
     db.exec("ALTER TABLE storage_quarantine ADD COLUMN row_data TEXT NOT NULL DEFAULT '{}'");
+  }
+
+  private requireWalCheckpoint(stage: string): void {
+    const [result] = this.db.pragma('wal_checkpoint(TRUNCATE)') as Array<{
+      busy: number;
+      log: number;
+      checkpointed: number;
+    }>;
+    if (!result || result.busy !== 0) {
+      throw new Error(`SQLite privacy deletion could not truncate WAL ${stage}`);
+    }
   }
 
   /** Prevent SQL injection by validating table/column names are alphanumeric + underscore. */

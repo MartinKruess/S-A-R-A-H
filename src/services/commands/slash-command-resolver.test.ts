@@ -45,10 +45,10 @@ describe('resolveSlashCommand', () => {
     },
   );
 
-  it.each(['/anonymous geheim', '/incognito', '/confirm 1234'])(
+  it.each(['/anonymous geheim', '/anonymous', '/confirm 1234'])(
     'resolves implemented privacy/confirmation commands before custom macros: %s',
     (input) => {
-      const command = input.split(' ')[0] as '/anonymous' | '/incognito' | '/confirm';
+      const command = input.split(' ')[0] as '/anonymous' | '/confirm';
       expect(resolveSlashCommand(input, [{ command, prompt: 'Ignorieren' }])).toEqual({
         kind: 'builtin',
         command,
@@ -56,6 +56,16 @@ describe('resolveSlashCommand', () => {
       });
     },
   );
+
+  it('no longer resolves /incognito as a built-in command', () => {
+    expect(resolveSlashCommand('/incognito', commands)).toEqual({
+      kind: 'unknown',
+      command: '/incognito',
+      arguments: '',
+    });
+    expect(BUILTIN_COMMANDS.map((entry) => String(entry.command))).not.toContain('/incognito');
+    expect(RESERVED_BUILTIN_COMMANDS.has('/incognito')).toBe(false);
+  });
 
   it('rejects unknown commands without sending them to an LLM', () => {
     expect(resolveSlashCommand('/gibt-es-nicht', commands)).toEqual({

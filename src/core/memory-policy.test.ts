@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mustKeepTurnTransient } from './memory-policy.js';
+import { MEMORY_EXCLUSION_CATEGORY_IDS, mustKeepTurnTransient } from './memory-policy.js';
 import { MAX_MEMORY_EXCLUSIONS, MAX_MEMORY_EXCLUSION_LENGTH } from './memory-exclusions.js';
 
 describe('mustKeepTurnTransient', () => {
@@ -10,8 +10,19 @@ describe('mustKeepTurnTransient', () => {
     expect(mustKeepTurnTransient(['Siehe HTTP://EXAMPLE.COM/path?q=1.'], browserPolicy)).toBe(true);
   });
 
-  it('does not mistake URL-like plain text or other protocols for web URLs', () => {
-    expect(mustKeepTurnTransient(['example.com ist nur ein Domainname'], browserPolicy)).toBe(false);
+  it('recognizes spoken or copied domains as browser data without requiring a scheme', () => {
+    expect(mustKeepTurnTransient(['Ich besuchte www.beispiel.de heute'], browserPolicy)).toBe(true);
+    expect(mustKeepTurnTransient(['Ich war auf beispiel.de/geheim'], browserPolicy)).toBe(true);
+  });
+
+  it.each(['Browserdaten', 'Browserverlauf'])('recognizes browser exclusion alias %s', (exclusion) => {
+    expect(mustKeepTurnTransient(
+      ['Ich war auf beispiel.de/geheim'],
+      { allowed: true, exclusions: [exclusion] },
+    )).toBe(true);
+  });
+
+  it('does not mistake email addresses or other protocols for web URLs', () => {
     expect(mustKeepTurnTransient(['mailto:person@example.com'], browserPolicy)).toBe(false);
   });
 
@@ -58,6 +69,34 @@ describe('mustKeepTurnTransient', () => {
     '/confirm 83838383-8383-4383-8383-838383838383',
   ])('does not block harmless substrings that resemble secret labels: %s', (content) => {
     expect(mustKeepTurnTransient([content], { allowed: true, exclusions: [] })).toBe(false);
+  });
+
+  it.each([
+    'Ich gehe heute tanzen.',
+    'Wir waren beim Tanzkurs.',
+    'Der Pinguin im Zoo war lustig.',
+    'Ich mag Tannenbaeume.',
+    'Der Tanker liegt im Hafen.',
+  ])('does not block words that merely begin like an assignment label: %s', (content) => {
+    expect(mustKeepTurnTransient([content], { allowed: true, exclusions: [] })).toBe(false);
+  });
+
+  it('does not classify action confirmation control text as private data', () => {
+    expect(mustKeepTurnTransient([
+      'Öffne Spotify',
+      'Bitte bestätige die Aktion open_program mit dem Parameter „spotify“. Antworte mit /confirm 12345678-1234-4234-8234-123456789012.',
+    ], { allowed: true, exclusions: [] })).toBe(false);
+  });
+
+  it.each([
+    'Meine Passwörter: a1, b2.',
+    'The passwords are stored here.',
+    'Mein PW ist Fuchs17.',
+    'pwd=Fuchs17',
+    'Mein Netflix-Login: martin@example.de / Sommer2024!',
+    'Meine Zugangsdaten: martin / Sommer2024!',
+  ])('never persists common plural, abbreviated or login secret labels: %s', (content) => {
+    expect(mustKeepTurnTransient([content], { allowed: true, exclusions: [] })).toBe(true);
   });
 
   it('matches category vocabulary as complete tokens instead of substrings', () => {
@@ -109,6 +148,40 @@ describe('mustKeepTurnTransient', () => {
     expect(mustKeepTurnTransient(
       ['Der Depressionsroman wurde ausgezeichnet.'],
       { allowed: true, exclusions: ['Gesundheit'] },
+    )).toBe(false);
+  });
+
+  it.each([
+    MEMORY_EXCLUSION_CATEGORY_IDS.HEALTH,
+    'Gesundheitsdaten',
+    'Medizinische Daten',
+    'Medical data',
+  ])('maps the stable health category and legacy/display alias %s to one contract', (exclusion) => {
+    expect(mustKeepTurnTransient(
+      ['Meine Schwangerschaft wird von einer Ärztin begleitet.'],
+      { allowed: true, exclusions: [exclusion] },
+    )).toBe(true);
+  });
+
+  it.each([
+    'Mein HIV-Test war negativ.',
+    'Die Krebsdiagnose wurde bestätigt.',
+    'Ich habe morgen einen Termin beim Psychiater.',
+    'Ich nehme Ibuprofen gegen die Schmerzen.',
+    'My doctor discussed the cancer treatment.',
+    'The blood pressure result was high.',
+    'She is pregnant and takes medication.',
+  ])('keeps representative health data transient when the health category is enabled: %s', (content) => {
+    expect(mustKeepTurnTransient(
+      [content],
+      { allowed: true, exclusions: [MEMORY_EXCLUSION_CATEGORY_IDS.HEALTH] },
+    )).toBe(true);
+  });
+
+  it('does not silently turn the optional health category into a global storage prohibition', () => {
+    expect(mustKeepTurnTransient(
+      ['Ich nehme Ibuprofen gegen Kopfschmerzen.'],
+      { allowed: true, exclusions: [] },
     )).toBe(false);
   });
 

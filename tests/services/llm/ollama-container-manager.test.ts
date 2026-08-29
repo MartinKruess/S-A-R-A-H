@@ -142,7 +142,11 @@ describe('OllamaContainerManager.ensureRunning', () => {
 
   it('throws a German message when docker is not installed', async () => {
     const { manager } = createManager({ execResults: [enoentError()], existsFn: () => false });
-    await expect(manager.ensureRunning()).rejects.toThrow(/Docker Desktop ist nicht installiert/);
+    await expect(manager.ensureRunning()).rejects.toMatchObject({
+      code: 'OLLAMA_PREREQUISITE',
+      dockerState: 'not-installed',
+      message: expect.stringMatching(/Docker Desktop ist nicht installiert/),
+    });
   });
 
   it('throws a German message when docker is installed but not on PATH', async () => {

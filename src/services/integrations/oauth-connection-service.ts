@@ -23,10 +23,13 @@ type FetchFn = typeof fetch;
 export type ConnectionInfo = {
   id: string;
   displayName: string;
+  configured: boolean;
   connected: boolean;
   expiresAt?: number;
   storageState?: 'recovered' | 'degraded';
   storageError?: string;
+  temporaryError?: string;
+  configurationError?: string;
 };
 
 /** Access tokens are refreshed this many ms before their actual expiry. */
@@ -61,6 +64,7 @@ export class OAuthConnectionService {
   private readonly activeConnections = new Map<string, (error: Error) => Promise<void>>();
   /** At most one refresh request per provider may update or remove its token. */
   private readonly activeRefreshes = new Map<string, Promise<string | null>>();
+  private readonly refreshErrors = new Map<string, string>();
   private destroyed = false;
 
   constructor(deps: OAuthConnectionServiceDeps) {
@@ -85,14 +89,20 @@ export class OAuthConnectionService {
   private toInfo(p: OAuthProvider): ConnectionInfo {
     const stored = this.tokenStore.get(p.id);
     const storageStatus = this.tokenStore.getStatus();
+    const configured = p.clientId.trim().length > 0;
     return {
       id: p.id,
       displayName: p.displayName,
+      configured,
       connected: stored !== undefined,
       expiresAt: stored?.expiresAt,
       ...(storageStatus.state === 'ready'
         ? {}
         : { storageState: storageStatus.state, storageError: storageStatus.message }),
+      ...(this.refreshErrors.has(p.id) ? { temporaryError: this.refreshErrors.get(p.id) } : {}),
+      ...(configured
+        ? {}
+        : { configurationError: `${p.displayName} ist in dieser Installation noch nicht eingerichtet.` }),
     };
   }
 
@@ -116,9 +126,13 @@ export class OAuthConnectionService {
     if (!p || !p.clientId) return null;
 
     const stored = this.tokenStore.get(id);
-    if (!stored) return null;
+    if (!stored) {
+      this.refreshErrors.delete(id);
+      return null;
+    }
 
     if (stored.expiresAt - this.now() > REFRESH_SKEW_MS) {
+      this.refreshErrors.delete(id);
       return stored.accessToken;
     }
 
@@ -151,11 +165,14 @@ export class OAuthConnectionService {
       };
       const current = this.tokenStore.get(id);
       if (!current || !this.sameToken(current, stored)) {
-        return current && current.expiresAt - this.now() > REFRESH_SKEW_MS
-          ? current.accessToken
-          : null;
+        if (current && current.expiresAt - this.now() > REFRESH_SKEW_MS) {
+          this.refreshErrors.delete(id);
+          return current.accessToken;
+        }
+        return null;
       }
       this.tokenStore.set(id, updated);
+      this.refreshErrors.delete(id);
       return updated.accessToken;
     } catch (err) {
       if (signal?.aborted) throw abortError();
@@ -167,6 +184,9 @@ export class OAuthConnectionService {
       if (definitive) {
         const current = this.tokenStore.get(id);
         if (current && this.sameToken(current, stored)) this.tokenStore.delete(id);
+        this.refreshErrors.delete(id);
+      } else {
+        this.refreshErrors.set(id, 'Die Verbindung ist gespeichert, aber Spotify ist gerade nicht erreichbar.');
       }
       return null;
     }
@@ -181,6 +201,18 @@ export class OAuthConnectionService {
 
   async disconnect(id: string): Promise<void> {
     this.tokenStore.delete(id);
+    this.refreshErrors.delete(id);
+  }
+
+  /** Explain a null access-token result without conflating outages with disconnects. */
+  getAccessTokenFailure(id: string): 'not-connected' | 'temporarily-unavailable' {
+    return this.refreshErrors.has(id) ? 'temporarily-unavailable' : 'not-connected';
+  }
+
+  /** Cancel one interactive authorization flow without affecting stored tokens. */
+  async cancelConnect(id: string): Promise<void> {
+    const cancel = this.activeConnections.get(id);
+    if (cancel) await cancel(new Error('Verbindung abgebrochen.'));
   }
 
   /**
@@ -193,7 +225,7 @@ export class OAuthConnectionService {
     const p = this.provider(id);
     if (!p) throw new Error(`Unbekannter Dienst: ${id}`);
     if (!p.clientId) {
-      throw new Error('SPOTIFY_CLIENT_ID fehlt — App im Spotify-Dashboard anlegen und Client-ID setzen.');
+      throw new Error(`${p.displayName} ist in dieser Installation noch nicht eingerichtet.`);
     }
     if (this.connecting.has(id)) {
       throw new Error('Die Verbindung läuft bereits — bitte schließe zuerst den Browser-Login ab.');
@@ -206,6 +238,7 @@ export class OAuthConnectionService {
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
+      let callbackInProgress = false;
       const server = http.createServer();
 
       const closeServer = (): Promise<void> => new Promise((closeResolve) => {
@@ -263,10 +296,18 @@ export class OAuthConnectionService {
         void (async (): Promise<void> => {
           try {
             const returnedState = url.searchParams.get('state');
+            if (returnedState !== state) {
+              respond(400, '<!doctype html><meta charset="utf-8"><p>Ungültige oder veraltete Rückmeldung.</p>');
+              return;
+            }
+            if (callbackInProgress || settled) {
+              respond(409, '<!doctype html><meta charset="utf-8"><p>Diese Rückmeldung wird bereits verarbeitet.</p>');
+              return;
+            }
+            callbackInProgress = true;
             const code = url.searchParams.get('code');
             const oauthError = url.searchParams.get('error');
             if (oauthError) throw new Error(`Spotify hat die Verbindung abgelehnt: ${oauthError}`);
-            if (returnedState !== state) throw new Error('State stimmt nicht überein (möglicher CSRF).');
             if (!code) throw new Error('Kein Autorisierungscode empfangen.');
 
             const tokens = await exchangeCode(p, { code, redirectUri, verifier }, this.fetchFn);

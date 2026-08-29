@@ -16,6 +16,7 @@ export interface MemoryCuratorOptions {
   maxSourceChars?: number;
   onMemoryChanged?: () => void | Promise<void>;
   getCurrentPolicy?: () => TurnPersistencePolicy;
+  onMaintenanceFailure?: () => void | Promise<void>;
 }
 
 const DEFAULT_IDLE_DELAY_MS = 30_000;
@@ -35,6 +36,7 @@ export class MemoryCurator {
   private readonly maxSourceChars: number;
   private readonly onMemoryChanged?: () => void | Promise<void>;
   private readonly getCurrentPolicy: () => TurnPersistencePolicy;
+  private readonly onMaintenanceFailure?: () => void | Promise<void>;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private activeController: AbortController | null = null;
   private running: Promise<void> | null = null;
@@ -48,6 +50,7 @@ export class MemoryCurator {
     this.idleDelayMs = options.idleDelayMs ?? DEFAULT_IDLE_DELAY_MS;
     this.maxSourceChars = options.maxSourceChars ?? DEFAULT_MAX_SOURCE_CHARS;
     this.onMemoryChanged = options.onMemoryChanged;
+    this.onMaintenanceFailure = options.onMaintenanceFailure;
     this.getCurrentPolicy = options.getCurrentPolicy
       ?? (() => ({ allowed: true, exclusions: [] }));
   }
@@ -124,11 +127,14 @@ export class MemoryCurator {
       const canceled = error instanceof Error && error.name === 'AbortError';
       if (canceled) await this.store.releaseCancellation(job);
       else if (this.store.shouldRetry(job)) await this.store.release(job.id);
-      else await this.store.fail(job.id);
+      else {
+        await this.store.fail(job.id);
+        await this.onMaintenanceFailure?.();
+      }
       if (!canceled) {
         console.warn(this.store.shouldRetry(job)
           ? '[MemoryCurator] Maintenance job failed; queued for bounded retry'
-          : '[MemoryCurator] Maintenance job failed permanently; raw staging was discarded');
+          : '[MemoryCurator] Maintenance job failed for this run; encrypted staging was retained for startup recovery');
       }
     } finally {
       if (this.activeController === controller) this.activeController = null;

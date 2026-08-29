@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isFolderScanAllowed,
   isProgramDetectionAllowed,
+  resolveFolderScanPath,
   type FolderScanGrant,
 } from '../../src/main/ipc-programs.js';
 
@@ -47,15 +48,26 @@ describe('program-folder scan authorization', () => {
     expect(isFolderScanAllowed(workspace, 'all', [], new Map(), senderId, 1_000)).toBe(true);
   });
 
+  it('returns the canonical path that was authorized for the subsequent filesystem read', () => {
+    expect(resolveFolderScanPath(
+      sourceFolder,
+      'specific-folders',
+      [workspace],
+      new Map(),
+      senderId,
+      1_000,
+    )).toBe(canonical(sourceFolder));
+  });
+
   it('rejects picker grants from another renderer or after expiry', () => {
     const selectedGrant = grant(sourceFolder);
     expect(isFolderScanAllowed(sourceFolder, 'specific-folders', [], selectedGrant, senderId + 1, 1_000)).toBe(false);
     expect(isFolderScanAllowed(sourceFolder, 'specific-folders', [], selectedGrant, senderId, 2_001)).toBe(false);
   });
 
-  it('blocks automatic program inventory when file access is disabled', () => {
+  it('allows machine-wide automatic inventory only with all-files access', () => {
     expect(isProgramDetectionAllowed('none')).toBe(false);
-    expect(isProgramDetectionAllowed('specific-folders')).toBe(true);
+    expect(isProgramDetectionAllowed('specific-folders')).toBe(false);
     expect(isProgramDetectionAllowed('all')).toBe(true);
   });
 });

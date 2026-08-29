@@ -4,7 +4,7 @@ import { app, BrowserWindow, dialog, screen, shell } from 'electron';
 import type { IpcMain } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { SarahConfigPatch } from '../core/config-schema.js';
-import { isAudioConfigEqual } from '../core/config-schema.js';
+import { isAudioConfigEqual, mergeSarahConfigPatch, SarahConfigSchema } from '../core/config-schema.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { getService } from './ipc-helpers.js';
 import { isValidOptionalTitle } from './ipc-validation.js';
@@ -114,18 +114,7 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
         const previousVoiceMode = ctx.parsedConfig.controls.voiceMode;
         const previousPushToTalkKey = ctx.parsedConfig.controls.pushToTalkKey;
         const previousTrust = ctx.parsedConfig.trust;
-        const merged = {
-          ...existing,
-          ...config,
-          ...(
-            config.audio
-              ? { audio: { ...ctx.parsedConfig.audio, ...config.audio } }
-              : {}
-          ),
-        };
-
-        const { SarahConfigSchema } = await import('../core/config-schema.js');
-        let parsed = SarahConfigSchema.parse(merged);
+        let parsed = mergeSarahConfigPatch(ctx.parsedConfig, config);
         const customCommands = removeReservedCustomCommandCollisions(parsed.controls.customCommands);
         if (customCommands.length !== parsed.controls.customCommands.length) {
           parsed = {
@@ -133,32 +122,42 @@ export function registerConfigHandlers(ipcMain: IpcMain, deps: ConfigHandlerDeps
             controls: { ...parsed.controls, customCommands },
           };
         }
-
-        const mergedControls = merged.controls && typeof merged.controls === 'object'
-          ? merged.controls as Record<string, unknown>
-          : {};
-        await ctx.config.set('root', {
-          ...merged,
-          controls: { ...mergedControls, customCommands },
-        });
+        await ctx.config.set('root', parsed);
         ctx.parsedConfig = parsed;
 
         const memoryPolicyChanged = previousTrust.memoryAllowed !== parsed.trust.memoryAllowed
           || JSON.stringify(previousTrust.memoryExclusions) !== JSON.stringify(parsed.trust.memoryExclusions);
         const trustChanged = JSON.stringify(previousTrust) !== JSON.stringify(parsed.trust);
-        if (trustChanged) deps.onTrustChanged?.();
         if (memoryPolicyChanged || memoryPolicyRecoveryRequired) {
           const router = ctx.registry?.get('router') as RouterService | undefined;
           if (router) {
             memoryPolicyRecoveryRequired = true;
-            await router.applyMemoryPolicy({
-              allowed: parsed.trust.memoryAllowed,
-              exclusions: parsed.trust.memoryExclusions,
-            });
-            memoryPolicyRecoveryRequired = false;
+            try {
+              await router.applyMemoryPolicy({
+                allowed: parsed.trust.memoryAllowed,
+                exclusions: parsed.trust.memoryExclusions,
+              });
+              memoryPolicyRecoveryRequired = false;
+            } catch (error) {
+              memoryPolicyRecoveryRequired = true;
+              try {
+                await ctx.config.set('root', existing);
+                ctx.parsedConfig = SarahConfigSchema.parse(existing);
+              } catch (rollbackError) {
+                throw new MemoryPolicyApplyError(
+                  `Memory policy failed and configuration rollback failed: ${rollbackError instanceof Error ? rollbackError.message : 'unknown rollback error'}`,
+                );
+              }
+              throw error;
+            }
           } else if (memoryPolicyRecoveryRequired) {
             throw new MemoryPolicyApplyError('Memory policy cleanup retry requires the running router');
           }
+        }
+        if (trustChanged) {
+          // A confirmation is valid only under the trust contract that created it.
+          ctx.actionConfirmations.clear();
+          deps.onTrustChanged?.();
         }
 
         const inputDeviceChanged = previousAudio.inputDeviceId !== parsed.audio.inputDeviceId;

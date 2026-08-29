@@ -52,6 +52,7 @@ export interface SarahVoiceApi {
 export interface SarahConnectionsApi {
   list(): Promise<ConnectionInfo[]>;
   connect(id: string): Promise<{ ok: boolean; error?: string }>;
+  cancel(id: string): Promise<void>;
   disconnect(id: string): Promise<void>;
 }
 
@@ -76,6 +77,8 @@ export interface SarahApi {
   ): () => void;
   getConfig(): Promise<SarahConfig>;
   getRuntimeStatus(): Promise<RuntimeSnapshot>;
+  retryRuntimeRecovery(): Promise<IpcCommands['retry-runtime-recovery']['output']>;
+  getPrivacyState(): Promise<IpcCommands['get-privacy-state']['output']>;
   onRuntimeStatus(cb: (snapshot: RuntimeSnapshot) => void): () => void;
   saveConfig(config: SarahConfigPatch): Promise<SaveConfigResult>;
   reviewLegacyDbRecovery(): Promise<LegacyDbRecoveryReview>;

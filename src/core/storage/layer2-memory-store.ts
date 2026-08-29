@@ -204,6 +204,21 @@ export class Layer2MemoryStore {
     return recovered;
   }
 
+  async recoverFailedJobs(now = Date.now()): Promise<number> {
+    const rows = await this.db.query<MemoryStagingRow>('memory_staging', { state: 'failed' });
+    let recovered = 0;
+    for (const row of rows) {
+      if (!row.source_content.trim()) continue;
+      recovered += await this.db.update('memory_staging', { id: row.id }, {
+        state: 'pending',
+        attempts: 0,
+        lease_started_at: null,
+        updated_at: new Date(now).toISOString(),
+      });
+    }
+    return recovered;
+  }
+
   async stageTurn(
     conversationId: number,
     turnId: string,
@@ -320,10 +335,11 @@ export class Layer2MemoryStore {
     await this.db.discardMemoryStaging(stagingId);
   }
 
-  async list(): Promise<CuratedMemoryRow[]> {
+  async list(options: { includeDeleted?: boolean } = {}): Promise<CuratedMemoryRow[]> {
     const rows = await this.db.query<CuratedMemoryRow>('curated_memories');
     return rows
-      .filter((row) => row.deleted_at == null && !containsUnconditionallyPrivateData(row.content))
+      .filter((row) => (options.includeDeleted || row.deleted_at == null)
+        && !containsUnconditionallyPrivateData(row.content))
       .sort((left, right) => right.id - left.id);
   }
 
@@ -361,13 +377,21 @@ export class Layer2MemoryStore {
   }
 
   async delete(id: number): Promise<boolean> {
-    return (await this.db.delete('curated_memories', { id })) > 0;
+    const deleted = await this.db.delete('curated_memories', { id });
+    if (deleted > 0) await this.db.finalizePrivacyDeletion?.();
+    return deleted > 0;
+  }
+
+  async deleteAll(expectedIds: readonly number[]): Promise<number> {
+    if (!this.db.deleteAllCuratedMemories) {
+      throw new Error('Storage provider does not support atomic curated-memory deletion');
+    }
+    return this.db.deleteAllCuratedMemories(expectedIds);
   }
 
   async applyPolicy(policy: TurnPersistencePolicy): Promise<{ turns: number; staging: number; memories: number }> {
     if (!policy.allowed) {
-      const purged = await this.db.purgeAllLayer2Memory();
-      return { turns: purged.turns, staging: purged.staging, memories: purged.memories };
+      return { turns: 0, staging: 0, memories: 0 };
     }
 
     const messages = await this.db.query<MessageRow>('messages');
@@ -455,6 +479,12 @@ export class Layer2MemoryStore {
       if (!excludedStagingIds.has(row.id)) continue;
       deletedStaging += await this.db.delete('memory_staging', { id: row.id });
     }
+    const privacyRowsRemoved = deletedTurns > 0
+      || deletedStaging > 0
+      || deletedMemories > 0
+      || purgedUnreadable.quarantine > 0
+      || purgedLegacy > 0;
+    if (privacyRowsRemoved) await this.db.finalizePrivacyDeletion?.();
     return { turns: deletedTurns, staging: deletedStaging, memories: deletedMemories };
   }
 }

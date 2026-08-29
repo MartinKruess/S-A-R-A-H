@@ -32,6 +32,31 @@ export function toRowView(info: ConnectionInfo): ConnectionRowView {
       errorMessage: info.storageError ?? 'Der Verbindungsspeicher ist nicht lesbar.',
     };
   }
+  if (!info.configured) {
+    return {
+      id: info.id,
+      displayName: info.displayName,
+      connected: false,
+      badgeText: 'Nicht eingerichtet',
+      badgeState: 'error',
+      buttonLabel: 'Nicht verfügbar',
+      buttonDisabled: true,
+      errorMessage: info.configurationError
+        ?? `${info.displayName} ist in dieser Installation noch nicht eingerichtet.`,
+    };
+  }
+  if (info.temporaryError) {
+    return {
+      id: info.id,
+      displayName: info.displayName,
+      connected: true,
+      badgeText: 'Vorübergehend nicht erreichbar',
+      badgeState: 'error',
+      buttonLabel: 'Trennen',
+      buttonDisabled: false,
+      errorMessage: info.temporaryError,
+    };
+  }
   return {
     id: info.id,
     displayName: info.displayName,

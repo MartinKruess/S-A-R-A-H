@@ -35,9 +35,10 @@ export type ActionName = keyof typeof ACTION_SCHEMAS;
  * @param level - Aktuell konfigurierte Bestätigungsstufe.
  * @param action - Validierter Action-Name.
  *
- * - Erzwingt kritische Actions auf jeder Stufe.
+ * - Nutzt für Websuche und Ergebnisanzeige die separate dauerhafte Browserfreigabe.
+ * - Erzwingt sonstige Datenoffenlegung und kritische Actions auf jeder Stufe.
  * - Erzwingt bei `standard` sensible Actions.
- * - Erzwingt bei `maximal` jede Action, einschließlich Suche und Anzeige.
+ * - Erzwingt bei `maximal` jede nicht separat dauerhaft freigegebene Action.
  *
  * @returns Ob vor der Ausführung eine korrelierte Zustimmung erforderlich ist.
  *

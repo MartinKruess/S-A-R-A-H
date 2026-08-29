@@ -1,9 +1,10 @@
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { BrowserWindow, ipcMain, screen } from 'electron';
+import { BrowserWindow, dialog, ipcMain, screen } from 'electron';
 import type { AppContext } from '../core/bootstrap.js';
 import type { MessageBus } from '../core/message-bus.js';
 import type { OllamaContainerManager } from '../services/llm/ollama-container-manager.js';
+import type { RouterService } from '../services/llm/router-service.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
 import { forwardToRenderers, sendToRendererSafely } from './forward-to-renderers.js';
@@ -27,6 +28,7 @@ const SPLASH_TTS_EXPIRY_MS = 8_000;
 const ROUTER_CAPABILITY_TIMEOUT_MS = 150_000;
 const GPU_PROBE_TIMEOUT_MS = 5_000;
 const LIFECYCLE_BOOT_TIMEOUT_MS = 330_000;
+const MANUAL_RECOVERY_TIMEOUT_MS = 150_000;
 
 /**
  * Register the splash, chat and boot bridge for the current main-process run.
@@ -49,6 +51,13 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     controller: AbortController;
     expiry: ReturnType<typeof setTimeout>;
   } | null = null;
+  let activeBoot: Promise<void> | null = null;
+  let activeRuntimeRecovery: Promise<{
+    ok: boolean;
+    modelRecovered: boolean;
+    sttRecovered: boolean;
+    message?: string;
+  }> | null = null;
   const pendingDelays = new Set<{
     timer: ReturnType<typeof setTimeout>;
     resolve: () => void;
@@ -214,15 +223,29 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       const message = value instanceof Error ? value.message : String(value);
       console.error('[Boot] Activation failed:', value);
       if (stopped) return;
-      send('router-terminal', message, 'error');
+      const currentRouter = getAppContext().lifecycle.snapshot.capabilities.router;
+      const currentRouterStep = deriveBootCapabilitySteps(
+        currentRouter,
+        { stt: false, tts: false },
+      ).router;
+      if (currentRouterStep === 'router-ready') {
+        send('router-ready');
+      } else {
+        send('router-terminal', currentRouter?.message ?? message, 'error');
+      }
       send('whisper-unavailable', 'Spracherkennung konnte nicht aktiviert werden.', 'warning');
       await waitForReveal();
       send('piper-unavailable', 'Sprachausgabe konnte nicht aktiviert werden.', 'warning');
     }
   };
 
-  const onBootReady = (): void => { void runBoot(); };
-  ipcMain.once('boot-ready', onBootReady);
+  const onBootReady = (): void => {
+    if (activeBoot) return;
+    activeBoot = runBoot().finally(() => {
+      activeBoot = null;
+    });
+  };
+  ipcMain.on('boot-ready', onBootReady);
 
   const cancelSplashTts = (): void => {
     const request = activeSplashTts;
@@ -258,10 +281,21 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     }
   });
 
-  const loadDashboardBootMode = (): void => {
+  const loadFileWithVisibleFailure = (fileName: string, label: string): void => {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    void mainWindow.loadFile(path.join(__dirname, '..', '..', 'dashboard.html'));
+    void mainWindow.loadFile(path.join(__dirname, '..', '..', fileName)).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[Boot] ${label} could not be loaded:`, error);
+      dialog.showErrorBox(
+        'Sarah konnte die Oberfläche nicht laden',
+        `${label} konnte nicht geladen werden. Bitte starte Sarah neu.\n\n${message}`,
+      );
+    });
+  };
+
+  const loadDashboardBootMode = (): void => {
+    loadFileWithVisibleFailure('dashboard.html', 'Das Dashboard');
   };
 
   const onSplashDone = (): void => {
@@ -271,7 +305,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       loadDashboardBootMode();
     } else {
       mainWindow.maximize();
-      void mainWindow.loadFile(path.join(__dirname, '..', '..', 'wizard.html'));
+      loadFileWithVisibleFailure('wizard.html', 'Der Einrichtungsassistent');
     }
   };
   if (deps.splashDone) {
@@ -335,6 +369,70 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     return { accepted: published, turnId };
   });
   ipcMain.handle('get-runtime-status', () => getAppContext().lifecycle.snapshot);
+  ipcMain.handle('retry-runtime-recovery', () => {
+    if (activeRuntimeRecovery) return activeRuntimeRecovery;
+    const attempt = async (): Promise<{
+      ok: boolean;
+      modelRecovered: boolean;
+      sttRecovered: boolean;
+      message?: string;
+    }> => {
+      const ctx = getAppContext();
+      const router = ctx.registry?.get('router') as RouterService | undefined;
+      const voice = ctx.registry?.get('voice') as VoiceService | undefined;
+      const routerState = ctx.lifecycle.snapshot.capabilities.router?.state;
+      const workerState = ctx.lifecycle.snapshot.capabilities.local_worker?.state;
+      const sttState = ctx.lifecycle.snapshot.capabilities.stt?.state;
+      const modelNeedsRecovery = routerState === 'degraded'
+        || routerState === 'unavailable'
+        || routerState === 'error'
+        || workerState === 'degraded'
+        || workerState === 'unavailable'
+        || workerState === 'error';
+      const sttNeedsRecovery = sttState === 'degraded'
+        || sttState === 'unavailable'
+        || sttState === 'error';
+      const [model, stt] = await Promise.allSettled([
+        modelNeedsRecovery
+          ? runWithTimeout(
+              (signal) => router
+                ? router.retryRuntimeRecovery(signal)
+                : Promise.reject(new Error('Router service is unavailable')),
+              MANUAL_RECOVERY_TIMEOUT_MS,
+              'Model runtime recovery timed out',
+            )
+          : Promise.resolve(),
+        sttNeedsRecovery
+          ? runWithTimeout(
+              (signal) => voice
+                ? voice.retryRuntimeRecovery(signal)
+                : Promise.reject(new Error('Voice service is unavailable')),
+              MANUAL_RECOVERY_TIMEOUT_MS,
+              'Speech recognition recovery timed out',
+            )
+          : Promise.resolve(),
+      ]);
+      const modelRecovered = model.status === 'fulfilled';
+      const sttRecovered = stt.status === 'fulfilled';
+      const messages = [model, stt]
+        .filter((result) => result.status === 'rejected')
+        .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+      return {
+        ok: modelRecovered && sttRecovered,
+        modelRecovered,
+        sttRecovered,
+        ...(messages.length > 0 ? { message: messages.join(' ') } : {}),
+      };
+    };
+    activeRuntimeRecovery = attempt().finally(() => {
+      activeRuntimeRecovery = null;
+    });
+    return activeRuntimeRecovery;
+  });
+  ipcMain.handle('get-privacy-state', () => {
+    const router = getAppContext().registry?.get('router') as RouterService | undefined;
+    return router?.privacyState ?? { incognitoActive: false };
+  });
 
   const bus: MessageBus = getAppContext().bus;
   const unsubscribers = [
@@ -427,6 +525,9 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     const mainWindow = getMainWindow();
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
+    if (transitionInterval) clearInterval(transitionInterval);
+    transitionInterval = null;
+
     const { height: screenH } = screen.getPrimaryDisplay().workAreaSize;
     const targetW = Math.round(screenH * 0.3);
     const targetH = Math.round(screenH * 0.33);
@@ -455,7 +556,7 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
       }
     }, 16);
   };
-  ipcMain.once('boot-done', onBootDone);
+  ipcMain.on('boot-done', onBootDone);
 
   return () => {
     if (stopped) return;
@@ -479,6 +580,8 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     ipcMain.removeHandler('splash-tts');
     ipcMain.removeHandler('chat-message');
     ipcMain.removeHandler('get-runtime-status');
+    ipcMain.removeHandler('retry-runtime-recovery');
+    ipcMain.removeHandler('get-privacy-state');
     for (const perf of perfByTurn.values()) {
       if (perf.fallback) clearTimeout(perf.fallback);
     }

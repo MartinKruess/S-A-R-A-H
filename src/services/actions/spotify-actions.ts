@@ -17,6 +17,11 @@ const NOT_CONNECTED: LaunchResult = {
   speak: 'Verbinde Spotify zuerst in den Einstellungen.',
 };
 
+const TEMPORARILY_UNAVAILABLE: LaunchResult = {
+  ok: false,
+  speak: 'Spotify ist gerade nicht erreichbar. Die Verbindung bleibt gespeichert; versuche es bitte später erneut.',
+};
+
 const NO_DEVICE: LaunchResult = {
   ok: false,
   speak: 'Ich sehe gerade kein aktives Spotify-Gerät.',
@@ -46,7 +51,9 @@ export class SpotifyActions {
     throwIfAborted(signal);
     const token = await this.oauth.getAccessToken('spotify', signal);
     throwIfAborted(signal);
-    if (token === null) return NOT_CONNECTED;
+    if (token === null) return this.oauth.getAccessTokenFailure('spotify') === 'temporarily-unavailable'
+      ? TEMPORARILY_UNAVAILABLE
+      : NOT_CONNECTED;
     return this.putVolume(token, Math.round(percent), signal);
   }
 
@@ -55,7 +62,9 @@ export class SpotifyActions {
     throwIfAborted(signal);
     const token = await this.oauth.getAccessToken('spotify', signal);
     throwIfAborted(signal);
-    if (token === null) return NOT_CONNECTED;
+    if (token === null) return this.oauth.getAccessTokenFailure('spotify') === 'temporarily-unavailable'
+      ? TEMPORARILY_UNAVAILABLE
+      : NOT_CONNECTED;
 
     try {
       const res = await this.fetchFn(`${API_BASE}/me/player`, {

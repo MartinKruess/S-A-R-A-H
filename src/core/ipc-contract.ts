@@ -13,6 +13,11 @@ export interface IpcCommands {
   'get-system-metrics':         { input: void; output: SystemMetrics };
   'get-config':                 { input: void; output: SarahConfig };
   'get-runtime-status':         { input: void; output: RuntimeSnapshot };
+  'retry-runtime-recovery':     {
+    input: void;
+    output: { ok: boolean; modelRecovered: boolean; sttRecovered: boolean; message?: string };
+  };
+  'get-privacy-state':         { input: void; output: { incognitoActive: boolean } };
   'save-config':                { input: SarahConfigPatch; output: SaveConfigResult };
   'legacy-db-recovery-review':  { input: void; output: LegacyDbRecoveryReview };
   'legacy-db-recovery-restore': {
@@ -49,6 +54,7 @@ export interface IpcCommands {
   };
   'connections-list':           { input: void;   output: ConnectionInfo[] };
   'connection-connect':         { input: string; output: { ok: boolean; error?: string } };
+  'connection-cancel':          { input: string; output: void };
   'connection-disconnect':      { input: string; output: void };
 }
 
@@ -91,6 +97,8 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'get-system-metrics': true,
   'get-config': true,
   'get-runtime-status': true,
+  'retry-runtime-recovery': true,
+  'get-privacy-state': true,
   'save-config': true,
   'legacy-db-recovery-review': true,
   'legacy-db-recovery-restore': true,
@@ -112,6 +120,7 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'splash-tts': true,
   'connections-list': true,
   'connection-connect': true,
+  'connection-cancel': true,
   'connection-disconnect': true,
 };
 

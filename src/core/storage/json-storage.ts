@@ -110,13 +110,16 @@ export class JsonStorage implements StorageProvider {
     try {
       this.writeDurably(tempPath, JSON.stringify(nextData, null, 2));
 
-      if (this.primaryHealthy && fs.existsSync(this.filePath)) {
-        fs.copyFileSync(this.filePath, backupTempPath);
-        this.syncFile(backupTempPath);
-        fs.renameSync(backupTempPath, backupPath);
-      }
-
       fs.renameSync(tempPath, this.filePath);
+      this.syncDirectory(dir);
+
+      // The backup represents the same successfully committed snapshot, not
+      // the previous one. Recovery therefore cannot silently undo the user's
+      // most recent settings change.
+      fs.copyFileSync(this.filePath, backupTempPath);
+      this.syncFile(backupTempPath);
+      fs.renameSync(backupTempPath, backupPath);
+      this.syncDirectory(dir);
       this.primaryHealthy = true;
       this.unrecoverable = false;
       this.recoveryIssues = [];
@@ -269,6 +272,20 @@ export class JsonStorage implements StorageProvider {
       fs.fsyncSync(handle);
     } finally {
       fs.closeSync(handle);
+    }
+  }
+
+  private syncDirectory(directoryPath: string): void {
+    try {
+      const handle = fs.openSync(directoryPath, 'r');
+      try {
+        fs.fsyncSync(handle);
+      } finally {
+        fs.closeSync(handle);
+      }
+    } catch {
+      // Windows does not consistently allow directory handles through Node.
+      // Both file payloads are still fsync'd before their atomic rename.
     }
   }
 

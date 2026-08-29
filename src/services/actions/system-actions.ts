@@ -1,6 +1,7 @@
 // src/services/actions/system-actions.ts
 import { execFile as nodeExecFile } from 'child_process';
 import type { LaunchResult } from '../../main/program-launcher.js';
+import { throwIfAborted } from '../../core/abort-utils.js';
 
 const UNSUPPORTED: LaunchResult = { ok: false, speak: 'Das unterstützt dein System nicht.' };
 const MAX_TIMERS = 5;
@@ -39,6 +40,7 @@ interface TimerEntry {
   minutes: number;
   startMs: number;
   handle: ReturnType<typeof setTimeout>;
+  detachAbort: () => void;
 }
 
 export class SystemActions {
@@ -91,14 +93,24 @@ export class SystemActions {
   }
 
   /** Wall-clock based timer (R4-Mi2): re-arms after standby instead of firing early. */
-  setTimer(minutes: number): LaunchResult {
+  setTimer(minutes: number, signal?: AbortSignal): LaunchResult {
     if (this.platform !== 'win32') return UNSUPPORTED;
+    throwIfAborted(signal);
     if (this.timers.size >= MAX_TIMERS) {
       return { ok: false, speak: 'Ich habe schon 5 Timer laufen.' };
     }
     const id = this.nextTimerId++;
     const durationMs = minutes * 60 * 1000;
     const startMs = Date.now();
+    let cancel = (): void => {};
+    const detachAbort = (): void => signal?.removeEventListener('abort', cancel);
+    cancel = (): void => {
+      const entry = this.timers.get(id);
+      if (!entry) return;
+      clearTimeout(entry.handle);
+      this.timers.delete(id);
+      detachAbort();
+    };
     const arm = (delayMs: number): void => {
       const handle = setTimeout(() => {
         const elapsed = Date.now() - startMs;
@@ -107,16 +119,21 @@ export class SystemActions {
           return;
         }
         this.timers.delete(id);
+        detachAbort();
         this.onNotify(`Dein ${minutes}-Minuten-Timer ist abgelaufen.`);
       }, delayMs);
-      this.timers.set(id, { id, minutes, startMs, handle });
+      this.timers.set(id, { id, minutes, startMs, handle, detachAbort });
     };
+    signal?.addEventListener('abort', cancel, { once: true });
     arm(durationMs);
     return { ok: true };
   }
 
   clearAllTimers(): void {
-    for (const entry of this.timers.values()) clearTimeout(entry.handle);
+    for (const entry of this.timers.values()) {
+      clearTimeout(entry.handle);
+      entry.detachAbort();
+    }
     this.timers.clear();
   }
 }

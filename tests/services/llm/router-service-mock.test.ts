@@ -7,6 +7,7 @@ import { MessageBus } from '../../../src/core/message-bus';
 import { feedbackTexts } from '../../../src/services/llm/filler-phrases';
 import type { ModelRuntimePort } from '../../../src/services/llm/model-runtime';
 import { ROUTER_DEADLINE_MS } from '../../../src/services/llm/routing-service';
+import { ActionConfirmationGate } from '../../../src/core/action-confirmation';
 
 function createMockProvider(id: string, chatResponse: string): LlmProvider {
   return {
@@ -39,7 +40,10 @@ function createMockContext(): { context: AppContext; bus: MessageBus } {
     bus,
     context: {
       bus,
-      registry: {} as any,
+      registry: {
+        get: vi.fn((id: string) => id === 'actions' ? { id: 'actions', status: 'running' } : undefined),
+      } as AppContext['registry'],
+      actionConfirmations: new ActionConfirmationGate(),
       config: {
         get: vi.fn(),
         set: vi.fn(),

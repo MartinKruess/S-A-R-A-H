@@ -6,9 +6,13 @@ import {
   RESPONSE_SAFETY_TOKENS,
   CHAT_TEMPLATE_BASE_TOKENS,
   CHAT_TEMPLATE_MESSAGE_TOKENS,
+  MIN_EFFECTIVE_NUM_PREDICT,
   estimateTokens,
 } from './context-window.js';
 import type { ChatMessage } from './llm-provider.interface.js';
+import { SarahConfigSchema } from '../../core/config-schema.js';
+import { buildSystemPrompt } from './prompt-builder.js';
+import { NUM_PREDICT_MAP } from './llm-types.js';
 
 function msg(role: ChatMessage['role'], content: string): ChatMessage {
   return { role, content };
@@ -24,6 +28,88 @@ afterEach(() => {
 });
 
 describe('buildContextWindow', () => {
+  it('keeps the default medium response cap when the protected prompt fits at num_ctx 4096', () => {
+    const config = SarahConfigSchema.parse({});
+    const systemPrompt = buildSystemPrompt(config, 'chat');
+    const current = msg('user', 'Hallo Sarah.');
+    const plan = buildContextWindow({
+      systemPrompt,
+      startContext: [],
+      history: [current],
+      numCtx: 4096,
+      numPredict: NUM_PREDICT_MAP.mittel,
+    }, { includeEffectiveNumPredict: true });
+
+    expect(plan.messages.at(-1)).toEqual(current);
+    expect(plan.numPredict).toBe(NUM_PREDICT_MAP.mittel);
+  });
+
+  it.each(['mittel', 'ausführlich'] as const)(
+    'reduces a full-profile %s response only as far as the protected prompt requires',
+    (responseStyle) => {
+      const config = SarahConfigSchema.parse({
+        profile: {
+          displayName: 'Martin',
+          lastName: 'Mustermann',
+          city: 'Berlin',
+          address: 'Beispielstraße 42',
+          postalCode: '10115',
+          birthday: '1990-03-15',
+          email: 'martin@example.test',
+          profession: 'Softwareentwickler und Designer',
+          activities: 'Entwickelt Desktop-Anwendungen und gestaltet Bedienoberflächen',
+          usagePurposes: ['Programmieren', 'Recherche', 'Organisation'],
+          hobbies: ['Gaming', 'Fotografie'],
+          linkPreferences: Array.from({ length: 5 }, (_, index) => ({
+            description: `Bevorzugte Quelle ${index + 1}`,
+            url: `https://example.test/${index + 1}`,
+          })),
+        },
+        skills: {
+          programming: 'Fortgeschritten',
+          programmingStack: ['TypeScript', 'React', 'Node.js'],
+          programmingResources: ['MDN', 'TypeScript Handbook'],
+          programmingProjectsFolder: 'G:\\Projects',
+          design: 'Fortgeschritten',
+          office: 'Fortgeschritten',
+        },
+        personalization: {
+          responseStyle,
+          responseMode: 'thoughtful',
+          tone: 'freundlich',
+          characterTraits: ['Humorvoll', 'Direkt', 'Geduldig'],
+          quirk: 'Verwendet gelegentlich trockenen Humor',
+        },
+        trust: {
+          memoryExclusions: ['Finanzen', 'Gesundheit'],
+        },
+      });
+      const systemPrompt = buildSystemPrompt(config, 'chat');
+      const current = msg('user', 'Hallo Sarah.');
+      const requested = NUM_PREDICT_MAP[responseStyle];
+      const availableForResponse = 4096
+        - RESPONSE_SAFETY_TOKENS
+        - CHAT_TEMPLATE_BASE_TOKENS
+        - estimateTokens(systemPrompt)
+        - CHAT_TEMPLATE_MESSAGE_TOKENS
+        - estimateTokens(current.content)
+        - CHAT_TEMPLATE_MESSAGE_TOKENS;
+
+      const plan = buildContextWindow({
+        systemPrompt,
+        startContext: [],
+        history: [current],
+        numCtx: 4096,
+        numPredict: requested,
+      }, { includeEffectiveNumPredict: true });
+
+      expect(plan.messages).toEqual([msg('system', systemPrompt), current]);
+      expect(plan.numPredict).toBe(Math.min(requested, availableForResponse));
+      expect(plan.numPredict).toBeGreaterThanOrEqual(MIN_EFFECTIVE_NUM_PREDICT);
+      expect(plan.numPredict).toBeLessThan(requested);
+    },
+  );
+
   it('assembles [system, header, startContext..., history...] when the budget is large', () => {
     const result = buildContextWindow({
       systemPrompt: 'SYS',
@@ -52,6 +138,25 @@ describe('buildContextWindow', () => {
     });
 
     expect(result.map((m) => m.content)).toEqual(['SYS', 'hallo']);
+  });
+
+  it('keeps a pre-framed recalled-data system block atomic without adding another header', () => {
+    const framed = `${START_CONTEXT_HEADER}\nSARAH_DATA recalled_memory_data {"content":"alte Erinnerung"}`;
+    const result = buildContextWindow({
+      systemPrompt: 'SYS',
+      startContext: [msg('system', framed)],
+      history: [msg('user', 'Was weißt du noch?')],
+      numCtx: 2048,
+      numPredict: 100,
+    });
+
+    expect(result).toEqual([
+      msg('system', 'SYS'),
+      msg('system', framed),
+      msg('user', 'Was weißt du noch?'),
+    ]);
+    expect(result.filter((message) => message.content === START_CONTEXT_HEADER)).toHaveLength(0);
+    expect(result.some((message) => message.role === 'assistant')).toBe(false);
   });
 
   it('derives the budget from numCtx and numPredict', () => {

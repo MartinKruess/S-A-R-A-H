@@ -21,8 +21,36 @@ describe('action policy', () => {
     }).effect).toBe('confirm');
     expect(evaluateActionPolicy('web_search', {
       confirmationLevel: 'maximal', fileAccess: 'none',
-    }).effect).toBe('confirm');
+    }).effect).toBe('allow');
   });
+
+  it.each(['minimal', 'standard', 'maximal'] as const)(
+    'uses the persistent browser grant instead of per-search confirmation at %s level',
+    (confirmationLevel) => {
+      expect(evaluateActionPolicy('web_search', {
+        confirmationLevel,
+        fileAccess: 'none',
+        webAccessAllowed: true,
+      })).toMatchObject({
+        effect: 'allow',
+        reason: 'persistent_web_access_grant',
+      });
+    },
+  );
+
+  it.each(['web_search', 'show_browser'] as const)(
+    'denies %s when browser access is disabled',
+    (action) => {
+      expect(evaluateActionPolicy(action, {
+        confirmationLevel: 'minimal',
+        fileAccess: 'none',
+        webAccessAllowed: false,
+      })).toMatchObject({
+        effect: 'deny',
+        reason: 'web_access_disabled',
+      });
+    },
+  );
 
   it('enforces the file-access boundary before a file action can execute', () => {
     const fileRead: ActionPermissionMetadata = {

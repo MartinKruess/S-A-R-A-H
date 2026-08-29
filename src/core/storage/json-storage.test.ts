@@ -69,7 +69,7 @@ describe('JsonStorage', () => {
 
     const recovered = new JsonStorage(filePath);
 
-    expect(await recovered.get('version')).toBe(1);
+    expect(await recovered.get('version')).toBe(2);
     expect(recovered.getRecoveryIssues()).toHaveLength(1);
     expect(recovered.requiresFailClosedDefaults()).toBe(false);
     await recovered.close();

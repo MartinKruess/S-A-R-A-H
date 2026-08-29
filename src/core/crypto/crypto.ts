@@ -3,6 +3,32 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
+const MIN_ENVELOPE_LENGTH = IV_LENGTH + AUTH_TAG_LENGTH;
+const CANONICAL_BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+
+export class CryptoEnvelopeError extends Error {
+  readonly code = 'INVALID_CRYPTO_ENVELOPE';
+
+  constructor(message = 'Encrypted envelope is not canonical base64 or is too short') {
+    super(message);
+    this.name = 'CryptoEnvelopeError';
+  }
+}
+
+function decodeEnvelope(ciphertext: string): Buffer {
+  if (
+    ciphertext.length === 0
+    || ciphertext.length % 4 !== 0
+    || !CANONICAL_BASE64_PATTERN.test(ciphertext)
+  ) {
+    throw new CryptoEnvelopeError();
+  }
+  const data = Buffer.from(ciphertext, 'base64');
+  if (data.length < MIN_ENVELOPE_LENGTH || data.toString('base64') !== ciphertext) {
+    throw new CryptoEnvelopeError();
+  }
+  return data;
+}
 
 /**
  * Encrypt plaintext with AES-256-GCM.
@@ -27,7 +53,7 @@ export function encrypt(plaintext: string, key: Buffer, additionalData?: string)
  * Throws on wrong key or tampered data.
  */
 export function decrypt(ciphertext: string, key: Buffer, additionalData?: string): string {
-  const data = Buffer.from(ciphertext, 'base64');
+  const data = decodeEnvelope(ciphertext);
 
   const iv = data.subarray(0, IV_LENGTH);
   const authTag = data.subarray(data.length - AUTH_TAG_LENGTH);

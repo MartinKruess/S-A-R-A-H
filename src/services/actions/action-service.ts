@@ -41,6 +41,7 @@ export interface ActionDeps {
   confirmationGate?: ActionConfirmationGate;
   getConfirmationLevel?: () => ConfirmationLevel;
   getFileAccess?: () => Trust['fileAccess'];
+  getWebAccessAllowed?: () => boolean;
 }
 
 export interface ActionServiceOptions {
@@ -67,6 +68,7 @@ export class ActionService implements SarahService {
   private readonly confirmationGate: ActionConfirmationGate;
   private readonly getConfirmationLevel: () => ConfirmationLevel;
   private readonly getFileAccess: () => Trust['fileAccess'];
+  private readonly getWebAccessAllowed: () => boolean;
 
   constructor(
     private bus: MessageBus,
@@ -77,6 +79,7 @@ export class ActionService implements SarahService {
     this.confirmationGate = deps.confirmationGate ?? new ActionConfirmationGate();
     this.getConfirmationLevel = deps.getConfirmationLevel ?? (() => 'standard');
     this.getFileAccess = deps.getFileAccess ?? (() => 'specific-folders');
+    this.getWebAccessAllowed = deps.getWebAccessAllowed ?? (() => true);
   }
 
   async init(): Promise<void> {
@@ -137,6 +140,10 @@ export class ActionService implements SarahService {
     this.activeActions.set(requestId, { turnId, operation, controller });
     void operation
       .then((result) => {
+        // The adapter side effect is authoritative once its result is ready.
+        // Remove it before emitting because a synchronous terminal listener
+        // must not cancel a successfully accepted long-lived effect (timer).
+        this.activeActions.delete(requestId);
         if (
           controller.signal.aborted
           || this.status !== 'running'
@@ -210,9 +217,13 @@ export class ActionService implements SarahService {
     const policy = evaluateActionPolicy(action, {
       confirmationLevel: this.getConfirmationLevel(),
       fileAccess: this.getFileAccess(),
+      webAccessAllowed: this.getWebAccessAllowed(),
     });
     if (policy.effect === 'deny') {
       console.warn('[Actions] denied by policy', { action, reason: policy.reason });
+      if (policy.reason === 'web_access_disabled') {
+        return { ok: false, speak: 'Der Browserzugriff ist in den Einstellungen deaktiviert.' };
+      }
       return { ok: false, speak: 'Diese Aktion ist durch deine Berechtigungen gesperrt.' };
     }
     if (policy.effect === 'prepare_only') {
@@ -259,7 +270,7 @@ export class ActionService implements SarahService {
       case 'media_previous':
         return this.deps.media.previous(parsed.data as string, signal);
       case 'set_timer':
-        return this.deps.system.setTimer(parsed.data as number);
+        return this.deps.system.setTimer(parsed.data as number, signal);
       case 'lock_screen':
         return this.deps.system.lockScreen(signal);
     }

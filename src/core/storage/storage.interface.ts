@@ -165,6 +165,9 @@ export interface StorageProvider {
     conversationSummaries?: readonly ConversationSummaryClear[],
   ): Promise<Layer2MemoryPurgeResult>;
 
+  /** Atomically deletes exactly the confirmed set of curated memories. */
+  deleteAllCuratedMemories?(expectedIds: readonly number[]): Promise<number>;
+
   /** Atomically removes unreadable/quarantined Layer-2 originals and their recovery copies. */
   purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult>;
 
@@ -194,6 +197,12 @@ export interface StorageProvider {
 
   /** Delete rows matching filter. Returns number of deleted rows. */
   delete(table: string, filter: Filter): Promise<number>;
+
+  /**
+   * Completes an explicit privacy deletion by scrubbing free pages and WAL remnants.
+   * Optional for providers that do not persist deleted row content on disk.
+   */
+  finalizePrivacyDeletion?(): Promise<void>;
 
   /**
    * Newest messages excluding one conversation, newest first

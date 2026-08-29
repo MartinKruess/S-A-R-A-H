@@ -18,7 +18,8 @@ import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summ
 import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerConnectionHandlers } from './main/ipc-connections.js';
-import { KeyManager } from './core/crypto/key-manager.js';
+import { KeyAccessError, KeyManager } from './core/crypto/key-manager.js';
+import { resetAfterFinalKeyLoss } from './core/crypto/key-loss-reset.js';
 import { TokenStore } from './services/integrations/token-store.js';
 import { OAuthConnectionService } from './services/integrations/oauth-connection-service.js';
 import { getOAuthProviders, redirectPort } from './services/integrations/providers.js';
@@ -31,6 +32,9 @@ import {
   type ElectronShutdownCoordinator,
 } from './main/electron-shutdown.js';
 import { registerVoiceRendererLifecycle } from './main/voice-renderer-lifecycle.js';
+import { registerPrimaryRendererRecovery } from './main/primary-renderer-recovery.js';
+import { handleFinalKeyLossRecovery } from './main/final-key-loss-recovery.js';
+import { retryTransientKeyAccess } from './main/key-access-retry.js';
 import { acquireSingleInstanceLock } from './main/single-instance.js';
 
 let mainWindow: BrowserWindow | null = null;
@@ -40,6 +44,7 @@ let stopSystemMetrics: (() => void) | null = null;
 let stopVoiceLevel: (() => void) | null = null;
 let sandboxBrowser: SandboxBrowser | null = null;
 let systemActions: SystemActions | null = null;
+let bindPrimaryWindowLifecycle: ((window: BrowserWindow) => void) | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
 
@@ -69,10 +74,48 @@ function loadDevEnv(): void {
   }
 }
 
-function createWindow(electronShutdown: ElectronShutdownCoordinator): void {
-  mainWindow = new BrowserWindow({
-    width: 800,
-    height: 600,
+/**
+ * Applies an explicitly requested development-only user-data directory.
+ *
+ * - Keeps destructive recovery and privacy acceptance tests away from real profiles.
+ * - Rejects relative paths and symbolic-link targets.
+ * - Has no effect in packaged builds.
+ *
+ * @category Security Utility
+ */
+function applyDevUserDataOverride(): void {
+  const requestedPath = process.env.SARAH_DEV_USER_DATA?.trim();
+  if (app.isPackaged || !requestedPath) return;
+  if (!path.isAbsolute(requestedPath)) {
+    throw new Error('SARAH_DEV_USER_DATA must be an absolute path');
+  }
+
+  const resolvedPath = path.resolve(requestedPath);
+  fs.mkdirSync(resolvedPath, { recursive: true });
+  const stat = fs.lstatSync(resolvedPath);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('SARAH_DEV_USER_DATA must reference a local directory');
+  }
+  const sessionPath = path.join(resolvedPath, 'electron-session');
+  fs.mkdirSync(sessionPath, { recursive: true });
+  app.setPath('userData', resolvedPath);
+  app.setPath('sessionData', sessionPath);
+}
+
+interface PrimaryWindowCreationOptions {
+  page?: 'splash.html' | 'dashboard.html' | 'wizard.html';
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
+function createWindow(
+  electronShutdown: ElectronShutdownCoordinator,
+  options: PrimaryWindowCreationOptions = {},
+): BrowserWindow {
+  const bounds = options.bounds;
+  const window = new BrowserWindow({
+    width: bounds?.width ?? 800,
+    height: bounds?.height ?? 600,
+    ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
     show: false,
     backgroundColor: '#05070d',
     webPreferences: {
@@ -83,17 +126,27 @@ function createWindow(electronShutdown: ElectronShutdownCoordinator): void {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, '..', 'splash.html'));
+  mainWindow = window;
+  const page = options.page ?? 'splash.html';
+  void window.loadFile(path.join(__dirname, '..', page)).catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[Boot] The splash screen could not be loaded:', error);
+    dialog.showErrorBox(
+      'Sarah konnte die Oberfläche nicht laden',
+      `Der Startbildschirm konnte nicht geladen werden. Bitte installiere Sarah erneut.\n\n${message}`,
+    );
+  });
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+  window.once('ready-to-show', () => {
+    window.show();
   });
 
   // Auxiliary windows (for example the hidden sandbox browser used by Search)
   // can keep Electron alive after the primary UI closes. The primary window is
   // the application ownership boundary on Windows, so close it through the same
   // idempotent shutdown coordinator instead of waiting for window-all-closed.
-  mainWindow.once('closed', () => {
+  window.once('closed', () => {
+    if (mainWindow !== window) return;
     mainWindow = null;
     electronShutdown.handlePrimaryWindowClosed();
   });
@@ -101,9 +154,11 @@ function createWindow(electronShutdown: ElectronShutdownCoordinator): void {
   // Windows does not guarantee Electron's before-quit/will-quit events during
   // logout or system shutdown. Start the same idempotent cleanup best-effort
   // when the OS ends the session; normal window/direct quit remains awaitable.
-  mainWindow.on('session-end', () => {
+  window.on('session-end', () => {
     void appContext?.lifecycle.shutdown();
   });
+  bindPrimaryWindowLifecycle?.(window);
+  return window;
 }
 
 function startPrimaryInstance(): void {
@@ -117,7 +172,14 @@ function startPrimaryInstance(): void {
 
   app.whenReady().then(async () => {
   createWindow(electronShutdown);
-  appContext = await bootstrap(app.getPath('userData'));
+  appContext = await retryTransientKeyAccess(
+    () => bootstrap(app.getPath('userData')),
+    {
+      retries: 2,
+      delayMs: 250,
+      isTransient: (error) => error instanceof KeyAccessError && !error.isFinalKeyLoss,
+    },
+  );
 
   // Show dialog if config validation failed
   if (appContext.configErrors) {
@@ -216,6 +278,7 @@ function startPrimaryInstance(): void {
     confirmationGate: appContext.actionConfirmations,
     getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
     getFileAccess: () => appContext!.parsedConfig.trust.fileAccess,
+    getWebAccessAllowed: () => appContext!.parsedConfig.trust.webAccessAllowed,
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before
@@ -246,14 +309,44 @@ function startPrimaryInstance(): void {
     hotkeyManager,
   );
   appContext.registry.register(voiceService);
-  if (mainWindow) {
-    const stopVoiceRendererLifecycle = registerVoiceRendererLifecycle(mainWindow, voiceService);
-    appContext.lifecycle.registerCleanup(
-      'voice-renderer-lifecycle',
-      stopVoiceRendererLifecycle,
-      'before_services',
-    );
-  }
+  let stopVoiceRendererLifecycle: (() => void) | null = null;
+  let stopPrimaryRendererRecovery: (() => void) | null = null;
+  let replacementUsed = false;
+  bindPrimaryWindowLifecycle = (window) => {
+    stopVoiceRendererLifecycle?.();
+    stopPrimaryRendererRecovery?.();
+    stopVoiceRendererLifecycle = registerVoiceRendererLifecycle(window, voiceService);
+    stopPrimaryRendererRecovery = registerPrimaryRendererRecovery(window, {
+      isShuttingDown: () => {
+        const state = appContext?.lifecycle.snapshot.state;
+        return state === 'stopping' || state === 'stopped';
+      },
+      replaceWindow: async () => {
+        if (replacementUsed || mainWindow !== window || window.isDestroyed()) return false;
+        replacementUsed = true;
+        const bounds = window.getBounds();
+        const wasMaximized = window.isMaximized();
+        const page = appContext?.parsedConfig.onboarding.setupComplete
+          ? 'dashboard.html'
+          : 'wizard.html';
+        const replacement = createWindow(electronShutdown, { page, bounds });
+        if (wasMaximized) replacement.maximize();
+        window.destroy();
+        return true;
+      },
+      showFinalError: (message) => {
+        dialog.showErrorBox('Sarahs Oberfläche ist abgestürzt', message);
+      },
+    });
+  };
+  if (mainWindow) bindPrimaryWindowLifecycle(mainWindow);
+  appContext.lifecycle.registerCleanup('primary-window-lifecycle', () => {
+    bindPrimaryWindowLifecycle = null;
+    stopVoiceRendererLifecycle?.();
+    stopVoiceRendererLifecycle = null;
+    stopPrimaryRendererRecovery?.();
+    stopPrimaryRendererRecovery = null;
+  }, 'before_services');
 
   // --- Shared dependency getters (avoid stale refs in modules) ---
   const getMainWindow = () => mainWindow;
@@ -329,6 +422,41 @@ function startPrimaryInstance(): void {
 }).catch(async (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error('[Main] Fatal bootstrap error:', error);
+  if (error instanceof KeyAccessError && error.isFinalKeyLoss) {
+    try {
+      const resetStarted = await handleFinalKeyLossRecovery([], {
+        showMessageBox: (options) => mainWindow
+          ? dialog.showMessageBox(mainWindow, options)
+          : dialog.showMessageBox(options),
+        reset: (confirmation) => resetAfterFinalKeyLoss(
+          app.getPath('userData'),
+          error,
+          confirmation,
+        ),
+        relaunch: () => app.relaunch(),
+        exit: (code) => app.exit(code),
+      });
+      if (!resetStarted) app.quit();
+      return;
+    } catch (resetError) {
+      const resetMessage = resetError instanceof Error ? resetError.message : String(resetError);
+      dialog.showErrorBox(
+        'Sarah konnte die unlesbaren Daten nicht sicher archivieren',
+        `Der Reset wurde nicht abgeschlossen. Sarah startet nicht mit einem leeren Speicher.\n\n${resetMessage}`,
+      );
+      app.quit();
+      return;
+    }
+  }
+  if (error instanceof KeyAccessError) {
+    dialog.showErrorBox(
+      'Schlüsselschutz des Betriebssystems vorübergehend nicht verfügbar',
+      'Sarah konnte den sicheren Schlüsselspeicher auch nach zwei erneuten Versuchen nicht erreichen. '
+      + `Es wurden keine Daten zurückgesetzt oder überschrieben. Bitte starte Sarah oder das Gerät später erneut.\n\n${message}`,
+    );
+    app.quit();
+    return;
+  }
   dialog.showErrorBox(
     'Sarah konnte nicht gestartet werden',
     `Die Grunddienste konnten nicht initialisiert werden.\n\n${message}`,
@@ -343,6 +471,7 @@ function startPrimaryInstance(): void {
 });
 }
 
+applyDevUserDataOverride();
 if (acquireSingleInstanceLock(app, () => mainWindow)) {
   startPrimaryInstance();
 }

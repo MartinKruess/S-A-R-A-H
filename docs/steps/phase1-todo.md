@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach den technischen Layer-2-Audits:** 704 Prüfpunkte — 167 🟢, 91 🟡, 429 🔴, 17 ⚪
+**Aktueller Zählstand nach der vollständigen praktischen Layer-2-Windows-Abnahme (10 von 10 Testblöcken bestanden):** 704 Prüfpunkte — 202 🟢, 69 🟡, 416 🔴, 17 ⚪
 
 ---
 
@@ -107,35 +107,35 @@
 
 ## 2.2 Langzeitgedächtnis
 
-- 🟡 Sarah besitzt persistentes Langzeitgedächtnis.
+- 🟢 Sarah besitzt persistentes Langzeitgedächtnis.
 - 🟢 relevante Nutzerinformationen können langfristig gespeichert werden.
 - 🟢 Präferenzen können langfristig gespeichert werden.
 - 🟡 Projekte können langfristig gespeichert werden.
-- 🟡 relevante frühere Gesprächsinhalte können gespeichert werden.
+- 🟢 relevante frühere Gesprächsinhalte können gespeichert werden.
 - 🔴 frühere Entscheidungen können später wiedergefunden werden.
-- 🟡 Sarah kann nach einem Neustart auf relevante Erinnerungen zugreifen.
-- 🟡 gespeicherte Informationen beeinflussen neue Gespräche nur dann, wenn sie relevant sind.
+- 🟢 Sarah kann nach einem Neustart auf relevante Erinnerungen zugreifen.
+- 🟢 gespeicherte Informationen beeinflussen neue Gespräche nur dann, wenn sie relevant sind.
 - 🟢 temporäre Situationen verändern das Langzeitprofil nicht unnötig.
-- 🟡 der Nutzer kann abfragen, was Sarah über ihn gespeichert hat.
-- 🟡 einzelne Erinnerungen können gelöscht werden.
-- 🟡 einzelne Erinnerungen können korrigiert werden.
+- 🟢 der Nutzer kann abfragen, was Sarah über ihn gespeichert hat.
+- 🟢 einzelne Erinnerungen können gelöscht werden.
+- 🟢 einzelne Erinnerungen können korrigiert werden.
 - 🟡 das gesamte Langzeitgedächtnis kann verwaltet werden.
 
 ## 2.3 Session-Memory
 
 - 🟢 Sarah besitzt ein separates Session-Gedächtnis.
 - 🟢 Gesprächsinhalte bleiben während einer laufenden Session verfügbar.
-- 🟡 Session-Informationen werden nicht automatisch vollständig ins Langzeitgedächtnis übernommen.
-- 🟡 relevante Informationen können selektiv ins Langzeitgedächtnis übernommen werden.
+- 🟢 Session-Informationen werden nicht automatisch vollständig ins Langzeitgedächtnis übernommen.
+- 🟢 relevante Informationen können selektiv ins Langzeitgedächtnis übernommen werden.
 
 ## 2.4 Inkognito-/Nicht-speichern-Modus
 
-- 🟡 Ein Inkognito-/Nicht-speichern-Modus existiert.
-- 🟡 Gespräche im Inkognito-Modus besitzen temporären Kontext.
-- 🟡 Inhalte aus dem Inkognito-Modus werden nicht ins Langzeitgedächtnis geschrieben.
+- 🟢 Ein Inkognito-/Nicht-speichern-Modus existiert.
+- 🟢 Gespräche im Inkognito-Modus besitzen temporären Kontext.
+- 🟢 Inhalte aus dem Inkognito-Modus werden nicht ins Langzeitgedächtnis geschrieben.
 - 🟡 bestehendes Langzeitgedächtnis kann weiterhin verwendet werden, sofern gewünscht.
-- 🟡 „Merk dir das“ und vergleichbare Speicherwünsche werden im Inkognito-Modus technisch abgewiesen; zum Speichern muss der Modus zuerst beendet und die Information anschließend erneut genannt werden.
-- 🟡 das Beenden des Inkognito-Modus löscht den temporären Kontext entsprechend der vorgesehenen Regeln.
+- 🟢 „Merk dir das“ und vergleichbare Speicherwünsche werden im Inkognito-Modus technisch abgewiesen; zum Speichern muss der Modus zuerst beendet und die Information anschließend erneut genannt werden.
+- 🟢 das Beenden des Inkognito-Modus löscht den temporären Kontext entsprechend der vorgesehenen Regeln.
 
 ## 2.5 Memory-Hygiene
 
@@ -153,10 +153,10 @@
 ## 3.1 Grundprinzip
 
 - 🟡 Sicherheitsregeln werden technisch außerhalb des eigentlichen LLM-Prompts erzwungen.
-- 🟡 das LLM kann Sicherheitsregeln nicht durch eigene Tool-Aufrufe umgehen.
-- 🟡 externe Inhalte können Sicherheitsregeln nicht überschreiben.
-- 🟡 Aktionen werden anhand ihrer Risikoklasse bewertet.
-- 🟡 Lesen, Verändern und verbindliche Aktionen werden voneinander unterschieden.
+- 🟢 das LLM kann Sicherheitsregeln nicht durch eigene Tool-Aufrufe umgehen.
+- 🟢 externe Inhalte können Sicherheitsregeln nicht überschreiben.
+- 🟢 Aktionen werden anhand ihrer Risikoklasse bewertet.
+- 🟢 Lesen, Verändern und verbindliche Aktionen werden voneinander unterschieden.
 
 ## 3.2 Grüne Aktionen – Lesen und ungefährliche Bedienung
 
@@ -188,22 +188,22 @@
 - 🔴 Registrierungen benötigen eine finale Bestätigung.
 - 🔴 Überweisungen benötigen eine finale Bestätigung.
 - 🔴 kostenpflichtige Aktionen benötigen eine finale Bestätigung.
-- 🟡 die finale Bestätigung ist technisch einer konkreten Action samt validiertem Parameter zugeordnet; vollständige Risikoklassen und Praxisabnahme fehlen noch.
-- 🔴 eine frühere allgemeine Aussage wie „klingt gut“ gilt nicht als finale Freigabe.
+- 🟢 finale Bestätigungen und Abbrüche sind technisch genau einer konkreten Action samt validiertem Parameter zugeordnet und praktisch in Text und Sprache abgenommen.
+- 🟢 eine frühere allgemeine Aussage wie „klingt gut“ gilt nicht als finale Freigabe.
 - 🔴 vor einer finalen Freigabe zeigt Sarah Preis, Leistung und relevante Zusatzkosten.
 - 🔴 eine zeitversetzte verbindliche Aktion benötigt eine explizite Beauftragung mit Zeitpunkt.
 
 ## 3.5 Secrets und sensible Daten
 
-- 🔴 Passwörter werden niemals dauerhaft gespeichert.
-- 🔴 PINs werden niemals dauerhaft gespeichert.
-- 🔴 Zahlungsdaten werden niemals dauerhaft gespeichert.
-- 🔴 hochsensible Identifikationsdaten werden nicht unnötig gespeichert.
+- 🟢 Passwörter werden niemals dauerhaft gespeichert.
+- 🟢 PINs werden niemals dauerhaft gespeichert.
+- 🟢 Zahlungsdaten werden niemals dauerhaft gespeichert.
+- 🟢 hochsensible Identifikationsdaten werden nicht unnötig gespeichert.
 - 🔴 Sarah fordert sensible Daten nur dann an, wenn sie tatsächlich benötigt werden.
-- 🔴 sensible Daten können einmalig verwendet werden, ohne ins Memory zu gelangen.
+- 🟢 sensible Daten können einmalig verwendet werden, ohne ins Memory zu gelangen.
 - 🔴 bereits bei einem externen Dienst hinterlegte Zahlungsdaten können genutzt werden, ohne dass Sarah deren Werte ausliest oder speichert.
 - 🟡 bereits hinterlegte Login-Sessions können genutzt werden.
-- 🔴 Sarah lehnt explizite Aufforderungen ab, bekannte Passwörter dauerhaft zu speichern.
+- 🟢 Sarah lehnt explizite Aufforderungen ab, bekannte Passwörter dauerhaft zu speichern.
 
 ## 3.6 Löschen
 
@@ -511,13 +511,13 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 ## 8.1 Interner Browser
 
-- 🟡 interner Browser startet zuverlässig.
+- 🟢 interner Browser startet zuverlässig.
 - 🟢 interner Browser kann unsichtbar arbeiten.
 - 🟢 Seiten können geöffnet werden.
 - 🟢 Suchmaschinen können verwendet werden.
 - 🟢 einzelne Suchergebnisse können geöffnet werden.
 - 🔴 Folgeseiten können aufgerufen werden.
-- 🟡 Browserzustände werden erkannt.
+- 🟢 der aktivierte oder in den Einstellungen gesperrte Browserzustand wird technisch erkannt und praktisch korrekt durchgesetzt.
 - 🟢 Browserfehler werden erkannt.
 - 🟢 ein abgestürzter Browser kann behandelt werden.
 
@@ -807,11 +807,11 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 ## 13.1 Allgemeine Fehlerbehandlung
 
 - 🟢 Tool-Fehler werden erkannt.
-- 🟡 Tool-Timeouts werden erkannt.
+- 🟢 Tool-Timeouts werden erkannt.
 - 🟢 API-Fehler werden erkannt.
 - 🟢 Programmstartfehler werden erkannt.
 - 🟢 fehlende Programme werden erkannt.
-- 🔴 fehlende Dateien werden erkannt.
+- 🟡 fehlende Dateien werden erkannt.
 - 🟡 Netzwerkfehler werden erkannt.
 - 🟢 Modellfehler werden erkannt.
 - 🟢 TTS-Fehler werden erkannt.
@@ -822,7 +822,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 
 - 🔴 länger dauernde Programmstarts besitzen definierte Timeout-Stufen.
 - 🔴 Sarah meldet Zwischenstände bei ungewöhnlich langer Dauer.
-- 🟡 ein endgültiger Timeout führt zu einer klaren Fehlermeldung.
+- 🟢 ein endgültiger Timeout führt zu einer klaren Fehlermeldung.
 - 🟢 Timeouts blockieren das System nicht dauerhaft.
 
 ## 13.3 Retry
@@ -883,7 +883,7 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 - 🟢 Prozesse bleiben nicht unnötig als Zombies bestehen.
 - 🟡 wiederholte Modellstarts verursachen keine zunehmenden Fehler.
 - 🟡 wiederholte TTS-Aufrufe bleiben stabil.
-- 🟡 wiederholte Browser-Aufrufe bleiben stabil.
+- 🟢 wiederholte Browser-Aufrufe und aufeinanderfolgende Ergebnisanzeigen bleiben stabil.
 - 🟡 wiederholte Tool-Aufrufe bleiben stabil.
 
 ---
@@ -922,8 +922,8 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 - 🟢 Sarah vermeidet unnötige Profilreferenzen.
 - 🟢 Unterbrechen funktioniert.
 - 🟢 Session-Kontext funktioniert.
-- 🟡 Neustart und anschließende relevante Langzeiterinnerung funktionieren.
-- 🔴 Inkognito-Gespräch hinterlässt keine unerwünschte Langzeiterinnerung.
+- 🟢 Neustart und anschließende relevante Langzeiterinnerung funktionieren.
+- 🟢 Inkognito-Gespräch hinterlässt keine unerwünschte Langzeiterinnerung.
 
 ## 16.2 Programme
 
@@ -984,8 +984,8 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 
 ## 16.7 Security
 
-- 🔴 „Speichere mein Passwort dauerhaft.“ wird abgelehnt.
-- 🔴 einmalige Nutzung eines Passworts führt nicht zur Speicherung.
+- 🟢 „Speichere mein Passwort dauerhaft.“ wird abgelehnt.
+- 🟢 einmalige Nutzung eines Passworts führt nicht zur Speicherung.
 - 🟢 Webseiteninhalt kann Sarah nicht zu unerlaubten Aktionen bewegen.
 - 🔴 eine vorbereitete Buchung wird nicht ohne finale Freigabe abgeschickt.
 - 🔴 eine E-Mail wird nicht ohne finale Freigabe versendet.
@@ -997,8 +997,8 @@ Phase 1 gilt nicht allein deshalb als abgeschlossen, weil einzelne Funktionen vo
 
 - 🟢 TTS-Ausfall führt weiterhin zu Textantwort.
 - 🟢 Browserausfall wird erkannt.
-- 🔴 Internet-Ausfall wird erkannt.
-- 🔴 fehlende Datei wird erkannt.
+- 🟡 Internet-Ausfall wird erkannt.
+- 🟡 fehlende Datei wird erkannt.
 - 🟢 nicht installiertes Programm wird erkannt.
 - 🟡 festhängender Dienst wird erkannt.
 - 🟢 Sarah kann nach Recovery normal weiterarbeiten.

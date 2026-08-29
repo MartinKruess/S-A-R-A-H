@@ -172,9 +172,26 @@ Der technisch geprüfte Endstand umfasst:
 - sichtbare OAuth-/Storage-Degraded-Zustände und sichere Temp-Audio-Verarbeitung.
 - Single-Instance-Schutz, versionierte OAuth-Commits und retrybare Refresh-Fehler ohne Tokenverlust.
 
-Nach der letzten Fixrunde liefen die fokussierten Negativ- und Recovery-Tests sowie die vollständige Suite mit **96 Testdateien und 1.165 Tests** erfolgreich. Beide Typechecks, der Produktionsbuild und `git diff --check` sind grün; `better-sqlite3` wurde wieder für Electron 41.1.1 hergestellt. Ein erster Gesamtlauf zeigte einmalig einen nicht reproduzierbaren Persistenz-Testausreißer; der isolierte Test und der unmittelbar folgende vollständige Lauf waren grün.
+Nach dem gemeinsamen Abschluss der Bestätigungs- und Browsergrenzen lief die vollständige Suite mit **107 Testdateien und 1.371 Tests** erfolgreich. Beide Typechecks, der Produktionsbuild und `git diff --check` sind grün; `better-sqlite3` wurde anschließend wieder für Electron 41.1.1 hergestellt.
 
-Noch offen ist die praktische Windows-Abnahme des gesamten Layer-2-Vertrags, insbesondere Inkognito in Chat und Voice, Memory-Verwaltung, Policy-Wechsel während eines laufenden Turns, Degraded-/Recovery-Anzeigen und der neue Altwert-Warndialog. Der Layer ist deshalb technisch implementiert, aber noch nicht praktisch grün.
+Die praktische Windows-Abnahme vom 29. August 2026 hat alle zehn Testblöcke bestanden:
+
+| Block | Praktischer Umfang | Stand |
+|---:|---|:---:|
+| 1 | Anonymous in Chat und Voice, temporärer Gesprächskontext, Wechsel zwischen Chat und Sprache sowie Verwerfen beim Beenden | bestanden |
+| 2 | Erinnern, Anzeigen, Exportieren, Korrigieren und Löschen | bestanden |
+| 3 | Policy-Wechsel während eines laufenden Turns | bestanden |
+| 4 | Secret-Schutz in Text und Voice einschließlich Neustartprüfung | bestanden |
+| 5 | Text- und Sprachbestätigungen einschließlich natürlicher Bestätigung, Abbruch und eindeutigem Pending-Zustand | bestanden |
+| 6 | OAuth-, Storage-, Schlüssel- und Quarantäneanzeigen | bestanden |
+| 7 | Legacy-/Recovery-Dialoge mit Annahme und Abbruch | bestanden |
+| 8 | Getrennte Browser- und Speicherfreigabe, Fremdinhalte sowie stabiler Bezug auf vorherige Suchergebnisse | bestanden |
+| 9 | Modell-, Voice- und Renderer-Crash-Recovery | bestanden |
+| 10 | Windows-Schließen und begrenzter Shutdown-Drain | bestanden |
+
+Die Blöcke 5 und 8 wurden gemeinsam geschlossen: Webzugriff benötigt bei aktivierter Berechtigung keine Bestätigung pro Suche, während echte bestätigungspflichtige Aktionen eine natürliche, eindeutig an genau eine Aktion gebundene Bestätigungs- oder Abbruchfolge besitzen. „Browser verwenden“ steuert die Funktion unabhängig davon, ob Browser-Daten dauerhaft gespeichert werden dürfen. Nummerierte oder benannte Verweise öffnen Ergebnisse aus der konkreten erfolgreichen Search-Session, ohne eine neue Suche auszulösen. Die technische `/confirm`-ID bleibt als Text-Fallback sichtbar, wird aber nicht vorgelesen. Layer 2 ist damit technisch und in allen zehn praktischen Windows-Blöcken abgenommen.
+
+Zusätzlich wurden die Slash-Command-Vorschau praktisch bedient und die Renderer-Recovery automatisiert regressionsgeprüft. /deletememory all ist technisch umgesetzt und automatisiert geprüft; die praktische Bestätigungsfolge wird bei der nächsten vorhandenen Test-Erinnerung nebenbei abgenommen.
 
 ## 5. Nicht als Befund gezählte offene Kuratorentscheidung
 

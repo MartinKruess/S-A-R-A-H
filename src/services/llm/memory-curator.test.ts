@@ -218,12 +218,13 @@ describe('MemoryCurator', () => {
     await curator.destroy();
   });
 
-  it('dead-letters a poison job after the bounded third attempt', async () => {
+  it('retains and reports a poison job after the bounded third attempt', async () => {
     await stage('turn-poison');
+    let failures = 0;
     const curator = new MemoryCurator(
       store,
       new CuratorWorker(async () => '{invalid-json'),
-      { idleDelayMs: 60_000 },
+      { idleDelayMs: 60_000, onMaintenanceFailure: () => { failures += 1; } },
     );
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -240,10 +241,13 @@ describe('MemoryCurator', () => {
       attempts: number;
     }>('memory_staging');
     expect(row).toMatchObject({
-      state: 'failed', source_content: '', policy_terms: '', attempts: 3,
+      state: 'failed', attempts: 3,
     });
-    expect(await db.query('messages')).toEqual([]);
+    expect(row.source_content).toContain('Astronomie');
+    expect(row.policy_terms).toMatch(/^sarah-policy-fp:v1:/);
+    expect(await db.query('messages')).toHaveLength(2);
     expect(await store.hasPending()).toBe(false);
+    expect(failures).toBe(1);
     await curator.destroy();
   });
 });

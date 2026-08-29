@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SqliteStorage } from './sqlite-storage.js';
+import { SQLITE_SCHEMA_VERSION, SqliteStorage } from './sqlite-storage.js';
 import { LEGACY_DB_RECOVERY_CONFIRMATION, MESSAGES_PAGE_MAX_LIMIT } from './storage.interface.js';
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
@@ -22,6 +22,24 @@ describe('SqliteStorage', () => {
   });
 
   describe('table operations', () => {
+    it('scrubs explicit privacy deletions from the database and WAL without changing normal delete semantics', async () => {
+      const marker = `privacy-marker-${Date.now()}-${'x'.repeat(80)}`;
+      const id = await storage.insert('curated_memories', {
+        kind: 'explicit',
+        content: marker,
+        source_turn_id: 'privacy-delete',
+        confidence: 1,
+      });
+      expect(await storage.delete('curated_memories', { id })).toBe(1);
+
+      await storage.finalizePrivacyDeletion();
+
+      const dbPath = path.join(tmpDir, 'sarah.db');
+      expect(fs.readFileSync(dbPath).includes(Buffer.from(marker))).toBe(false);
+      const walPath = `${dbPath}-wal`;
+      if (fs.existsSync(walPath)) expect(fs.statSync(walPath).size).toBe(0);
+    });
+
     it('purges a quarantined message as a complete Layer-2 provenance chain', async () => {
       await storage.insert('conversations', { id: 1 });
       await storage.insertTurnMessages(1, 'turn-safe', [
@@ -258,6 +276,64 @@ describe('SqliteStorage', () => {
   });
 
   describe('schema initialization', () => {
+    it('records the current schema version after transactional initialization', async () => {
+      const dbPath = path.join(tmpDir, 'versioned.db');
+      const versioned = new SqliteStorage(dbPath);
+      await versioned.close();
+      const raw = new Database(dbPath, { readonly: true });
+      expect(raw.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION);
+      raw.close();
+    });
+
+    it('rejects an unknown newer schema before mutating the database', () => {
+      const dbPath = path.join(tmpDir, 'newer.db');
+      const raw = new Database(dbPath);
+      raw.exec('CREATE TABLE future_data (value TEXT NOT NULL); INSERT INTO future_data VALUES (\'keep\');');
+      raw.pragma(`user_version = ${SQLITE_SCHEMA_VERSION + 1}`);
+      raw.close();
+
+      expect(() => new SqliteStorage(dbPath)).toThrow(/newer schema version/);
+
+      const unchanged = new Database(dbPath, { readonly: true });
+      expect(unchanged.prepare('SELECT value FROM future_data').pluck().get()).toBe('keep');
+      expect(unchanged.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION + 1);
+      unchanged.close();
+    });
+
+    it('rolls back every schema change when one migration step fails', () => {
+      const dbPath = path.join(tmpDir, 'broken-migration.db');
+      const raw = new Database(dbPath);
+      raw.exec(`
+        CREATE TABLE conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at TEXT,
+          ended_at TEXT,
+          mode TEXT NOT NULL DEFAULT 'ambient',
+          summary TEXT DEFAULT ''
+        );
+        CREATE TABLE messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          timestamp TEXT
+        );
+        CREATE TABLE messages_migrated (id INTEGER PRIMARY KEY);
+      `);
+      raw.close();
+
+      expect(() => new SqliteStorage(dbPath)).toThrow();
+
+      const unchanged = new Database(dbPath, { readonly: true });
+      const conversationColumns = unchanged.pragma('table_info(conversations)') as Array<{ name: string }>;
+      expect(conversationColumns.some(({ name }) => name === 'close_status')).toBe(false);
+      expect(unchanged.pragma('user_version', { simple: true })).toBe(0);
+      expect(unchanged.prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_quarantine'",
+      ).get()).toBeUndefined();
+      unchanged.close();
+    });
+
     it('creates expected tables', async () => {
       await storage.insert('absolute_rules', { rule: 'test' });
       await storage.insert('persistent_rules', { category: 'test', rule: 'test' });
@@ -374,13 +450,17 @@ describe('SqliteStorage', () => {
 
       await storage.failMemoryStaging(stagingId);
 
-      expect(await storage.query('memory_staging', {
-        id: stagingId,
+      const [failed] = await storage.query<{
+        state: string;
+        source_content: string;
+        policy_terms: string;
+      }>('memory_staging', { id: stagingId });
+      expect(failed).toMatchObject({
         state: 'failed',
-        source_content: '',
-        policy_terms: '',
-      })).toHaveLength(1);
-      expect(await storage.query('messages', { turn_id: 'turn-failed' })).toEqual([]);
+        source_content: 'USER: Rohfrage',
+        policy_terms: 'rohfrage',
+      });
+      expect(await storage.query('messages', { turn_id: 'turn-failed' })).toHaveLength(1);
     });
   });
 

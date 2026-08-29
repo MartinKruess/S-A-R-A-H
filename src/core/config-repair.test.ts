@@ -26,7 +26,10 @@ describe('repairInvalidConfig', () => {
       controls: { voiceMode: 'invalid', pushToTalkKey: 'F8' },
     });
 
-    expect(recovered.errors).toHaveLength(1);
+    expect(recovered.errors).toEqual(expect.arrayContaining([
+      expect.stringContaining('controls.voiceMode'),
+      expect.stringContaining('Repariert: controls.voiceMode'),
+    ]));
     expect(recovered.config.profile).toEqual(expect.objectContaining({ displayName: 'Martin', city: 'Berlin' }));
     expect(recovered.config.controls.voiceMode).toBe('off');
     expect(recovered.config.controls.pushToTalkKey).toBe('F8');
@@ -40,12 +43,18 @@ describe('repairInvalidConfig', () => {
   it('repairs invalid trust fields with restrictive values', () => {
     const recovered = recoverInvalidConfigSnapshot({
       profile: { displayName: 'Martin' },
-      trust: { memoryAllowed: 'yes', confirmationLevel: 'sometimes', fileAccess: 'everywhere' },
+      trust: {
+        memoryAllowed: 'yes',
+        webAccessAllowed: 'yes',
+        confirmationLevel: 'sometimes',
+        fileAccess: 'everywhere',
+      },
     });
 
     expect(recovered.config.profile.displayName).toBe('Martin');
     expect(recovered.config.trust).toEqual(expect.objectContaining({
       memoryAllowed: false,
+      webAccessAllowed: false,
       confirmationLevel: 'maximal',
       fileAccess: 'none',
     }));
@@ -64,5 +73,21 @@ describe('repairInvalidConfig', () => {
     expect(recovered.errors.some((error) => error.includes('trust.memoryExclusions'))).toBe(true);
     expect(recovered.config.trust.memoryAllowed).toBe(false);
     expect(recovered.config.trust.memoryExclusions).toEqual([]);
+    expect(recovered.errors).toContain(
+      'Repariert: trust.memoryExclusions wurde geleert und Erinnerungen wurden vorsorglich deaktiviert.',
+    );
+  });
+
+  it('repairs more than 100 invalid array entries without replacing unrelated config', () => {
+    const recovered = recoverInvalidConfigSnapshot({
+      profile: { displayName: 'Martin', city: 'Berlin' },
+      resources: {
+        programs: Array.from({ length: 150 }, (_, index) => ({ name: `Alt ${index}` })),
+      },
+    });
+
+    expect(recovered.config.profile.displayName).toBe('Martin');
+    expect(recovered.config.profile.city).toBe('Berlin');
+    expect(recovered.config.resources.programs).toEqual([]);
   });
 });
