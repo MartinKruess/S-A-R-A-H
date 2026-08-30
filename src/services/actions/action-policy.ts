@@ -22,6 +22,8 @@ export interface ActionPolicyContext {
   webAccessAllowed?: boolean;
   /** Set by a future file boundary after resolving an allowed-folder grant. */
   fileTargetAllowed?: boolean;
+  /** Canonical action parameter when the risk depends on the selected scope. */
+  param?: string;
 }
 
 export interface ActionPolicyDecision {
@@ -95,5 +97,9 @@ export function evaluateActionPolicy(
   action: ActionName,
   context: ActionPolicyContext,
 ): ActionPolicyDecision {
-  return evaluatePermissionMetadata(ACTION_PERMISSION_METADATA[action], context);
+  const metadata = action === 'cancel_reminder'
+    && context.param?.trim().toLocaleLowerCase('de-DE') === 'all'
+    ? { ...ACTION_PERMISSION_METADATA[action], risk: 'sensitive' as const }
+    : ACTION_PERMISSION_METADATA[action];
+  return evaluatePermissionMetadata(metadata, context);
 }

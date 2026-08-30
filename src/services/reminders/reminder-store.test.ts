@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EncryptedStorage } from '../../core/storage/encrypted-storage.js';
 import { SqliteStorage } from '../../core/storage/sqlite-storage.js';
+import type { Filter } from '../../core/storage/storage.interface.js';
 import {
   MAX_OPEN_REMINDERS,
   ReminderLimitError,
@@ -43,6 +44,29 @@ describe('ReminderStore', () => {
       sourceKind: 'local',
     }));
     expect(await store.listOpen()).toEqual([reminder]);
+  });
+
+  it('returns the committed reminder when its immediate readback fails', async () => {
+    const query = raw.query.bind(raw);
+    vi.spyOn(raw, 'query').mockImplementation(async <T = Record<string, unknown>>(
+      table: string,
+      filter?: Filter,
+    ): Promise<T[]> => {
+      if (table === 'reminders' && typeof filter?.id === 'number') {
+        throw new Error('readback failed');
+      }
+      return query<T>(table, filter);
+    });
+
+    await expect(store.create({
+      dueLocal: '2026-08-31T10:15',
+      text: 'Nicht doppelt anlegen',
+    })).resolves.toEqual(expect.objectContaining({
+      id: 1,
+      text: 'Nicht doppelt anlegen',
+      state: 'pending',
+    }));
+    expect(await raw.query('reminders')).toHaveLength(1);
   });
 
   it('keeps reminder text, local due value and external id encrypted at rest', async () => {

@@ -84,6 +84,19 @@ function localDate(year: number, month: number, day: number, hour: number, minut
   return new Date(year, month - 1, day, hour, minute, 0, 0);
 }
 
+function localMinute(value: Date): string {
+  return [
+    value.getFullYear(),
+    value.getMonth() + 1,
+    value.getDate(),
+    value.getHours(),
+    value.getMinutes(),
+  ].join('-');
+}
+
+const fallbackProbe = localDate(2026, 10, 25, 2, 30);
+const has2026Fallback = localMinute(fallbackProbe) === localMinute(new Date(fallbackProbe.getTime() + 3_600_000));
+
 function record(id: number, dueLocal: string, text: string, state: ReminderState = 'pending'): ReminderRecord {
   return {
     id,
@@ -266,6 +279,126 @@ describe('ReminderService', () => {
 
     expect((await service.list('today')).map((item) => item.text)).toEqual(['Heute']);
     expect((await service.list('upcoming')).map((item) => item.text)).toEqual(['Heute', 'Morgen']);
+    await service.destroy();
+  });
+
+  it('reports an honest partial result when cancel-all fails after its first commit', async () => {
+    const store = new MemoryReminderStore(true, [
+      record(1, '2026-08-30T11:00', 'Eins'),
+      record(2, '2026-08-30T12:00', 'Zwei'),
+    ]);
+    const compare = vi.spyOn(store, 'compareAndSetState');
+    const onError = vi.fn();
+    const service = new ReminderService({
+      store,
+      clock: new FakeClock(localDate(2026, 8, 30, 10, 0)),
+      notify: () => true,
+      onError,
+    });
+    await service.init();
+    compare
+      .mockImplementationOnce(async (transition) => {
+        const target = store.records.find(({ id }) => id === transition.id);
+        if (target) target.state = transition.next;
+        return true;
+      })
+      .mockRejectedValueOnce(new Error('second CAS failed'));
+
+    const result = await service.cancel({ kind: 'all' });
+
+    expect(result.status).toBe('partially_cancelled');
+    expect(result.cancelled.map(({ id }) => id)).toEqual([1]);
+    expect(result.candidates.map(({ id }) => id)).toEqual([2]);
+    expect(store.records.map(({ state }) => state)).toEqual(['cancelled', 'pending']);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'second CAS failed' }));
+    await service.destroy();
+  });
+
+  it.skipIf(!has2026Fallback)('preserves the second occurrence of an ambiguous fallback minute', async () => {
+    const firstOccurrence = fallbackProbe;
+    const secondOccurrence = new Date(firstOccurrence.getTime() + 3_600_000);
+    const clock = new FakeClock(new Date(firstOccurrence.getTime() + 30_000));
+    const store = new MemoryReminderStore();
+    const service = new ReminderService({ store, clock, notify: () => true });
+    await service.init();
+
+    await service.create({ dueLocal: '2026-10-25T02:30', text: 'Nach der Zeitumstellung' });
+
+    clock.set(secondOccurrence);
+    await service.reconcile();
+    expect(store.records[0].state).toBe('delivered');
+    await service.destroy();
+  });
+
+  it('supports non-hour DST overlaps such as Lord Howe Island', async () => {
+    const previousTimezone = process.env.TZ;
+    process.env.TZ = 'Australia/Lord_Howe';
+    try {
+      const firstOccurrence = new Date(2026, 3, 5, 1, 45, 0, 0);
+      const secondOccurrence = new Date(firstOccurrence.getTime() + 30 * 60_000);
+      expect(localMinute(firstOccurrence)).toBe(localMinute(secondOccurrence));
+      const store = new MemoryReminderStore();
+      const clock = new FakeClock(new Date(firstOccurrence.getTime() + 30_000));
+      const service = new ReminderService({
+        store,
+        clock,
+        notify: () => true,
+      });
+      await service.init();
+
+      await service.create({ dueLocal: '2026-04-05T01:45', text: 'Zweite lokale Minute' });
+
+      clock.set(secondOccurrence);
+      await service.reconcile();
+      expect(store.records[0].state).toBe('delivered');
+      await service.destroy();
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTimezone;
+    }
+  });
+
+  it('returns a committed create when scheduler reconciliation fails afterwards', async () => {
+    const store = new MemoryReminderStore();
+    const onError = vi.fn();
+    const service = new ReminderService({
+      store,
+      clock: new FakeClock(localDate(2026, 8, 30, 10, 0)),
+      notify: () => true,
+      onError,
+    });
+    await service.init();
+    vi.spyOn(store, 'listOpen')
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('scheduler read failed'));
+
+    await expect(service.create({ dueLocal: '2026-08-30T11:00', text: 'Bleibt angelegt' }))
+      .resolves.toEqual(expect.objectContaining({ text: 'Bleibt angelegt' }));
+    expect(store.records).toHaveLength(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'scheduler read failed' }));
+    await service.destroy();
+  });
+
+  it('does not start reminder reads or mutations after cancellation', async () => {
+    const store = new MemoryReminderStore();
+    const service = new ReminderService({
+      store,
+      clock: new FakeClock(localDate(2026, 8, 30, 10, 0)),
+      notify: () => true,
+    });
+    await service.init();
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(() => service.create(
+      { dueLocal: '2026-08-30T11:00', text: 'Nicht anlegen' },
+      controller.signal,
+    )).toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(() => service.list('upcoming', controller.signal))
+      .toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(() => service.cancel({ kind: 'all' }, controller.signal))
+      .toThrow(expect.objectContaining({ name: 'AbortError' }));
+    expect(store.records).toEqual([]);
     await service.destroy();
   });
 

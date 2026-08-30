@@ -29,9 +29,9 @@ import {
   ACTION_SCHEMAS,
   isActionName,
   looksLikeActionCommand,
-  requiresActionConfirmation,
   type ActionName,
 } from '../actions/action-schemas.js';
+import { evaluateActionPolicy } from '../actions/action-policy.js';
 import { getFeedback } from './filler-phrases.js';
 import { randomUUID } from 'crypto';
 import { MediaContext } from './media-context.js';
@@ -43,8 +43,13 @@ import {
 } from '../actions/action-feedback.js';
 import {
   parseTimerRequest,
+  parseTimerSelector,
   serializeTimerRequest,
 } from '../actions/timer-contract.js';
+import {
+  groundTimerRequest,
+  groundTimerSelector,
+} from '../actions/timer-grounding.js';
 import {
   createSystemReminderClock,
   parseCancelReminderParam,
@@ -104,44 +109,6 @@ type HistoryEntry = ChatMessage & {
 
 const MAX_LIVE_HISTORY_TURNS = 24;
 const DEFAULT_MEMORY_POLICY_WAIT_TIMEOUT_MS = 30_000;
-const TIMER_DURATION_LABEL_PATTERN = /(?:^|[^\p{L}\p{N}])(?:sekunde(?:n)?|minute(?:n)?|stunde(?:n)?)(?=$|[^\p{L}\p{N}])/iu;
-const GENERIC_TIMER_LABELS: ReadonlySet<string> = new Set(['timer', 'wecker']);
-
-function normalizeGroundingText(value: string): string {
-  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('de-DE');
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-}
-
-/**
- * @param param - Valid compact timer candidate emitted by the routing model.
- * @param userText - Current user utterance used only as label-grounding evidence.
- *
- * - Leaves the codec-owned duration untouched.
- * - Removes an ungrounded or duration-shaped label without rejecting the timer.
- *
- * @returns Original or label-free compact timer parameter.
- *
- * @category Validation Transformation
- */
-function groundTimerLabel(param: string, userText: string): string {
-  const request = parseTimerRequest(param);
-  if (!request?.label) return param;
-  const normalizedLabel = normalizeGroundingText(request.label);
-  const normalizedUserText = normalizeGroundingText(userText);
-  const groundedPhrase = new RegExp(
-    `(?:^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedLabel)}(?:\\s*-?\\s*timer)?(?=$|[^\\p{L}\\p{N}])`,
-    'u',
-  ).test(normalizedUserText);
-  if (
-    groundedPhrase
-    && !TIMER_DURATION_LABEL_PATTERN.test(normalizedLabel)
-    && !GENERIC_TIMER_LABELS.has(normalizedLabel)
-  ) return param;
-  return serializeTimerRequest({ durationSeconds: request.durationSeconds }) ?? param;
-}
 const DEFAULT_ACTION_RESULT_TIMEOUT_MS = 35_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 const REMINDER_CANCEL_FOLLOWUP_TIMEOUT_MS = 2 * 60_000;
@@ -228,6 +195,7 @@ function isActiveReminderListShortcut(userText: string): boolean {
 }
 
 type ReminderCancelFollowupContext = {
+  ownerTurnId: TurnId;
   candidates: Array<{ id: number; dueLocal: string }>;
   expiresAt: number;
 };
@@ -469,6 +437,9 @@ export class RouterService implements SarahService {
       if (msg.data.status === 'canceled' || msg.data.status === 'error') {
         this.context.actionConfirmations.invalidateTurn(msg.data.turnId);
         this.clearVisibleSearchForTurn(msg.data.turnId);
+        if (this.pendingReminderCancelFollowup?.ownerTurnId === msg.data.turnId) {
+          this.pendingReminderCancelFollowup = null;
+        }
       }
       if (msg.source !== this.id) {
         this.rememberTerminal(msg.data.turnId);
@@ -484,12 +455,19 @@ export class RouterService implements SarahService {
       this.pendingActions.delete(requestId);
       if (action === 'cancel_reminder') {
         this.pendingReminderCancelFollowup = this.createReminderCancelFollowupContext(
+          turnId,
           msg.data.reminderCancelAmbiguity,
         );
       }
       pending.resolve(msg.data);
     } else if (msg.topic === 'action:notify') {
-      this.emitSystemNotification(msg.data.notificationId, msg.data.speak, msg.data.kind);
+      this.emitSystemNotification(
+        msg.data.notificationId,
+        msg.data.speak,
+        msg.data.kind,
+        msg.data.kind === 'timer' ? 'voice' : msg.data.originMode ?? 'voice',
+        msg.data.privateContext ?? false,
+      );
     }
   }
 
@@ -504,20 +482,22 @@ export class RouterService implements SarahService {
     turnId: TurnId,
     text: string,
     _kind: BusEvents['action:notify']['kind'],
+    originMode: TurnMode,
+    privateContext: boolean,
   ): void {
     if (!this.isOperational()) return;
     if (!this.context.bus.isTurnKnown(turnId)) {
       const accepted = this.context.bus.emit(this.id, 'turn:accepted', {
         turnId,
         source: 'system',
-        mode: 'voice',
+        mode: originMode,
       });
       if (!accepted) return;
     }
     if (!this.context.bus.isTurnOpen(turnId)) return;
 
     const outputId = randomUUID();
-    const visibleOutput = this.emitAssistantResponse(
+    const visibleOutput = this.publishAssistantResponse(
       turnId,
       text,
       undefined,
@@ -530,16 +510,19 @@ export class RouterService implements SarahService {
       turnId,
       speech: 'suppress',
     });
-    this.context.bus.emit(this.id, 'voice:priority-speech', {
-      turnId,
-      outputId,
-      text,
-      priority: 'timer',
-      pauseAfter: true,
-    });
+    if (originMode === 'voice' && !privateContext) {
+      this.context.bus.emit(this.id, 'voice:priority-speech', {
+        turnId,
+        outputId,
+        text,
+        priority: 'timer',
+        pauseAfter: true,
+      });
+    }
     void visibleOutput.then(() => {
       if (this.isTurnOperational(turnId)) {
         this.emitTerminal(turnId, 'done');
+        this.context.bus.emit(this.id, 'action:notify-accepted', { notificationId: turnId });
       } else if (this.context.bus.isTurnOpen(turnId)) {
         this.emitTerminal(turnId, 'canceled');
       }
@@ -695,6 +678,10 @@ export class RouterService implements SarahService {
       const confirmationIntent = this.context.actionConfirmations.hasSinglePending()
         ? resolveActionConfirmationIntent(envelope.normalizedText)
         : 'none';
+      if (
+        confirmationIntent === 'none'
+        && envelope.command.kind !== 'confirmation'
+      ) this.context.actionConfirmations.cancelSinglePending();
       if (envelope.command.kind === 'memory') {
         await this.handleMemoryCommand(envelope, signal);
       } else if (immediateResponse) {
@@ -989,6 +976,8 @@ export class RouterService implements SarahService {
 
   private toggleIncognito(turnId: TurnId): string {
     this.mediaContext.clear();
+    this.pendingReminderCancelFollowup = null;
+    this.context.actionConfirmations.clear();
     if (!this.incognitoActive) {
       this.incognitoActive = true;
       this.incognitoHistoryTurnIds.clear();
@@ -1133,12 +1122,12 @@ export class RouterService implements SarahService {
         await this.emitAssistantResponse(turnId, 'Das kann ich noch nicht.', signal);
         return;
       }
-      const explicitCancelReminderParam = reminderCancelFromMisroutedSet(envelope.normalizedText);
+      const explicitCancelReminderParam = reminderCancelFromMisroutedSet(envelope.effectiveText);
       const reminderParam = action === 'set_timer'
-        ? reminderFromMisroutedTimer(param, envelope.normalizedText)
+        ? reminderFromMisroutedTimer(param, envelope.effectiveText)
         : null;
       const timerParam = action === 'set_reminder'
-        ? timerFromMisroutedReminder(param, envelope.normalizedText)
+        ? timerFromMisroutedReminder(param, envelope.effectiveText)
         : null;
       await this.dispatchOrRequestConfirmation(
         envelope,
@@ -1278,37 +1267,55 @@ export class RouterService implements SarahService {
     localData = false,
     outputId = randomUUID(),
   ): Promise<void> {
-    return this.enqueueOutput(async () => {
-      if (!this.isTurnOperational(turnId, signal)) return;
-      const sensitiveGuard = this.turnDrafts.get(turnId)?.sensitiveGuard;
-      const protectedText = sensitiveGuard ? redactSensitiveLiterals(text, sensitiveGuard) : text;
-      this.context.bus.emit(this.id, 'llm:chunk', {
-        turnId,
-        outputId,
-        sequence: 0,
-        text: protectedText,
-      });
-      this.context.bus.emit(this.id, 'llm:done', {
-        turnId,
-        outputId,
-        sequence: 1,
-        fullText: protectedText,
-      });
-      this.recordAssistantOutput(turnId, protectedText, externalData, localData);
-      if (!this.turnDrafts.has(turnId) && recordInHistory) {
-        this.history.push({
-          turnId,
-          role: 'assistant',
-          content: protectedText,
-          transient: externalData || localData,
-          privateContext: false,
-          externalData,
-          localData,
-        });
-        this.trimLiveHistory();
-        await this.persistMessage(turnId, 'assistant', protectedText);
-      }
+    return this.enqueueOutput(() => this.publishAssistantResponse(
+      turnId,
+      text,
+      signal,
+      recordInHistory,
+      externalData,
+      localData,
+      outputId,
+    ));
+  }
+
+  private async publishAssistantResponse(
+    turnId: TurnId,
+    text: string,
+    signal: AbortSignal | undefined,
+    recordInHistory: boolean,
+    externalData: boolean,
+    localData: boolean,
+    outputId: string,
+  ): Promise<void> {
+    if (!this.isTurnOperational(turnId, signal)) return;
+    const sensitiveGuard = this.turnDrafts.get(turnId)?.sensitiveGuard;
+    const protectedText = sensitiveGuard ? redactSensitiveLiterals(text, sensitiveGuard) : text;
+    this.context.bus.emit(this.id, 'llm:chunk', {
+      turnId,
+      outputId,
+      sequence: 0,
+      text: protectedText,
     });
+    this.context.bus.emit(this.id, 'llm:done', {
+      turnId,
+      outputId,
+      sequence: 1,
+      fullText: protectedText,
+    });
+    this.recordAssistantOutput(turnId, protectedText, externalData, localData);
+    if (!this.turnDrafts.has(turnId) && recordInHistory) {
+      this.history.push({
+        turnId,
+        role: 'assistant',
+        content: protectedText,
+        transient: externalData || localData,
+        privateContext: false,
+        externalData,
+        localData,
+      });
+      this.trimLiveHistory();
+      await this.persistMessage(turnId, 'assistant', protectedText);
+    }
   }
 
   private async dispatchAction(
@@ -1349,6 +1356,8 @@ export class RouterService implements SarahService {
       requestId,
       action,
       param,
+      originMode: envelope.mode,
+      privateContext: this.incognitoActive || envelope.command.kind === 'anonymous',
       ...((confirmedSourceRequestId || (action === 'show_browser' && this.visibleSearchSession))
         ? { sourceRequestId: confirmedSourceRequestId ?? this.visibleSearchSession?.requestId }
         : {}),
@@ -1373,13 +1382,14 @@ export class RouterService implements SarahService {
         }
       }
       if (result.speak) {
+        const reminderStoreData = action === 'list_reminders' || action === 'cancel_reminder';
         await this.emitAssistantResponse(
           envelope.turnId,
           result.speak,
           signal,
           true,
           action === 'web_search' || action === 'show_browser',
-          action === 'open_program',
+          action === 'open_program' || reminderStoreData,
         );
       }
     } catch (error) {
@@ -1406,13 +1416,40 @@ export class RouterService implements SarahService {
     signal: AbortSignal,
     reminderCancelFollowupId?: number,
   ): Promise<void> {
-    let groundedParam = action === 'set_timer'
-      ? groundTimerLabel(param, envelope.normalizedText)
-      : param;
+    let groundedParam = param;
+    if (action === 'set_timer') {
+      const request = parseTimerRequest(param);
+      const canonical = request
+        ? groundTimerRequest(request, envelope.effectiveText)
+        : null;
+      if (!canonical) {
+        await this.emitAssistantResponse(
+          envelope.turnId,
+          'Ich konnte die Timerdauer nicht eindeutig aus deiner Anfrage übernehmen.',
+          signal,
+        );
+        return;
+      }
+      groundedParam = canonical;
+    } else if (action === 'cancel_timer') {
+      const selector = parseTimerSelector(param);
+      const canonical = selector
+        ? groundTimerSelector(selector, envelope.effectiveText)
+        : null;
+      if (!canonical) {
+        await this.emitAssistantResponse(
+          envelope.turnId,
+          'Diesen Timer kann ich aus deiner Angabe nicht eindeutig zuordnen.',
+          signal,
+        );
+        return;
+      }
+      groundedParam = canonical;
+    }
     if (action === 'set_reminder') {
       const request = parseSetReminderParam(param);
       const grounding = request
-        ? groundSetReminderRequest(request, envelope.normalizedText, this.reminderClock)
+        ? groundSetReminderRequest(request, envelope.effectiveText, this.reminderClock)
         : null;
       if (!grounding?.ok) {
         const response = grounding?.reason === 'non_future_time'
@@ -1436,7 +1473,7 @@ export class RouterService implements SarahService {
         && request.id === reminderCancelFollowupId;
       const canonical = request && (
         groundedByFollowupContext
-        || isCancelReminderRequestGrounded(request, envelope.normalizedText)
+        || isCancelReminderRequestGrounded(request, envelope.effectiveText)
       )
         ? serializeCancelReminderParam(request)
         : null;
@@ -1458,7 +1495,32 @@ export class RouterService implements SarahService {
     const validatedParam = String(parsed.data);
     const validatedAcknowledgement = getActionAcknowledgement(action, validatedParam);
     this.markBrowserSearchIntentTransient(envelope.turnId, action);
-    if (requiresActionConfirmation(this.context.parsedConfig.trust.confirmationLevel, action)) {
+    const trust = this.context.parsedConfig.trust;
+    const policy = evaluateActionPolicy(action, {
+      confirmationLevel: trust.confirmationLevel,
+      fileAccess: trust.fileAccess,
+      webAccessAllowed: trust.webAccessAllowed,
+      param: validatedParam,
+    });
+    if (policy.effect === 'deny') {
+      await this.emitAssistantResponse(
+        envelope.turnId,
+        policy.reason === 'web_access_disabled'
+          ? 'Der Browserzugriff ist in den Einstellungen deaktiviert.'
+          : 'Diese Aktion ist durch deine Berechtigungen gesperrt.',
+        signal,
+      );
+      return;
+    }
+    if (policy.effect === 'prepare_only') {
+      await this.emitAssistantResponse(
+        envelope.turnId,
+        'Ich kann diese Aktion nur vorbereiten, aber nicht verbindlich ausführen.',
+        signal,
+      );
+      return;
+    }
+    if (policy.effect === 'confirm') {
       const sourceRequestId = action === 'show_browser'
         ? this.visibleSearchSession?.requestId
         : undefined;
@@ -1493,6 +1555,7 @@ export class RouterService implements SarahService {
   }
 
   private createReminderCancelFollowupContext(
+    ownerTurnId: TurnId,
     ambiguity: BusEvents['action:result']['reminderCancelAmbiguity'],
   ): ReminderCancelFollowupContext | null {
     if (!ambiguity || ambiguity.candidates.length < 2) return null;
@@ -1509,6 +1572,7 @@ export class RouterService implements SarahService {
       candidates.push({ id: candidate.id, dueLocal: candidate.dueLocal });
     }
     return {
+      ownerTurnId,
       candidates,
       expiresAt: this.reminderClock.nowMs() + REMINDER_CANCEL_FOLLOWUP_TIMEOUT_MS,
     };
@@ -1524,7 +1588,7 @@ export class RouterService implements SarahService {
       this.pendingReminderCancelFollowup = null;
       return false;
     }
-    const followupText = envelope.normalizedText.trim();
+    const followupText = envelope.effectiveText.trim();
     const selectedIndex = parseReminderCancelFollowupIndex(followupText);
     const timeMatch = selectedIndex === null
       ? REMINDER_CANCEL_TIME_FOLLOWUP_PATTERN.exec(followupText)

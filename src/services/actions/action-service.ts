@@ -117,7 +117,7 @@ function formatReminderCancelResult(result: ReminderCancelResult, all: boolean):
   if (result.status === 'partially_cancelled') {
     return {
       ok: true,
-      speak: `${result.cancelled.length} Erinnerungen wurden abgebrochen. ${result.candidates.length} waren bereits fällig.`,
+      speak: `${result.cancelled.length} Erinnerungen wurden abgebrochen. ${result.candidates.length} wurden nicht abgebrochen.`,
     };
   }
   if (all) {
@@ -187,11 +187,13 @@ export class ActionService implements SarahService {
   }
 
   async init(): Promise<void> {
-    this.deps.system.setNotifyHandler((speak) => {
+    this.deps.system.setNotifyHandler((speak, context) => {
       this.bus.emit(this.id, 'action:notify', {
         notificationId: randomUUID(),
         kind: 'timer',
         speak,
+        originMode: context?.originMode ?? 'voice',
+        privateContext: context?.privateContext ?? false,
       });
     });
     this.status = 'running';
@@ -225,7 +227,16 @@ export class ActionService implements SarahService {
       return;
     }
     if (msg.topic !== 'action:request' || this.status !== 'running') return;
-    const { turnId, requestId, action, param, sourceRequestId, confirmation } = msg.data;
+    const {
+      turnId,
+      requestId,
+      action,
+      param,
+      sourceRequestId,
+      confirmation,
+      originMode,
+      privateContext,
+    } = msg.data;
     if (this.bus.isTurnTerminal(turnId)) {
       console.warn('[Actions] request for terminal turn refused', { action });
       return;
@@ -243,6 +254,8 @@ export class ActionService implements SarahService {
       param,
       sourceRequestId,
       confirmation,
+      originMode ?? 'voice',
+      privateContext ?? false,
       controller.signal,
     );
     this.activeActions.set(requestId, { turnId, operation, controller });
@@ -252,11 +265,24 @@ export class ActionService implements SarahService {
         // Remove it before emitting because a synchronous terminal listener
         // must not cancel a successfully accepted long-lived effect (timer).
         this.activeActions.delete(requestId);
-        if (
-          controller.signal.aborted
-          || this.status !== 'running'
-          || this.bus.isTurnTerminal(turnId)
-        ) return;
+        if (controller.signal.aborted || this.bus.isTurnTerminal(turnId)) {
+          if (
+            this.status === 'running'
+            && result.ok
+            && (action === 'set_reminder' || action === 'cancel_reminder')
+            && result.speak
+          ) {
+            this.bus.emit(this.id, 'action:notify', {
+              notificationId: randomUUID(),
+              kind: 'reminder',
+              speak: result.speak,
+              originMode: originMode ?? 'chat',
+              privateContext: privateContext ?? false,
+            });
+          }
+          return;
+        }
+        if (this.status !== 'running') return;
         this.emitResult(turnId, requestId, action, param, result);
       }, (err) => {
         if (
@@ -313,6 +339,8 @@ export class ActionService implements SarahService {
     param: string,
     sourceRequestId: string | undefined,
     confirmation: BusEvents['action:request']['confirmation'],
+    originMode: NonNullable<BusEvents['action:request']['originMode']>,
+    privateContext: boolean,
     signal: AbortSignal,
   ): Promise<ActionExecutionResult> {
     throwIfAborted(signal);
@@ -329,6 +357,7 @@ export class ActionService implements SarahService {
       confirmationLevel: this.getConfirmationLevel(),
       fileAccess: this.getFileAccess(),
       webAccessAllowed: this.getWebAccessAllowed(),
+      param: String(parsed.data),
     });
     if (policy.effect === 'deny') {
       console.warn('[Actions] denied by policy', { action, reason: policy.reason });
@@ -383,7 +412,7 @@ export class ActionService implements SarahService {
       case 'set_timer': {
         const timer = parseTimerRequest(parsed.data as string);
         return timer
-          ? this.deps.system.setTimer(timer, signal)
+          ? this.deps.system.setTimer(timer, signal, { originMode, privateContext })
           : { ok: false, speak: 'Die Timerdauer ist ungültig.' };
       }
       case 'cancel_timer': {
@@ -400,7 +429,7 @@ export class ActionService implements SarahService {
           return { ok: false, speak: 'Zeitpunkt und Inhalt der Erinnerung sind nicht eindeutig.' };
         }
         try {
-          const created = await this.deps.reminders.create({ dueLocal, text: reminder.text });
+          const created = await this.deps.reminders.create({ dueLocal, text: reminder.text }, signal);
           return {
             ok: true,
             speak: `Ich erinnere dich am ${formatReminderDueLocal(created.dueLocal)}: ${ensureSentence(created.text)}`,
@@ -413,7 +442,7 @@ export class ActionService implements SarahService {
         const scope = parseListReminderParam(parsed.data as string);
         if (!scope) return { ok: false, speak: 'Diesen Zeitraum kann ich nicht auflisten.' };
         try {
-          return { ok: true, speak: formatReminderList(await this.deps.reminders.list(scope), scope) };
+          return { ok: true, speak: formatReminderList(await this.deps.reminders.list(scope, signal), scope) };
         } catch (error) {
           return reminderErrorResult(error instanceof Error ? error : new Error('Reminder listing failed'));
         }
@@ -434,7 +463,7 @@ export class ActionService implements SarahService {
         }
         try {
           return formatReminderCancelResult(
-            await this.deps.reminders.cancel(selector),
+            await this.deps.reminders.cancel(selector, signal),
             request.kind === 'all',
           );
         } catch (error) {

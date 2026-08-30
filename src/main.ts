@@ -275,12 +275,36 @@ function startPrimaryInstance(): void {
   });
   const reminderService = new ReminderService({
     store: reminderStore,
-    notify: (notification) => {
+    notify: (notification, signal) => {
       if (routerService.status !== 'running') return false;
-      return appContext!.bus.emit('reminders', 'action:notify', {
-        notificationId: randomUUID(),
-        kind: 'reminder',
-        speak: notification.speak,
+      if (signal?.aborted) return false;
+      const notificationId = randomUUID();
+      return new Promise<boolean>((resolve) => {
+        let settled = false;
+        const finish = (accepted: boolean): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          unsubscribe();
+          signal?.removeEventListener('abort', abort);
+          resolve(accepted);
+        };
+        const abort = (): void => finish(false);
+        const unsubscribe = appContext!.bus.on('action:notify-accepted', (message) => {
+          if (message.data.notificationId === notificationId) finish(true);
+        });
+        const timeout = setTimeout(() => finish(false), 30_000);
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) {
+          finish(false);
+          return;
+        }
+        const published = appContext!.bus.emit('reminders', 'action:notify', {
+          notificationId,
+          kind: 'reminder',
+          speak: notification.speak,
+        });
+        if (!published) finish(false);
       });
     },
     onError: (error) => {

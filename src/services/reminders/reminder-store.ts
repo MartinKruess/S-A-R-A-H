@@ -127,7 +127,8 @@ export class ReminderStore {
     const open = await this.listOpen();
     if (open.length >= MAX_OPEN_REMINDERS) throw new ReminderLimitError();
 
-    const id = await this.db.insert('reminders', {
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const rowInput: Omit<ReminderRow, 'id'> = {
       due_local: input.dueLocal,
       text,
       state: 'pending',
@@ -136,11 +137,17 @@ export class ReminderStore {
       firing_at: null,
       delivered_at: null,
       cancelled_at: null,
-      ...(input.createdAt ? { created_at: input.createdAt } : {}),
-    });
-    const [created] = await this.db.query<ReminderRow>('reminders', { id });
-    if (!created) throw new Error('Persisted reminder could not be read back');
-    return toRecord(created);
+      created_at: createdAt,
+    };
+    const id = await this.db.insert('reminders', rowInput);
+    try {
+      const [created] = await this.db.query<ReminderRow>('reminders', { id });
+      if (created) return toRecord(created);
+    } catch {
+      // The insert already committed. Return the authoritative committed data
+      // instead of inviting the caller to create a duplicate reminder.
+    }
+    return toRecord({ id, ...rowInput });
   }
 
   async listOpen(): Promise<ReminderRecord[]> {

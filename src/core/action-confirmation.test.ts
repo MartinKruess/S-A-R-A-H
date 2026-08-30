@@ -32,13 +32,19 @@ describe('ActionConfirmationGate', () => {
     expect(gate.approve(secondId, 'second-confirmation')).not.toBeNull();
   });
 
-  it('reuses the same pending ID for an identical repeated proposal', () => {
+  it('reuses the same pending ID only inside the same proposal turn', () => {
     const gate = new ActionConfirmationGate();
     const firstId = gate.request('proposal-one', 'open_program', 'spotify');
-    const secondId = gate.request('proposal-two', 'open_program', 'spotify');
+    const repeatedId = gate.request('proposal-one', 'open_program', 'spotify');
+    const replacementId = gate.request('proposal-two', 'open_program', 'spotify');
 
-    expect(secondId).toBe(firstId);
+    expect(repeatedId).toBe(firstId);
+    expect(replacementId).not.toBe(firstId);
     expect(gate.hasSinglePending()).toBe(true);
+    expect(gate.approve(firstId, 'stale-confirmation')).toBeNull();
+    expect(gate.approve(replacementId, 'current-confirmation')).toMatchObject({
+      confirmation: { requestedTurnId: 'proposal-two' },
+    });
   });
 
   it.each([
@@ -60,6 +66,12 @@ describe('ActionConfirmationGate', () => {
     SPOKEN_ACTION_CONFIRMATION_PHRASE,
   ])('recognizes a controlled confirmation variant: %s', (phrase) => {
     expect(resolveActionConfirmationIntent(phrase)).toBe('confirm');
+  });
+
+  it('does not treat a new object-bearing command as confirmation of an old action', () => {
+    expect(resolveActionConfirmationIntent('Ja, mach Spotify auf')).toBe('none');
+    expect(resolveActionConfirmationIntent('Eier-Timer abbrechen')).toBe('none');
+    expect(resolveActionConfirmationIntent('Erinnerung Steuerberater abbrechen')).toBe('none');
   });
 
   it('invalidates only proposals and approvals owned by a failed turn', () => {

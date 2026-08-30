@@ -56,6 +56,17 @@ describe('reminder grounding', () => {
     expect(isReminderScheduleGrounded(schedule, userText)).toBe(true);
   });
 
+  it('rejects separate or alternative relative schedules instead of summing them', () => {
+    expect(isReminderScheduleGrounded(
+      { kind: 'after', minutes: 90 },
+      'Erinnere mich in 30 Minuten an Essen und in 1 Stunde an Trinken.',
+    )).toBe(false);
+    expect(isReminderScheduleGrounded(
+      { kind: 'after', minutes: 10 },
+      'Erinnere mich in 5 oder 10 Minuten an Essen.',
+    )).toBe(false);
+  });
+
   it.each([
     [{ kind: 'tomorrow', time: '11:00' } as const, 'Erinnere mich morgen um 11 Uhr an den Termin.'],
     [{ kind: 'day-after-tomorrow', time: '08:15' } as const, 'Erinnere mich übermorgen um 8:15 an das Medikament.'],
@@ -75,6 +86,27 @@ describe('reminder grounding', () => {
     expect(isReminderScheduleGrounded(
       { kind: 'time', time: '17:06' },
       'Heute um 17.06 Uhr Remindertest',
+    )).toBe(false);
+  });
+
+  it('binds an absolute time to the reminder clause instead of a time inside its content', () => {
+    const userText = 'Erinnere mich morgen um 9 Uhr daran, dass der Termin um 10 Uhr beginnt.';
+    expect(isReminderScheduleGrounded({ kind: 'tomorrow', time: '09:00' }, userText)).toBe(true);
+    expect(isReminderScheduleGrounded({ kind: 'tomorrow', time: '10:00' }, userText)).toBe(false);
+  });
+
+  it('allows alternatives in reminder content but not in the schedule clause', () => {
+    expect(isReminderScheduleGrounded(
+      { kind: 'tomorrow', time: '09:00' },
+      'Erinnere mich morgen um 9 Uhr daran, Milch oder Brot zu kaufen.',
+    )).toBe(true);
+    expect(isReminderScheduleGrounded(
+      { kind: 'after', minutes: 10 },
+      'Erinnerung in 10 Minuten Milch oder Brot kaufen.',
+    )).toBe(true);
+    expect(isReminderScheduleGrounded(
+      { kind: 'tomorrow', time: '10:00' },
+      'Erinnere mich morgen um 9 oder 10 Uhr an den Termin.',
     )).toBe(false);
   });
 
@@ -102,7 +134,7 @@ describe('reminder grounding', () => {
     );
     expect(result).toEqual({
       ok: true,
-      canonicalParam: 'after=1h30m|text=loszufahren',
+      canonicalParam: 'at=date:2026-08-30@11:45|text=loszufahren',
       dueLocal: '2026-08-30T11:45',
     });
   });
@@ -114,7 +146,7 @@ describe('reminder grounding', () => {
       clock,
     )).toEqual({
       ok: true,
-      canonicalParam: 'at=time@09:00|text=Remindertest',
+      canonicalParam: 'at=date:2026-08-31@09:00|text=Remindertest',
       dueLocal: '2026-08-31T09:00',
     });
     expect(groundSetReminderRequest(
@@ -123,7 +155,7 @@ describe('reminder grounding', () => {
       clock,
     )).toEqual({
       ok: true,
-      canonicalParam: 'at=time@11:00|text=Remindertest',
+      canonicalParam: 'at=date:2026-08-30@11:00|text=Remindertest',
       dueLocal: '2026-08-30T11:00',
     });
   });

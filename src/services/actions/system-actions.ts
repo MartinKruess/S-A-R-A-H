@@ -2,6 +2,7 @@
 import { execFile as nodeExecFile } from 'child_process';
 import type { LaunchResult } from '../../main/program-launcher.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
+import type { TurnMode } from '../../core/turn-contract.js';
 import {
   cleanTimerLabel,
   formatTimerDuration,
@@ -53,6 +54,12 @@ interface TimerEntry {
   startMs: number;
   handle: ReturnType<typeof setTimeout>;
   detachAbort: () => void;
+  notificationContext?: TimerNotificationContext;
+}
+
+export interface TimerNotificationContext {
+  originMode: TurnMode;
+  privateContext: boolean;
 }
 
 function describeTimer(durationSeconds: number): string {
@@ -65,11 +72,11 @@ function describeTimer(durationSeconds: number): string {
 export class SystemActions {
   private execFn: ExecFn;
   private platform: string;
-  private onNotify: (speak: string) => void;
+  private onNotify: (speak: string, context?: TimerNotificationContext) => void;
   private timers = new Map<number, TimerEntry>();
   private nextTimerId = 1;
 
-  constructor(opts: { execFn?: ExecFn; onNotify?: (speak: string) => void; platform?: string } = {}) {
+  constructor(opts: { execFn?: ExecFn; onNotify?: (speak: string, context?: TimerNotificationContext) => void; platform?: string } = {}) {
     this.execFn = opts.execFn ?? ((cmd, args, cb, signal) => {
       nodeExecFile(cmd, args, { signal }, (err, _stdout, stderr) => {
         if (err && stderr) console.warn('[SystemActions] exec stderr:', String(stderr).trim().slice(0, 300));
@@ -80,7 +87,7 @@ export class SystemActions {
     this.platform = opts.platform ?? process.platform;
   }
 
-  setNotifyHandler(fn: (speak: string) => void): void {
+  setNotifyHandler(fn: (speak: string, context?: TimerNotificationContext) => void): void {
     this.onNotify = fn;
   }
 
@@ -121,7 +128,11 @@ export class SystemActions {
    *
    * @category System Action
    */
-  setTimer(request: TimerRequest | number, signal?: AbortSignal): LaunchResult {
+  setTimer(
+    request: TimerRequest | number,
+    signal?: AbortSignal,
+    notificationContext?: TimerNotificationContext,
+  ): LaunchResult {
     if (this.platform !== 'win32') return UNSUPPORTED;
     throwIfAborted(signal);
     if (this.timers.size >= MAX_TIMERS) {
@@ -158,11 +169,14 @@ export class SystemActions {
           arm(durationMs - elapsed); // clock says we are early (standby throttling) — re-arm
           return;
         }
+        const completed = this.timers.get(id);
         this.timers.delete(id);
         detachAbort();
-        this.onNotify(label
+        const speak = label
           ? `Dein ${label}-Timer ist abgelaufen.`
-          : `Dein ${describeTimer(durationSeconds)} ist abgelaufen.`);
+          : `Dein ${describeTimer(durationSeconds)} ist abgelaufen.`;
+        if (completed?.notificationContext) this.onNotify(speak, completed.notificationContext);
+        else this.onNotify(speak);
       }, delayMs);
       this.timers.set(id, {
         id,
@@ -173,6 +187,7 @@ export class SystemActions {
         startMs,
         handle,
         detachAbort,
+        ...(notificationContext ? { notificationContext } : {}),
       });
     };
     signal?.addEventListener('abort', cancel, { once: true });
