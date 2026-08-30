@@ -29,6 +29,18 @@ class StubActionService implements SarahService {
   onMessage(): void {}
 }
 
+class StubVoiceService implements SarahService {
+  readonly id = 'voice';
+  readonly subscriptions = [] as const;
+  status: ServiceStatus = 'running';
+
+  constructor(public isSpeechPaused: boolean) {}
+
+  async init(): Promise<void> { this.status = 'running'; }
+  async destroy(): Promise<void> { this.status = 'stopped'; }
+  onMessage(): void {}
+}
+
 async function startAction(
   context: AppContext,
   service: RouterService,
@@ -2234,29 +2246,214 @@ describe('RouterService (action layer)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
-  it('serializes late results against a running worker stream (no interleaved chunks)', async () => {
-    const workerP = new ScriptedProvider('Lange Antwort vom Worker.');
-    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
-    router = new RouterService(ctx, routerP, workerP);
+  it('publishes timer priority speech immediately and keeps one correlated visible output serialized', async () => {
+    const workerP = new BlockingProvider();
+    router = new RouterService(ctx, new ScriptedProvider('ok'), workerP);
     await router.init();
+    router.activeModel = '9b';
     const events: string[] = [];
+    const prioritySpeech: BusEvents['voice:priority-speech'][] = [];
+    const outputPolicies: BusEvents['turn:output-policy'][] = [];
     ctx.bus.on('llm:chunk', (msg) => {
-      events.push('chunk:' + msg.data.text);
+      events.push(`chunk:${msg.data.outputId}:${msg.data.text}`);
     });
     ctx.bus.on('llm:done', (msg) => {
-      events.push('done:' + msg.data.fullText);
+      events.push(`done:${msg.data.outputId}:${msg.data.fullText}`);
     });
+    ctx.bus.on('voice:priority-speech', (msg) => prioritySpeech.push(msg.data));
+    ctx.bus.on('turn:output-policy', (msg) => outputPolicies.push(msg.data));
 
     const turn = router.handleChatMessage('Erkläre etwas Langes');
-    // result arrives while the worker turn is still in flight:
+    await vi.waitFor(() => expect(workerP.calls).toBe(1));
     ctx.bus.emit('test', 'action:notify', { notificationId: 'notify-1', speak: 'Dein Timer ist abgelaufen.' });
-    await turn;
-    await new Promise((r) => setTimeout(r, 20));
 
-    const doneIdx = events.findIndex((e) => e.startsWith('done:Lange'));
-    const notifyIdx = events.findIndex((e) => e === 'done:Dein Timer ist abgelaufen.');
+    expect(prioritySpeech).toEqual([{
+      turnId: 'notify-1',
+      outputId: expect.any(String),
+      text: 'Dein Timer ist abgelaufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    }]);
+    expect(outputPolicies).toEqual([{ turnId: 'notify-1', speech: 'suppress' }]);
+    expect(ctx.bus.isTurnOpen('notify-1')).toBe(true);
+    expect(events.some((event) => event.endsWith(':Dein Timer ist abgelaufen.'))).toBe(false);
+
+    workerP.releaseFirst();
+    await turn;
+    await vi.waitFor(() => {
+      expect(events.some((event) => event.endsWith(':Dein Timer ist abgelaufen.'))).toBe(true);
+    });
+
+    const doneIdx = events.findIndex((event) => event.endsWith(':Antwort 1'));
+    const notifyIdx = events.findIndex((event) => event.endsWith(':Dein Timer ist abgelaufen.'));
     expect(doneIdx).toBeGreaterThan(-1);
-    expect(notifyIdx).toBeGreaterThan(doneIdx); // notify strictly after the stream finished
+    expect(notifyIdx).toBeGreaterThan(doneIdx);
+    expect(events.filter((event) => (
+      event.startsWith('done:') && event.endsWith(':Dein Timer ist abgelaufen.')
+    ))).toHaveLength(1);
+    expect(events[notifyIdx]).toContain(prioritySpeech[0].outputId);
+    expect(ctx.bus.isTurnTerminal('notify-1')).toBe(true);
+  });
+
+  it('keeps Timer V2 parameters as canonical strings through RouterService dispatch', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:05m030s|  Brötchen  ]',
+      '[ACTION:cancel_timer:duration=030s]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    const setRequest = await runActionTurn('Stelle einen Brötchen-Timer auf fünfeinhalb Minuten');
+    const cancelRequest = await runActionTurn('Brich den 30-Sekunden-Timer ab');
+
+    expect(setRequest).toMatchObject({ action: 'set_timer', param: '5m30s|Brötchen' });
+    expect(cancelRequest).toMatchObject({ action: 'cancel_timer', param: 'duration=30s' });
+    expect(setRequest.param).not.toBe('[object Object]');
+    expect(cancelRequest.param).not.toBe('[object Object]');
+    expect(done).toContain('Ich stelle den Brötchen-Timer auf 5 Minuten 30 Sekunden.');
+    expect(done).toContain('Ich prüfe die Timer mit 30 Sekunden Laufzeit.');
+  });
+
+  it('removes invented and duration-shaped timer labels but keeps grounded purposes', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:30s|Halbteller]',
+      '[ACTION:set_timer:30s|Timer]',
+      '[ACTION:set_timer:1m30s|anderthalb Minuten]',
+      '[ACTION:set_timer:8m|Eier]',
+      '[ACTION:set_timer:6m|Brötchen]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    const invented = await runActionTurn('Stelle einen 30 Sekunden-Timer');
+    const generic = await runActionTurn('Stelle einen Timer auf 30 Sekunden');
+    const duration = await runActionTurn('Stelle einen Timer auf anderthalb Minuten');
+    const grounded = await runActionTurn('Stelle einen Eiertimer im Kochtopf auf 8 Minuten');
+    const timerCompound = await runActionTurn('Stelle einen Brötchen-Timer auf 6 Minuten');
+
+    expect(invented).toMatchObject({ action: 'set_timer', param: '30s' });
+    expect(generic).toMatchObject({ action: 'set_timer', param: '30s' });
+    expect(duration).toMatchObject({ action: 'set_timer', param: '1m30s' });
+    expect(grounded).toMatchObject({ action: 'set_timer', param: '8m|Eier' });
+    expect(timerCompound).toMatchObject({ action: 'set_timer', param: '6m|Brötchen' });
+    expect(done).toContain('Ich stelle einen Timer auf 30 Sekunden.');
+    expect(done).toContain('Ich stelle einen Timer auf 1 Minute 30 Sekunden.');
+    expect(done).toContain('Ich stelle den Eier-Timer auf 8 Minuten.');
+    expect(done).toContain('Ich stelle den Brötchen-Timer auf 6 Minuten.');
+  });
+
+  it('rejects invalid Timer V2 parameters before action dispatch', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:set_timer:30 seconds|Eier]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Eier-Timer auf 30 Sekunden');
+
+    expect(requests).toEqual([]);
+    expect(done).toEqual(['Das kann ich noch nicht.']);
+  });
+
+  it('resumes a paused voice buffer locally without model output or persistence', async () => {
+    const voice = new StubVoiceService(true);
+    ctx.registry.register(voice);
+    const routerProvider = new ScriptedProvider('should not run');
+    const workerProvider = new ScriptedProvider('should not run');
+    router = new RouterService(ctx, routerProvider, workerProvider);
+    await router.init();
+    const routerCallsBeforeResume = routerProvider.calls;
+    const workerCallsBeforeResume = workerProvider.calls;
+    const resumed: BusEvents['voice:resume-speech'][] = [];
+    const outputs: BusEvents['llm:done'][] = [];
+    const policies: BusEvents['turn:output-policy'][] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('voice:resume-speech', (message) => resumed.push(message.data));
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data));
+    ctx.bus.on('turn:output-policy', (message) => policies.push(message.data));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+    const request: TurnRequest = {
+      turnId: 'resume-turn',
+      source: 'voice',
+      mode: 'voice',
+      originalText: '  Bin \n WIEDER   DA!  ',
+      createdAt: new Date().toISOString(),
+    };
+
+    await router.handleTurnRequest(request);
+
+    expect(resumed).toEqual([{}]);
+    expect(policies).toEqual([{ turnId: request.turnId, speech: 'suppress' }]);
+    expect(terminals).toContainEqual({ turnId: request.turnId, status: 'done' });
+    expect(outputs).toHaveLength(0);
+    expect(routerProvider.calls).toBe(routerCallsBeforeResume);
+    expect(workerProvider.calls).toBe(workerCallsBeforeResume);
+    expect(await ctx.db.query('messages')).toHaveLength(0);
+  });
+
+  it('routes non-resume sources and semantic questions normally while paused', async () => {
+    const voice = new StubVoiceService(false);
+    ctx.registry.register(voice);
+    const workerProvider = new ScriptedProvider(
+      'Erste Antwort.',
+      'Zweite Antwort.',
+      'Dritte Antwort.',
+      'Vierte Antwort.',
+    );
+    router = new RouterService(ctx, new ScriptedProvider('ok'), workerProvider);
+    await router.init();
+    router.activeModel = '9b';
+    const resumed: BusEvents['voice:resume-speech'][] = [];
+    const discarded: BusEvents['voice:discard-paused-speech'][] = [];
+    ctx.bus.on('voice:resume-speech', (message) => resumed.push(message.data));
+    ctx.bus.on('voice:discard-paused-speech', (message) => discarded.push(message.data));
+
+    await router.handleChatMessage('Bin wieder da.', 'voice');
+    voice.isSpeechPaused = true;
+    await router.handleChatMessage('Erkläre mir den nächsten Punkt.', 'voice');
+    await router.handleChatMessage('Wann ist Peter wieder da?', 'voice');
+    await router.handleChatMessage('Bin wieder da.', 'chat');
+
+    expect(resumed).toHaveLength(0);
+    expect(discarded).toHaveLength(3);
+    expect(discarded).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'New user input superseded paused speech' }),
+    ]));
+    expect(workerProvider.calls).toBe(4);
+    expect(workerProvider.lastMessages?.at(-1)?.content).toContain('Bin wieder da.');
+  });
+
+  it('drops a local resume request after shutdown has started', async () => {
+    const voice = new StubVoiceService(true);
+    ctx.registry.register(voice);
+    router = new RouterService(ctx, new ScriptedProvider('unused'), new ScriptedProvider('unused'));
+    await router.init();
+    const resumed: BusEvents['voice:resume-speech'][] = [];
+    const discarded: BusEvents['voice:discard-paused-speech'][] = [];
+    ctx.bus.on('voice:resume-speech', (message) => resumed.push(message.data));
+    ctx.bus.on('voice:discard-paused-speech', (message) => discarded.push(message.data));
+    const shutdown = ctx.lifecycle.shutdown();
+
+    await router.handleTurnRequest({
+      turnId: 'late-resume',
+      source: 'voice',
+      mode: 'voice',
+      originalText: 'Bin wieder da.',
+      createdAt: new Date().toISOString(),
+    });
+    await shutdown;
+
+    expect(resumed).toHaveLength(0);
+    expect(discarded).toHaveLength(0);
+    expect(ctx.bus.isTurnTerminal('late-resume')).toBe(true);
   });
 
   it('heuristic gate: action command in 9B window swaps back and routes (R4-M1 state reset)', async () => {
@@ -2542,11 +2739,15 @@ describe('RouterService (action layer)', () => {
     await activeTurn;
     const done: string[] = [];
     const chunks: string[] = [];
+    const prioritySpeech: BusEvents['voice:priority-speech'][] = [];
     ctx.bus.on('llm:done', (msg) => {
       done.push(msg.data.fullText);
     });
     ctx.bus.on('llm:chunk', (msg) => {
       chunks.push(msg.data.text);
+    });
+    ctx.bus.on('voice:priority-speech', (msg) => {
+      prioritySpeech.push(msg.data);
     });
     ctx.bus.emit('test', 'action:result', { turnId, requestId, action: 'web_search', ok: true, speak: 'Spät.' });
     // action:result is blocked by the cleared pendingActions map above; action:notify has no such
@@ -2557,6 +2758,7 @@ describe('RouterService (action layer)', () => {
 
     expect(done).toHaveLength(0);
     expect(chunks).toHaveLength(0);
+    expect(prioritySpeech).toHaveLength(0);
   });
 });
 

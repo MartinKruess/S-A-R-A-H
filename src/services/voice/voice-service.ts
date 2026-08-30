@@ -13,11 +13,16 @@ import {
   isChatAvailable,
 } from '../../core/chat-availability.js';
 import { SentenceBuffer } from './sentence-buffer.js';
-import { TtsQueue, type TtsQueueItem } from './tts-queue.js';
+import {
+  TTS_PRIORITY,
+  TtsQueue,
+  type TtsPriority,
+  type TtsQueueItem,
+} from './tts-queue.js';
 import { runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
 import type { OutputId, PlaybackId, TurnId, VoiceCaptureId } from '../../core/turn-contract.js';
-import type { BusEvents } from '../../core/bus-events.js';
+import type { BusEvents, PrioritySpeechCategory } from '../../core/bus-events.js';
 import {
   type VoiceState,
   type VoiceMode,
@@ -36,6 +41,14 @@ const SILENCE_RMS_THRESHOLD = 0.01;
 const SAMPLE_RATE = 16_000;
 const STT_TIMEOUT_MS = 60_000;
 const CAPTURE_FLUSH_TIMEOUT_MS = 2_000;
+
+const PRIORITY_SPEECH_QUEUE_PRIORITY: Record<PrioritySpeechCategory, TtsPriority> = {
+  background: TTS_PRIORITY.BACKGROUND,
+  normal: TTS_PRIORITY.NORMAL,
+  timer: TTS_PRIORITY.TIMER,
+  critical: TTS_PRIORITY.CRITICAL,
+  user: TTS_PRIORITY.USER,
+};
 
 type VoiceTurnMode = 'voice' | 'chatspeak';
 
@@ -61,6 +74,9 @@ export class VoiceService implements SarahService {
     'llm:done',
     'llm:error',
     'llm:filler',
+    'voice:priority-speech',
+    'voice:resume-speech',
+    'voice:discard-paused-speech',
     'turn:terminal',
   ] as const;
   status: ServiceStatus = 'pending';
@@ -101,6 +117,7 @@ export class VoiceService implements SarahService {
   }>();
   private sttAbort: AbortController | null = null;
   private readonly spokenTurns = new Set<TurnId>();
+  private readonly prioritySpeechTurns = new Set<TurnId>();
   private readonly voiceDoneTurns = new Set<TurnId>();
   private readonly routerErrorTurns = new Set<TurnId>();
 
@@ -122,6 +139,11 @@ export class VoiceService implements SarahService {
 
   get voiceStateSnapshot(): BusEvents['voice:state'] {
     return this.createStateSnapshot(this._voiceState);
+  }
+
+  /** Whether normal speech is currently held behind a priority barrier. */
+  get isSpeechPaused(): boolean {
+    return this.ttsQueue?.isPaused ?? false;
   }
 
   /** Compatibility snapshot for diagnostics/tests; productive ownership lives in the sets/maps. */
@@ -326,7 +348,10 @@ export class VoiceService implements SarahService {
       || !this.ttsQueue
       || this.deferredSentences.length === 0
     ) return;
-    if (this._voiceState === 'processing' || this._voiceState === 'idle') {
+    if (
+      !this.ttsQueue.isPaused
+      && (this._voiceState === 'processing' || this._voiceState === 'idle')
+    ) {
       this.setState('speaking');
     }
     for (const item of this.deferredSentences) this.ttsQueue.enqueue(item);
@@ -427,6 +452,12 @@ export class VoiceService implements SarahService {
           this.activePlaybackTurnId = item.turnId;
           this.activePlaybackId = playbackId;
           this.audio.setPlaying(true);
+          if (
+            this._voiceState !== 'speaking'
+            && (item.priority ?? TTS_PRIORITY.NORMAL) !== TTS_PRIORITY.BACKGROUND
+          ) {
+            this.setState('speaking');
+          }
           this.context.bus.emit(this.id, 'voice:play-audio', {
             turnId: item.turnId,
             outputId: item.outputId,
@@ -469,6 +500,7 @@ export class VoiceService implements SarahService {
         this.activePlaybackId = null;
         this.audio.setPlaying(false);
         this.ttsQueue?.playbackDone(msg.data.turnId, msg.data.playbackId);
+        if (this.ttsQueue?.isPaused) this.restoreOwnedVoiceState();
       });
     }
 
@@ -512,6 +544,7 @@ export class VoiceService implements SarahService {
       this.rejectCaptureFlush(captureId, new Error('Voice service stopped'));
     }
     this.spokenTurns.clear();
+    this.prioritySpeechTurns.clear();
     this.voiceDoneTurns.clear();
     this.routerErrorTurns.clear();
 
@@ -646,7 +679,54 @@ export class VoiceService implements SarahService {
         turnId: msg.data.turnId,
         outputId: randomUUID(),
         text: msg.data.text,
+        priority: TTS_PRIORITY.BACKGROUND,
       });
+      return;
+    }
+
+    if (msg.topic === 'voice:priority-speech') {
+      if (
+        this.voiceMode === 'off'
+        || !this.context.bus.isTurnOpen(msg.data.turnId)
+        || !msg.data.text
+        || !this.ttsQueue
+      ) return;
+      const item: TtsQueueItem = {
+        turnId: msg.data.turnId,
+        outputId: msg.data.outputId,
+        text: msg.data.text,
+        priority: PRIORITY_SPEECH_QUEUE_PRIORITY[msg.data.priority],
+        pauseAfterPlayback: msg.data.pauseAfter === true && this.hasNormalSpeechWork(),
+      };
+      this.spokenTurns.add(item.turnId);
+      this.prioritySpeechTurns.add(item.turnId);
+      if (
+        this._voiceState !== 'listening'
+        && this.rendererAvailable
+        && (this._voiceState === 'processing' || this._voiceState === 'idle')
+      ) {
+        this.setState('speaking');
+      }
+      this.context.bus.emit(this.id, 'voice:speaking', {
+        turnId: item.turnId,
+        outputId: item.outputId,
+        text: item.text,
+      });
+      this.enqueueOrDefer(item);
+      return;
+    }
+
+    if (msg.topic === 'voice:resume-speech') {
+      if (!this.ttsQueue?.isPaused) return;
+      this.ttsQueue.resume();
+      for (const turnId of [...this.spokenTurns]) this.tryCompleteSpokenTurn(turnId);
+      this.restoreOwnedVoiceState();
+      return;
+    }
+
+    if (msg.topic === 'voice:discard-paused-speech') {
+      if (!this.ttsQueue?.isPaused) return;
+      this.discardPausedSpeech(msg.data.preserveTurnId, msg.data.reason);
       return;
     }
 
@@ -657,6 +737,7 @@ export class VoiceService implements SarahService {
       if (msg.data.status === 'canceled') {
         const ownsInput = this.activeInputTurnId === turnId;
         this.spokenTurns.delete(turnId);
+        this.prioritySpeechTurns.delete(turnId);
         this.deferredSentences = this.deferredSentences.filter((item) => item.turnId !== turnId);
         this.ttsQueue?.cancelTurn(turnId);
         if (ownsInput) this.activeInputTurnId = null;
@@ -838,8 +919,24 @@ export class VoiceService implements SarahService {
         turnId: output.turnId,
         outputId: output.outputId,
         text: sentence,
+        priority: TTS_PRIORITY.NORMAL,
       });
     }
+  }
+
+  /** Checks only normal requested speech; fillers and priority messages do not create a timer pause. */
+  private hasNormalSpeechWork(): boolean {
+    if (this.deferredSentences.some(
+      (item) => (item.priority ?? TTS_PRIORITY.NORMAL) === TTS_PRIORITY.NORMAL,
+    )) return true;
+
+    return [...this.outputs.values()].some((output) => (
+      output.shouldSpeak
+      && (
+        (!output.complete && !output.failed)
+        || this.ttsQueue?.hasTurn(output.turnId) === true
+      )
+    ));
   }
 
   private cleanupFinishedOutputs(): void {
@@ -890,6 +987,8 @@ export class VoiceService implements SarahService {
       this.setState('listening');
     } else if (this.activePlaybackTurnId) {
       this.setState('speaking');
+    } else if (this.ttsQueue?.isPaused) {
+      this.setState(this.processingTurnIds.size > 0 ? 'processing' : 'idle');
     } else if (this.ttsQueue?.isActive) {
       this.setState('speaking');
     } else if (this.processingTurnIds.size > 0) {
@@ -909,6 +1008,7 @@ export class VoiceService implements SarahService {
       || this.deferredSentences.some((item) => item.turnId === turnId)
     ) return;
     this.spokenTurns.delete(turnId);
+    this.prioritySpeechTurns.delete(turnId);
     this.voiceDoneTurns.add(turnId);
     if (this.voiceDoneTurns.size > 2_000) {
       const oldest = this.voiceDoneTurns.values().next().value as TurnId | undefined;
@@ -979,6 +1079,18 @@ export class VoiceService implements SarahService {
       this.context.bus.emit(this.id, 'voice:error', {
         message: 'Das Mikrofon wird noch vorbereitet. Bitte versuche es gleich noch einmal.',
       });
+      return;
+    }
+    if (this.ttsQueue?.isPaused) {
+      if (!this.canAcceptConversation()) {
+        this.rejectUnavailableConversation();
+        return;
+      }
+      if (!this.capabilities.stt) {
+        this.rejectUnavailableVoiceInput();
+        return;
+      }
+      this.startListening();
       return;
     }
     if (this._voiceState === 'speaking' || this._voiceState === 'processing') {
@@ -1261,6 +1373,7 @@ export class VoiceService implements SarahService {
       this.turnSpeechDecisions.delete(turnId);
       this.removeTurnOutputs(turnId);
       this.spokenTurns.delete(turnId);
+      this.prioritySpeechTurns.delete(turnId);
       this.routerErrorTurns.delete(turnId);
       this.unavailableNoticeTurns.delete(turnId);
     }
@@ -1275,6 +1388,51 @@ export class VoiceService implements SarahService {
       this.context.bus.emit(this.id, 'voice:interrupted', { turnId: interruptedTurnId });
     }
     this.setState('idle');
+  }
+
+  /** Drops superseded paused speech while preserving the newly routed input turn. */
+  private discardPausedSpeech(preserveTurnId: TurnId, reason: string): void {
+    const ownedTurnIds = new Set<TurnId>();
+    for (const turnId of this.processingTurnIds) ownedTurnIds.add(turnId);
+    for (const turnId of this.voiceRelevantTurns.keys()) ownedTurnIds.add(turnId);
+    for (const turnId of this.spokenTurns) ownedTurnIds.add(turnId);
+    for (const output of this.outputs.values()) ownedTurnIds.add(output.turnId);
+    for (const item of this.deferredSentences) ownedTurnIds.add(item.turnId);
+    if (this.activePlaybackTurnId) ownedTurnIds.add(this.activePlaybackTurnId);
+    ownedTurnIds.delete(preserveTurnId);
+    for (const turnId of this.prioritySpeechTurns) ownedTurnIds.delete(turnId);
+
+    const interruptedTurnId = this.activeOutputTurnId
+      ?? this.activePlaybackTurnId
+      ?? ownedTurnIds.values().next().value as TurnId | undefined;
+
+    this.ttsQueue?.stop();
+    this.audio.setPlaying(false);
+    this.activePlaybackTurnId = null;
+    this.activePlaybackId = null;
+    this.deferredSentences = this.deferredSentences.filter(
+      (item) => item.turnId === preserveTurnId,
+    );
+
+    for (const turnId of ownedTurnIds) {
+      this.processingTurnIds.delete(turnId);
+      this.voiceRelevantTurns.delete(turnId);
+      this.turnSpeechDecisions.delete(turnId);
+      this.removeTurnOutputs(turnId);
+      this.spokenTurns.delete(turnId);
+      this.prioritySpeechTurns.delete(turnId);
+      this.routerErrorTurns.delete(turnId);
+      this.unavailableNoticeTurns.delete(turnId);
+      if (this.context.bus.isTurnOpen(turnId)) {
+        this.context.bus.emit(this.id, 'turn:cancel', { turnId, reason });
+        this.context.bus.emit(this.id, 'turn:terminal', { turnId, status: 'canceled' });
+      }
+    }
+    for (const turnId of this.prioritySpeechTurns) this.tryCompleteSpokenTurn(turnId);
+    if (interruptedTurnId && interruptedTurnId !== preserveTurnId) {
+      this.context.bus.emit(this.id, 'voice:interrupted', { turnId: interruptedTurnId });
+    }
+    this.restoreOwnedVoiceState();
   }
 
   // --- VAD (Voice Activity Detection) ---

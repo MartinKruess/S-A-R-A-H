@@ -69,6 +69,56 @@ describe('MessageBus', () => {
     expect(() => bus.emit('svc', 'voice:wake', {})).not.toThrow();
   });
 
+  it('delivers correlated priority, resume, and discard speech without changing turn ownership', () => {
+    const priority = vi.fn();
+    const resume = vi.fn();
+    const discard = vi.fn();
+    bus.on('voice:priority-speech', priority);
+    bus.on('voice:resume-speech', resume);
+    bus.on('voice:discard-paused-speech', discard);
+    bus.emit('router', 'turn:accepted', {
+      turnId: 'timer-turn',
+      source: 'system',
+      mode: 'voice',
+    });
+
+    expect(bus.emit('router', 'voice:priority-speech', {
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Dein Timer ist abgelaufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    })).toBe(true);
+    expect(bus.emit('router', 'voice:resume-speech', {})).toBe(true);
+    expect(bus.emit('router', 'voice:discard-paused-speech', {
+      preserveTurnId: 'input-turn',
+      reason: 'barge-in',
+    })).toBe(true);
+
+    expect(priority).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'router',
+      topic: 'voice:priority-speech',
+      data: {
+        turnId: 'timer-turn',
+        outputId: 'timer-output',
+        text: 'Dein Timer ist abgelaufen.',
+        priority: 'timer',
+        pauseAfter: true,
+      },
+    }));
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'router',
+      topic: 'voice:resume-speech',
+      data: {},
+    }));
+    expect(discard).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'router',
+      topic: 'voice:discard-paused-speech',
+      data: { preserveTurnId: 'input-turn', reason: 'barge-in' },
+    }));
+    expect(bus.isTurnOpen('timer-turn')).toBe(true);
+  });
+
   it('isolates a throwing listener and still reaches later and wildcard listeners', () => {
     const healthy = vi.fn();
     const wildcard = vi.fn();

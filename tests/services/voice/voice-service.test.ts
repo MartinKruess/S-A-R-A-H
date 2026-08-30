@@ -10,6 +10,8 @@ import type { AudioManager } from '../../../src/services/voice/audio-manager.js'
 import type { HotkeyManager } from '../../../src/services/voice/hotkey-manager.js';
 import { STT_UNAVAILABLE_MESSAGE } from '../../../src/core/chat-availability.js';
 import { randomUUID } from 'node:crypto';
+import type { BusEvents } from '../../../src/core/bus-events.js';
+import type { TypedBusMessage } from '../../../src/core/types.js';
 
 function createMockStt(): SttProvider {
   return {
@@ -202,6 +204,41 @@ function terminalizeActiveOutput(service: VoiceService, bus: MessageBus): void {
   });
 }
 
+function makePrioritySpeechMsg(
+  bus: MessageBus,
+  data: BusEvents['voice:priority-speech'],
+): TypedBusMessage<'voice:priority-speech'> {
+  if (!bus.isTurnKnown(data.turnId)) {
+    bus.emit('test', 'turn:accepted', { turnId: data.turnId, source: 'system', mode: 'voice' });
+  }
+  return {
+    source: 'router',
+    topic: 'voice:priority-speech',
+    data,
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function makeResumeSpeechMsg(): TypedBusMessage<'voice:resume-speech'> {
+  return {
+    source: 'router',
+    topic: 'voice:resume-speech',
+    data: {},
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function makeDiscardPausedSpeechMsg(
+  data: BusEvents['voice:discard-paused-speech'],
+): TypedBusMessage<'voice:discard-paused-speech'> {
+  return {
+    source: 'router',
+    topic: 'voice:discard-paused-speech',
+    data,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 describe('VoiceService', () => {
   let bus: MessageBus;
   let stt: SttProvider;
@@ -250,6 +287,9 @@ describe('VoiceService', () => {
       'llm:done',
       'llm:error',
       'llm:filler',
+      'voice:priority-speech',
+      'voice:resume-speech',
+      'voice:discard-paused-speech',
       'turn:terminal',
     ]);
     expect(service.voiceState).toBe('idle');
@@ -752,6 +792,285 @@ describe('VoiceService', () => {
     // No ttsQueue exists → must not throw.
     expect(() => service.onMessage(makeMsg(service, bus, 'llm:filler', { text: 'Sofort.' }))).not.toThrow();
     expect(tts.speak).not.toHaveBeenCalled();
+  });
+
+  // --- 9c. Priority speech and timer pause ownership ---
+
+  it('speaks a timer in idle without creating an artificial pause', async () => {
+    await service.init();
+    const playbacks: BusEvents['voice:play-audio'][] = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    const timerTurnId = randomUUID();
+
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: timerTurnId,
+      outputId: randomUUID(),
+      text: 'Dein Timer ist abgelaufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    });
+    await flush();
+
+    expect(tts.speak).toHaveBeenCalledWith(
+      'Dein Timer ist abgelaufen.',
+      expect.any(AbortSignal),
+    );
+    expect(service.isSpeechPaused).toBe(false);
+    expect(service.voiceState).toBe('idle');
+  });
+
+  it('keeps priority speech silent when voice output is disabled', async () => {
+    context = createMockContext(bus, 'off');
+    service = new VoiceService(context, stt, tts, wakeWord, audio, hotkey);
+    await service.init();
+
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: randomUUID(),
+      outputId: randomUUID(),
+      text: 'Dein Timer ist abgelaufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+    await flush();
+
+    expect(tts.speak).not.toHaveBeenCalled();
+    expect(service.isSpeechPaused).toBe(false);
+    expect(service.voiceState).toBe('idle');
+  });
+
+  it('allows another timer during a pause and then resumes the preserved prebuffer', async () => {
+    await service.init();
+    const playbacks: BusEvents['voice:play-audio'][] = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    const normalTurnId = randomUUID();
+    const timerTurnId = randomUUID();
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: normalTurnId,
+      text: 'Erster Satz. Zweiter Satz.',
+    }));
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: timerTurnId,
+      outputId: randomUUID(),
+      text: 'Dein Timer ist abgelaufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    });
+    await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+    expect(playbacks[1].turnId).toBe(timerTurnId);
+
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[1].turnId,
+      playbackId: playbacks[1].playbackId,
+    });
+    await flush();
+
+    expect(service.isSpeechPaused).toBe(true);
+    expect(service.voiceState).not.toBe('speaking');
+    expect(playbacks).toHaveLength(2);
+
+    const secondTimerTurnId = randomUUID();
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: secondTimerTurnId,
+      outputId: randomUUID(),
+      text: 'Noch ein Timer.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+    await vi.waitFor(() => expect(playbacks).toHaveLength(3));
+    expect(playbacks[2].turnId).toBe(secondTimerTurnId);
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[2].turnId,
+      playbackId: playbacks[2].playbackId,
+    });
+    await flush();
+
+    expect(service.isSpeechPaused).toBe(true);
+    expect(service.voiceState).not.toBe('speaking');
+
+    service.onMessage(makeResumeSpeechMsg());
+    await vi.waitFor(() => expect(playbacks).toHaveLength(4));
+
+    expect(playbacks[3].turnId).toBe(normalTurnId);
+    expect(service.isSpeechPaused).toBe(false);
+    expect(service.voiceState).toBe('speaking');
+  });
+
+  it('starts F9 capture during a timer pause without discarding normal speech', async () => {
+    await service.init();
+    const playbacks: BusEvents['voice:play-audio'][] = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    const normalTurnId = randomUUID();
+    const timerTurnId = randomUUID();
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: normalTurnId,
+      text: 'Erster Satz. Zweiter Satz.',
+    }));
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: timerTurnId,
+      outputId: randomUUID(),
+      text: 'Timer.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    });
+    await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[1].turnId,
+      playbackId: playbacks[1].playbackId,
+    });
+    await vi.waitFor(() => expect(service.isSpeechPaused).toBe(true));
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+    onDown();
+
+    expect(service.voiceState).toBe('listening');
+    expect(tts.stop).not.toHaveBeenCalled();
+    expect(service.isSpeechPaused).toBe(true);
+
+    onUp();
+    await vi.waitFor(() => expect(stt.transcribe).toHaveBeenCalledOnce());
+    expect(service.isSpeechPaused).toBe(true);
+    expect(playbacks).toHaveLength(2);
+
+    service.onMessage(makeResumeSpeechMsg());
+    await vi.waitFor(() => expect(playbacks).toHaveLength(3));
+    expect(playbacks[2].turnId).toBe(normalTurnId);
+  });
+
+  it('discards paused speech after a content decision and preserves the new input turn', async () => {
+    await service.init();
+    const playbacks: BusEvents['voice:play-audio'][] = [];
+    const chatMessages: BusEvents['chat:message'][] = [];
+    const canceledTurns: BusEvents['turn:cancel'][] = [];
+    const visibleTimerOutputs: BusEvents['llm:done'][] = [];
+    const completedVoiceTurns: BusEvents['voice:done'][] = [];
+    bus.on('voice:play-audio', (message) => playbacks.push(message.data));
+    bus.on('chat:message', (message) => chatMessages.push(message.data));
+    bus.on('turn:cancel', (message) => canceledTurns.push(message.data));
+    bus.on('llm:done', (message) => {
+      if (message.data.turnId === timerTurnId) visibleTimerOutputs.push(message.data);
+    });
+    bus.on('voice:done', (message) => completedVoiceTurns.push(message.data));
+    const normalTurnId = randomUUID();
+    const timerTurnId = randomUUID();
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: normalTurnId,
+      text: 'Erster Satz. Zweiter Satz.',
+    }));
+    await vi.waitFor(() => expect(playbacks).toHaveLength(1));
+    service.onMessage(makePrioritySpeechMsg(bus, {
+      turnId: timerTurnId,
+      outputId: randomUUID(),
+      text: 'Timer.',
+      priority: 'timer',
+      pauseAfter: true,
+    }));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[0].turnId,
+      playbackId: playbacks[0].playbackId,
+    });
+    await vi.waitFor(() => expect(playbacks).toHaveLength(2));
+    bus.emit('renderer', 'voice:playback-done', {
+      turnId: playbacks[1].turnId,
+      playbackId: playbacks[1].playbackId,
+    });
+    await vi.waitFor(() => expect(service.isSpeechPaused).toBe(true));
+    expect(visibleTimerOutputs).toHaveLength(0);
+
+    const registerCall = (hotkey.register as ReturnType<typeof vi.fn>).mock.calls[0];
+    const onDown = registerCall[1] as () => void;
+    const onUp = registerCall[2] as () => void;
+    onDown();
+    onUp();
+    await vi.waitFor(() => expect(chatMessages).toHaveLength(1));
+    const newTurnId = chatMessages[0].turnId;
+
+    service.onMessage(makeDiscardPausedSpeechMsg({
+      preserveTurnId: newTurnId,
+      reason: 'New user input superseded paused speech',
+    }));
+
+    expect(service.isSpeechPaused).toBe(false);
+    expect(tts.stop).toHaveBeenCalledOnce();
+    expect(canceledTurns.map((turn) => turn.turnId)).toContain(normalTurnId);
+    expect(canceledTurns.map((turn) => turn.turnId)).not.toContain(newTurnId);
+    expect(canceledTurns.map((turn) => turn.turnId)).not.toContain(timerTurnId);
+    expect(bus.isTurnOpen(newTurnId)).toBe(true);
+    expect(bus.isTurnOpen(timerTurnId)).toBe(true);
+
+    service.onMessage(makeMsg(service, bus, 'llm:chunk', {
+      turnId: newTurnId,
+      text: 'Neue Antwort.',
+    }));
+    await vi.waitFor(() => expect(playbacks).toHaveLength(3));
+    expect(playbacks[2].turnId).toBe(newTurnId);
+
+    const timerOutputId = randomUUID();
+    const timerChunk: BusEvents['llm:chunk'] = {
+      turnId: timerTurnId,
+      outputId: timerOutputId,
+      sequence: 0,
+      text: 'Timer.',
+    };
+    const timerDone: BusEvents['llm:done'] = {
+      turnId: timerTurnId,
+      outputId: timerOutputId,
+      sequence: 1,
+      fullText: 'Timer.',
+    };
+    service.onMessage({
+      source: 'router',
+      topic: 'turn:output-policy',
+      data: { turnId: timerTurnId, speech: 'suppress' },
+      timestamp: new Date().toISOString(),
+    });
+    bus.emit('router', 'llm:chunk', timerChunk);
+    service.onMessage({
+      source: 'router',
+      topic: 'llm:chunk',
+      data: timerChunk,
+      timestamp: new Date().toISOString(),
+    });
+    bus.emit('router', 'llm:done', timerDone);
+    service.onMessage({
+      source: 'router',
+      topic: 'llm:done',
+      data: timerDone,
+      timestamp: new Date().toISOString(),
+    });
+    const timerTerminal: BusEvents['turn:terminal'] = { turnId: timerTurnId, status: 'done' };
+    bus.emit('router', 'turn:terminal', timerTerminal);
+    service.onMessage({
+      source: 'router',
+      topic: 'turn:terminal',
+      data: timerTerminal,
+      timestamp: new Date().toISOString(),
+    });
+
+    expect(visibleTimerOutputs).toEqual([timerDone]);
+    expect(completedVoiceTurns.filter((turn) => turn.turnId === timerTurnId)).toHaveLength(1);
+    expect(bus.isTurnTerminal(timerTurnId)).toBe(true);
   });
 
   // --- 10. Interruption: speaking -> pressing PTT stops TTS, starts listening ---

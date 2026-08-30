@@ -41,6 +41,10 @@ import {
   getActionAcknowledgement,
   getActionConfirmationDescription,
 } from '../actions/action-feedback.js';
+import {
+  parseTimerRequest,
+  serializeTimerRequest,
+} from '../actions/timer-contract.js';
 import { resolveProfileResponse } from './profile-response.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 import {
@@ -69,6 +73,7 @@ import {
   type ActionConfirmationReference,
   type ConfirmedAction,
 } from '../../core/action-confirmation.js';
+import type { VoiceService } from '../voice/voice-service.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -87,12 +92,51 @@ type HistoryEntry = ChatMessage & {
 
 const MAX_LIVE_HISTORY_TURNS = 24;
 const DEFAULT_MEMORY_POLICY_WAIT_TIMEOUT_MS = 30_000;
+const TIMER_DURATION_LABEL_PATTERN = /(?:^|[^\p{L}\p{N}])(?:sekunde(?:n)?|minute(?:n)?|stunde(?:n)?)(?=$|[^\p{L}\p{N}])/iu;
+const GENERIC_TIMER_LABELS: ReadonlySet<string> = new Set(['timer', 'wecker']);
+
+function normalizeGroundingText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('de-DE');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+/**
+ * @param param - Valid compact timer candidate emitted by the routing model.
+ * @param userText - Current user utterance used only as label-grounding evidence.
+ *
+ * - Leaves the codec-owned duration untouched.
+ * - Removes an ungrounded or duration-shaped label without rejecting the timer.
+ *
+ * @returns Original or label-free compact timer parameter.
+ *
+ * @category Validation Transformation
+ */
+function groundTimerLabel(param: string, userText: string): string {
+  const request = parseTimerRequest(param);
+  if (!request?.label) return param;
+  const normalizedLabel = normalizeGroundingText(request.label);
+  const normalizedUserText = normalizeGroundingText(userText);
+  const groundedPhrase = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedLabel)}(?:\\s*-?\\s*timer)?(?=$|[^\\p{L}\\p{N}])`,
+    'u',
+  ).test(normalizedUserText);
+  if (
+    groundedPhrase
+    && !TIMER_DURATION_LABEL_PATTERN.test(normalizedLabel)
+    && !GENERIC_TIMER_LABELS.has(normalizedLabel)
+  ) return param;
+  return serializeTimerRequest({ durationSeconds: request.durationSeconds }) ?? param;
+}
 const DEFAULT_ACTION_RESULT_TIMEOUT_MS = 35_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 const DELETE_ALL_MEMORY_CONFIRMATION_TIMEOUT_MS = 2 * 60_000;
 const REMEMBER_INTENT_PATTERN = /\b(?:merk(?:e)?\s+dir|erinner(?:e)?\s+dich|behalt(?:e)?\s+(?:das|dies)|speicher(?:e)?\s+(?:dir\s+)?(?:als\s+)?erinnerung)\b/iu;
 const EXPLICIT_REMEMBER_PATTERN = /^(?:bitte\s+)?(?:merk(?:e)?\s+dir|behalt(?:e)?\s+(?:das|dies)|speicher(?:e)?\s+(?:dir\s+)?(?:als\s+)?erinnerung)\s*[:,]?\s+([\s\S]+)$/iu;
 const MEANINGLESS_MEMORY_PATTERN = /^(?:das|dies|dieses|daran|es)$/iu;
+const RESUME_SPEECH_PATTERN = /^[^\p{L}\p{N}]*(?:(?:ich\s+)?bin\s+)?wieder da[^\p{L}\p{N}]*$/u;
 
 export interface RouterServiceOptions {
   memoryPolicyWaitTimeoutMs?: number;
@@ -351,36 +395,53 @@ export class RouterService implements SarahService {
     }
   }
 
-  /**
-   * action:result/action:notify can race in from the bus while a chat turn
-   * (routing decision + worker stream) is still running — e.g. a timer firing
-   * mid-answer. Wait for the in-flight turn to settle before enqueueing so the
-   * notification can never speak ahead of the turn's own response (no
-   * interleaved output, Spec §3). Once no turn is in flight, speak right away.
-   */
+  /** Publishes timer speech immediately while keeping its visible output serialized. */
   private emitSystemNotification(turnId: TurnId, text: string): void {
+    if (!this.isOperational()) return;
     if (!this.context.bus.isTurnKnown(turnId)) {
-      this.context.bus.emit(this.id, 'turn:accepted', { turnId, source: 'system', mode: 'voice' });
+      const accepted = this.context.bus.emit(this.id, 'turn:accepted', {
+        turnId,
+        source: 'system',
+        mode: 'voice',
+      });
+      if (!accepted) return;
     }
-    void this.coordinator.enqueue({ turnId }, async (signal) => {
-      try {
-        await this.emitAssistantResponse(turnId, text, signal, false);
-        throwIfAborted(signal);
+    if (!this.context.bus.isTurnOpen(turnId)) return;
+
+    const outputId = randomUUID();
+    const visibleOutput = this.emitAssistantResponse(
+      turnId,
+      text,
+      undefined,
+      false,
+      false,
+      false,
+      outputId,
+    );
+    this.context.bus.emit(this.id, 'turn:output-policy', {
+      turnId,
+      speech: 'suppress',
+    });
+    this.context.bus.emit(this.id, 'voice:priority-speech', {
+      turnId,
+      outputId,
+      text,
+      priority: 'timer',
+      pauseAfter: true,
+    });
+    void visibleOutput.then(() => {
+      if (this.isTurnOperational(turnId)) {
         this.emitTerminal(turnId, 'done');
-      } catch (error) {
-        if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
-          this.emitTerminal(turnId, 'canceled');
-          return;
-        }
-        this.emitError(turnId, ERROR_MESSAGES.connection);
-        this.emitTerminal(turnId, 'error', ERROR_MESSAGES.connection);
+      } else if (this.context.bus.isTurnOpen(turnId)) {
+        this.emitTerminal(turnId, 'canceled');
       }
     }).catch((error) => {
-      const message = error instanceof TurnQueueFullError
-        ? 'Zu viele Anfragen gleichzeitig. Die Systemmeldung wurde verworfen.'
-        : ERROR_MESSAGES.connection;
-      this.emitError(turnId, message);
-      this.emitTerminal(turnId, 'error', message);
+      if (error instanceof Error && error.name === 'AbortError') {
+        this.emitTerminal(turnId, 'canceled');
+        return;
+      }
+      this.emitError(turnId, ERROR_MESSAGES.connection);
+      this.emitTerminal(turnId, 'error', ERROR_MESSAGES.connection);
     });
   }
 
@@ -396,7 +457,6 @@ export class RouterService implements SarahService {
   }
 
   async handleTurnRequest(request: TurnRequest): Promise<void> {
-    this.memoryCurator.cancelForUserInput();
     if (!this.context.bus.isTurnKnown(request.turnId)) {
       const accepted = this.context.bus.emit(this.id, 'turn:accepted', {
         turnId: request.turnId,
@@ -423,6 +483,29 @@ export class RouterService implements SarahService {
       request,
       this.context.parsedConfig.controls?.customCommands ?? [],
     );
+    const speechPaused = this.isOperational() && this.isVoiceSpeechPaused();
+    if (
+      speechPaused
+      && request.source === 'voice'
+      && request.mode === 'voice'
+      && this.isResumeSpeechPhrase(envelope.normalizedText)
+    ) {
+      this.context.bus.emit(this.id, 'turn:output-policy', {
+        turnId: envelope.turnId,
+        speech: 'suppress',
+      });
+      this.context.bus.emit(this.id, 'voice:resume-speech', {});
+      this.emitTerminal(envelope.turnId, 'done');
+      return;
+    }
+    if (speechPaused) {
+      this.context.bus.emit(this.id, 'voice:discard-paused-speech', {
+        preserveTurnId: envelope.turnId,
+        reason: 'New user input superseded paused speech',
+      });
+    }
+
+    this.memoryCurator.cancelForUserInput();
     if (envelope.command.kind === 'memory') {
       this.context.bus.emit(this.id, 'turn:output-policy', {
         turnId: envelope.turnId,
@@ -1061,8 +1144,8 @@ export class RouterService implements SarahService {
     recordInHistory = true,
     externalData = false,
     localData = false,
+    outputId = randomUUID(),
   ): Promise<void> {
-    const outputId = randomUUID();
     return this.enqueueOutput(async () => {
       if (!this.isTurnOperational(turnId, signal)) return;
       const sensitiveGuard = this.turnDrafts.get(turnId)?.sensitiveGuard;
@@ -1190,7 +1273,10 @@ export class RouterService implements SarahService {
     param: string,
     signal: AbortSignal,
   ): Promise<void> {
-    const parsed = ACTION_SCHEMAS[action].safeParse(param);
+    const groundedParam = action === 'set_timer'
+      ? groundTimerLabel(param, envelope.normalizedText)
+      : param;
+    const parsed = ACTION_SCHEMAS[action].safeParse(groundedParam);
     if (!parsed.success) {
       await this.emitAssistantResponse(envelope.turnId, 'Das kann ich noch nicht.', signal);
       return;
@@ -1667,6 +1753,21 @@ export class RouterService implements SarahService {
       && this.status === 'running'
       && lifecycleState !== 'stopping'
       && lifecycleState !== 'stopped';
+  }
+
+  private isVoiceSpeechPaused(): boolean {
+    const voiceService = this.context.registry.get('voice') as VoiceService | undefined;
+    return voiceService?.status === 'running' && voiceService.isSpeechPaused;
+  }
+
+  /** Matches the single local Phase-1 resume phrase after whitespace normalization. */
+  private isResumeSpeechPhrase(text: string): boolean {
+    const normalizedText = text
+      .normalize('NFC')
+      .toLocaleLowerCase('de-DE')
+      .replace(/\s+/gu, ' ')
+      .trim();
+    return !normalizedText.includes('?') && RESUME_SPEECH_PATTERN.test(normalizedText);
   }
 
   private isTurnOperational(turnId: TurnId, signal?: AbortSignal): boolean {

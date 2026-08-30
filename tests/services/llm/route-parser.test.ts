@@ -25,6 +25,19 @@ describe('parseRouteTag', () => {
     });
   });
 
+  it('preserves compact Timer V2 parameters for central validation', () => {
+    expect(parseRouteTag('[ACTION:set_timer:5m30s|Brötchen]')).toEqual({
+      kind: 'action',
+      action: 'set_timer',
+      param: '5m30s|Brötchen',
+    });
+    expect(parseRouteTag('[ACTION:cancel_timer:label=Eier]')).toEqual({
+      kind: 'action',
+      action: 'cancel_timer',
+      param: 'label=Eier',
+    });
+  });
+
   it.each([
     '',
     'Hallo, wie kann ich helfen?',

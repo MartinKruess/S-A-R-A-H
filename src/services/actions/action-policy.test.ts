@@ -24,6 +24,18 @@ describe('action policy', () => {
     }).effect).toBe('allow');
   });
 
+  it.each(['set_timer', 'cancel_timer'] as const)(
+    'treats %s as a reversible timer action without standard confirmation',
+    (action) => {
+      expect(evaluateActionPolicy(action, {
+        confirmationLevel: 'standard', fileAccess: 'none',
+      })).toMatchObject({
+        effect: 'allow',
+        metadata: { permission: 'system.timer', risk: 'reversible' },
+      });
+    },
+  );
+
   it.each(['minimal', 'standard', 'maximal'] as const)(
     'uses the persistent browser grant instead of per-search confirmation at %s level',
     (confirmationLevel) => {

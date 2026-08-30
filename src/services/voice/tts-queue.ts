@@ -6,29 +6,56 @@ const TTS_SAMPLE_RATE = 22_050;
 const PLAYBACK_ACK_GRACE_MS = 5_000;
 const PLAYBACK_ACK_MAX_MS = 120_000;
 
-type QueueState = 'idle' | 'synthesizing' | 'playing' | 'prebuffering';
+export const TTS_PRIORITY = {
+  BACKGROUND: 0,
+  NORMAL: 100,
+  TIMER: 200,
+  CRITICAL: 300,
+  USER: 400,
+} as const;
+
+export type TtsPriority = typeof TTS_PRIORITY[keyof typeof TTS_PRIORITY];
+
+type QueueState = 'idle' | 'synthesizing' | 'playing' | 'prebuffering' | 'paused';
 
 export interface TtsQueueItem {
   turnId: TurnId;
   outputId: OutputId;
   text: string;
+  /** Defaults to normal requested speech so existing callers retain FIFO behavior. */
+  priority?: TtsPriority;
+  /** Pauses lower-priority speech after this item's successful playback acknowledgement. */
+  pauseAfterPlayback?: boolean;
+}
+
+interface QueueEntry {
+  item: TtsQueueItem;
+  sequence: number;
 }
 
 interface BufferedAudio {
-  item: TtsQueueItem;
+  entry: QueueEntry;
   audio: Float32Array;
 }
 
+interface PauseRequest {
+  turnId: TurnId;
+  priority: TtsPriority;
+}
+
 export class TtsQueue {
-  private queue: TtsQueueItem[] = [];
+  private queue: QueueEntry[] = [];
   private state: QueueState = 'idle';
   private preBuffer: BufferedAudio | null = null;
   private activePlayback: {
-    item: TtsQueueItem;
+    entry: QueueEntry;
     playbackId: PlaybackId;
   } | null = null;
   private playbackAckTimer: ReturnType<typeof setTimeout> | null = null;
-  private activeSynthesis: TtsQueueItem | null = null;
+  private activeSynthesis: QueueEntry | null = null;
+  private activeSynthesisMode: 'playback' | 'prebuffer' | null = null;
+  private pauseRequests: PauseRequest[] = [];
+  private nextSequence = 0;
   private generation = 0;
   private synthesisAbort = new AbortController();
 
@@ -48,17 +75,30 @@ export class TtsQueue {
   ) {}
 
   enqueue(item: TtsQueueItem): void {
-    this.queue.push(item);
-    if (this.state === 'idle') void this.processNext();
+    const entry = { item, sequence: this.nextSequence++ };
+    this.insertQueued(entry);
+    if (
+      this.activeSynthesis
+      && this.activeSynthesisMode === 'prebuffer'
+      && this.compareEntries(entry, this.activeSynthesis) < 0
+    ) {
+      const interrupted = this.activeSynthesis;
+      this.invalidateSynthesis();
+      this.insertQueued(interrupted);
+      if (this.activePlayback) this.startPreBuffer();
+      else void this.continueQueue();
+      return;
+    }
+    if (!this.activePlayback && !this.activeSynthesis) void this.continueQueue();
   }
 
   playbackDone(turnId: TurnId, playbackId: PlaybackId): void {
     if (
       !this.activePlayback
-      || this.activePlayback.item.turnId !== turnId
+      || this.activePlayback.entry.item.turnId !== turnId
       || this.activePlayback.playbackId !== playbackId
     ) return;
-    this.finishPlayback();
+    this.finishPlayback(true);
   }
 
   playbackFailed(
@@ -69,98 +109,82 @@ export class TtsQueue {
   ): void {
     if (
       !this.activePlayback
-      || this.activePlayback.item.turnId !== turnId
+      || this.activePlayback.entry.item.turnId !== turnId
       || this.activePlayback.playbackId !== playbackId
     ) return;
-    this.onError(error, this.activePlayback.item);
+    this.onError(error, this.activePlayback.entry.item);
     if (stopRemaining) {
       this.stop();
       return;
     }
-    this.finishPlayback();
+    this.finishPlayback(false);
   }
 
-  private finishPlayback(): void {
+  private finishPlayback(completedSuccessfully: boolean): void {
     if (!this.activePlayback) return;
-    const completedTurnId = this.activePlayback.item.turnId;
+    const completedEntry = this.activePlayback.entry;
     this.clearPlaybackAckTimer();
     this.activePlayback = null;
-    this.onPlaybackProgress?.(completedTurnId);
+    this.onPlaybackProgress?.(completedEntry.item.turnId);
 
-    if (this.preBuffer) {
-      const buffered = this.preBuffer;
-      this.preBuffer = null;
-      this.state = 'playing';
-      this.emitAudio(buffered.item, buffered.audio);
-      this.startPreBuffer();
-    } else if (this.state === 'prebuffering') {
-      this.state = 'playing';
-    } else if (this.queue.length > 0) {
-      void this.processNext();
-    } else {
-      this.state = 'idle';
-      this.onQueueEmpty();
+    if (completedSuccessfully && completedEntry.item.pauseAfterPlayback) {
+      this.pauseRequests.push({
+        turnId: completedEntry.item.turnId,
+        priority: this.priorityOf(completedEntry),
+      });
     }
+
+    if (this.activeSynthesis) {
+      this.state = 'synthesizing';
+      return;
+    }
+    void this.continueQueue();
   }
 
   stop(): void {
-    this.generation += 1;
-    this.synthesisAbort.abort();
-    this.synthesisAbort = new AbortController();
+    this.invalidateSynthesis();
     this.tts.stop();
     this.queue = [];
     this.preBuffer = null;
+    this.pauseRequests = [];
     this.clearPlaybackAckTimer();
     if (this.activePlayback) {
       this.onPlaybackCancel?.(
-        this.activePlayback.item.turnId,
+        this.activePlayback.entry.item.turnId,
         this.activePlayback.playbackId,
       );
     }
     this.activePlayback = null;
-    this.activeSynthesis = null;
     this.state = 'idle';
   }
 
   cancelTurn(turnId: TurnId): void {
-    this.queue = this.queue.filter((item) => item.turnId !== turnId);
-    if (this.preBuffer?.item.turnId === turnId) {
-      this.preBuffer = null;
-      if (this.activePlayback) this.state = 'playing';
-    }
-    if (this.activePlayback?.item.turnId === turnId) {
+    this.queue = this.queue.filter((entry) => entry.item.turnId !== turnId);
+    if (this.preBuffer?.entry.item.turnId === turnId) this.preBuffer = null;
+    this.pauseRequests = this.pauseRequests.filter((request) => request.turnId !== turnId);
+
+    const cancelsSynthesis = this.activeSynthesis?.item.turnId === turnId;
+    if (cancelsSynthesis) this.invalidateSynthesis();
+
+    if (this.activePlayback?.entry.item.turnId === turnId) {
       this.onPlaybackCancel?.(turnId, this.activePlayback.playbackId);
-      if (this.activeSynthesis?.turnId === turnId) {
-        this.generation += 1;
-        this.synthesisAbort.abort();
-        this.synthesisAbort = new AbortController();
-        this.activeSynthesis = null;
-        this.state = 'playing';
-      }
-      // Complete only the canceled playback. A global stop would also drop
-      // already queued or pre-buffered speech owned by a different turn.
-      this.finishPlayback();
+      this.finishPlayback(false);
       return;
     }
-    if (this.activeSynthesis?.turnId !== turnId) return;
 
-    this.generation += 1;
-    this.synthesisAbort.abort();
-    this.synthesisAbort = new AbortController();
-    this.activeSynthesis = null;
     if (this.activePlayback) {
-      this.state = 'playing';
-    } else if (this.queue.length > 0) {
-      this.state = 'idle';
-      void this.processNext();
-    } else {
-      this.state = 'idle';
-      this.onQueueEmpty();
+      if (cancelsSynthesis || !this.activeSynthesis) this.startPreBuffer();
+      return;
     }
+    if (!this.activeSynthesis) void this.continueQueue();
   }
 
   get isActive(): boolean {
     return this.state !== 'idle';
+  }
+
+  get isPaused(): boolean {
+    return this.pauseRequests.length > 0;
   }
 
   get pendingCount(): number {
@@ -168,79 +192,120 @@ export class TtsQueue {
   }
 
   hasTurn(turnId: TurnId): boolean {
-    return this.activePlayback?.item.turnId === turnId
-      || this.activeSynthesis?.turnId === turnId
-      || this.preBuffer?.item.turnId === turnId
-      || this.queue.some((item) => item.turnId === turnId);
+    return this.activePlayback?.entry.item.turnId === turnId
+      || this.activeSynthesis?.item.turnId === turnId
+      || this.preBuffer?.entry.item.turnId === turnId
+      || this.queue.some((entry) => entry.item.turnId === turnId)
+      || this.pauseRequests.some((request) => request.turnId === turnId);
   }
 
-  private async processNext(): Promise<void> {
-    const item = this.queue.shift();
-    if (!item) {
-      this.state = 'idle';
-      this.onQueueEmpty();
+  /**
+   * - Removes every active priority barrier.
+   * - Continues with preserved audio before synthesizing later equal-priority items.
+   *
+   * @category Service
+   */
+  resume(): void {
+    if (!this.isPaused) return;
+    this.pauseRequests = [];
+    if (this.activePlayback) {
+      this.startPreBuffer();
+      return;
+    }
+    if (!this.activeSynthesis) void this.continueQueue();
+  }
+
+  private async continueQueue(): Promise<void> {
+    if (this.activePlayback || this.activeSynthesis) return;
+
+    const queued = this.peekEligibleQueued();
+    if (this.preBuffer && this.isEligible(this.preBuffer.entry)) {
+      if (!queued || this.compareEntries(this.preBuffer.entry, queued) <= 0) {
+        const buffered = this.preBuffer;
+        this.preBuffer = null;
+        this.state = 'playing';
+        this.emitAudio(buffered.entry, buffered.audio);
+        this.startPreBuffer();
+        return;
+      }
+    }
+
+    const entry = this.takeEligibleQueued();
+    if (entry) {
+      await this.synthesizeForPlayback(entry);
       return;
     }
 
+    if (this.isPaused) {
+      this.state = 'paused';
+      return;
+    }
+
+    const shouldNotify = this.state !== 'idle';
+    this.state = 'idle';
+    if (shouldNotify) this.onQueueEmpty();
+  }
+
+  private async synthesizeForPlayback(entry: QueueEntry): Promise<void> {
     const generation = this.generation;
-    this.activeSynthesis = item;
+    this.activeSynthesis = entry;
+    this.activeSynthesisMode = 'playback';
     this.state = 'synthesizing';
     try {
       const startedAt = performance.now();
-      const audio = await this.tts.speak(item.text, this.synthesisAbort.signal);
+      const audio = await this.tts.speak(entry.item.text, this.synthesisAbort.signal);
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
-      this.onTiming?.(Math.round(performance.now() - startedAt), item.turnId);
+      this.activeSynthesisMode = null;
+      this.onTiming?.(Math.round(performance.now() - startedAt), entry.item.turnId);
       this.state = 'playing';
-      this.emitAudio(item, audio);
+      this.emitAudio(entry, audio);
       this.startPreBuffer();
     } catch (value) {
       if (generation !== this.generation || this.synthesisAbort.signal.aborted) return;
       this.activeSynthesis = null;
-      this.onError(value instanceof Error ? value : new Error(String(value)), item);
-      if (this.queue.length > 0) void this.processNext();
-      else {
-        this.state = 'idle';
-        this.onQueueEmpty();
-      }
+      this.activeSynthesisMode = null;
+      this.onError(value instanceof Error ? value : new Error(String(value)), entry.item);
+      await this.continueQueue();
     }
   }
 
   private startPreBuffer(): void {
-    const item = this.queue.shift();
-    if (!item) return;
+    if (!this.activePlayback || this.activeSynthesis || this.preBuffer) return;
+    const entry = this.takeEligibleQueued();
+    if (!entry) return;
     const generation = this.generation;
-    this.activeSynthesis = item;
+    this.activeSynthesis = entry;
+    this.activeSynthesisMode = 'prebuffer';
     this.state = 'prebuffering';
 
-    void this.tts.speak(item.text, this.synthesisAbort.signal).then((audio) => {
+    void this.tts.speak(entry.item.text, this.synthesisAbort.signal).then((audio) => {
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
-      if (this.state === 'prebuffering') {
-        this.preBuffer = { item, audio };
-      } else if (this.state === 'playing') {
-        this.emitAudio(item, audio);
-        this.startPreBuffer();
+      this.activeSynthesisMode = null;
+      this.preBuffer = { entry, audio };
+      if (this.activePlayback) {
+        this.state = 'prebuffering';
+        return;
       }
+      void this.continueQueue();
     }, (value) => {
       if (generation !== this.generation || this.synthesisAbort.signal.aborted) return;
       this.activeSynthesis = null;
-      this.onError(value instanceof Error ? value : new Error(String(value)), item);
-      if (this.state === 'playing') {
-        if (this.queue.length > 0) void this.processNext();
-        else {
-          this.state = 'idle';
-          this.onQueueEmpty();
-        }
-      } else {
+      this.activeSynthesisMode = null;
+      this.onError(value instanceof Error ? value : new Error(String(value)), entry.item);
+      if (this.activePlayback) {
         this.state = 'playing';
+        this.startPreBuffer();
+        return;
       }
+      void this.continueQueue();
     });
   }
 
-  private emitAudio(item: TtsQueueItem, audio: Float32Array): void {
+  private emitAudio(entry: QueueEntry, audio: Float32Array): void {
     const playbackId = randomUUID();
-    this.activePlayback = { item, playbackId };
+    this.activePlayback = { entry, playbackId };
     this.clearPlaybackAckTimer();
     const audioDurationMs = Math.ceil((audio.length / TTS_SAMPLE_RATE) * 1_000);
     const timeoutMs = Math.min(
@@ -249,11 +314,50 @@ export class TtsQueue {
     );
     this.playbackAckTimer = setTimeout(() => {
       if (this.activePlayback?.playbackId !== playbackId) return;
-      this.onError(new Error('Audio playback acknowledgement timed out'), item);
-      this.onPlaybackCancel?.(item.turnId, playbackId);
-      this.finishPlayback();
+      this.onError(new Error('Audio playback acknowledgement timed out'), entry.item);
+      this.onPlaybackCancel?.(entry.item.turnId, playbackId);
+      this.finishPlayback(false);
     }, timeoutMs);
-    this.onAudioReady(item, playbackId, audio, TTS_SAMPLE_RATE);
+    this.onAudioReady(entry.item, playbackId, audio, TTS_SAMPLE_RATE);
+  }
+
+  private insertQueued(entry: QueueEntry): void {
+    const index = this.queue.findIndex((queued) => this.compareEntries(entry, queued) < 0);
+    if (index === -1) this.queue.push(entry);
+    else this.queue.splice(index, 0, entry);
+  }
+
+  private peekEligibleQueued(): QueueEntry | null {
+    return this.queue.find((entry) => this.isEligible(entry)) ?? null;
+  }
+
+  private takeEligibleQueued(): QueueEntry | null {
+    const index = this.queue.findIndex((entry) => this.isEligible(entry));
+    if (index === -1) return null;
+    return this.queue.splice(index, 1)[0] ?? null;
+  }
+
+  private isEligible(entry: QueueEntry): boolean {
+    if (!this.isPaused) return true;
+    const barrier = Math.max(...this.pauseRequests.map((request) => request.priority));
+    return this.priorityOf(entry) >= barrier;
+  }
+
+  private compareEntries(left: QueueEntry, right: QueueEntry): number {
+    const priorityDifference = this.priorityOf(right) - this.priorityOf(left);
+    return priorityDifference || left.sequence - right.sequence;
+  }
+
+  private priorityOf(entry: QueueEntry): TtsPriority {
+    return entry.item.priority ?? TTS_PRIORITY.NORMAL;
+  }
+
+  private invalidateSynthesis(): void {
+    this.generation += 1;
+    this.synthesisAbort.abort();
+    this.synthesisAbort = new AbortController();
+    this.activeSynthesis = null;
+    this.activeSynthesisMode = null;
   }
 
   private clearPlaybackAckTimer(): void {

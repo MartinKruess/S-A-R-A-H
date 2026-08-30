@@ -33,11 +33,42 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.spotify_volume_adjust.safeParse('').success).toBe(false);
   });
 
-  it('set_timer accepts 1..1440 minutes', () => {
-    expect(ACTION_SCHEMAS.set_timer.safeParse('1').success).toBe(true);
-    expect(ACTION_SCHEMAS.set_timer.safeParse('1440').success).toBe(true);
+  it('set_timer returns canonical strings for legacy and Timer V2 parameters', () => {
+    expect(ACTION_SCHEMAS.set_timer.safeParse('1')).toMatchObject({ success: true, data: '1m' });
+    expect(ACTION_SCHEMAS.set_timer.safeParse('30s')).toMatchObject({ success: true, data: '30s' });
+    expect(ACTION_SCHEMAS.set_timer.safeParse('5m30s|Brötchen')).toMatchObject({
+      success: true,
+      data: '5m30s|Brötchen',
+    });
+    expect(ACTION_SCHEMAS.set_timer.safeParse('1h30m')).toMatchObject({
+      success: true,
+      data: '1h30m',
+    });
     expect(ACTION_SCHEMAS.set_timer.safeParse('0').success).toBe(false);
     expect(ACTION_SCHEMAS.set_timer.safeParse('1441').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_timer.safeParse('30').success).toBe(true);
+    expect(ACTION_SCHEMAS.set_timer.safeParse('30 seconds').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_timer.safeParse('5m|').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_timer.safeParse(`5m|${'x'.repeat(41)}`).success).toBe(false);
+  });
+
+  it('cancel_timer returns canonical strings and rejects unknown selectors', () => {
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse(' ALL ')).toMatchObject({ success: true, data: 'all' });
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('label=  Brötchen  ')).toMatchObject({
+      success: true,
+      data: 'label=Brötchen',
+    });
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('duration=30')).toMatchObject({
+      success: true,
+      data: 'duration=30m',
+    });
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('duration=30s')).toMatchObject({
+      success: true,
+      data: 'duration=30s',
+    });
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('Eier').success).toBe(false);
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('label=').success).toBe(false);
+    expect(ACTION_SCHEMAS.cancel_timer.safeParse('duration=25h').success).toBe(false);
   });
 
   it('query lengths: web_search 2..200, open_program 1..100, show_browser 1..100', () => {
@@ -70,6 +101,11 @@ describe('ACTION_SCHEMAS boundaries', () => {
   it('isActionName knows the five media_* names', () => {
     expect(isActionName('media_play')).toBe(true);
     expect(isActionName('media_previous')).toBe(true);
+  });
+
+  it('isActionName knows both timer actions', () => {
+    expect(isActionName('set_timer')).toBe(true);
+    expect(isActionName('cancel_timer')).toBe(true);
   });
 });
 

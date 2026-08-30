@@ -11,6 +11,9 @@ import type {
 } from './turn-contract.js';
 import type { ActionConfirmationReference } from './action-confirmation.js';
 
+/** Semantic speech classes carried by the main-process-only priority speech bus. */
+export type PrioritySpeechCategory = 'background' | 'normal' | 'timer' | 'critical' | 'user';
+
 /**
  * Central event map — every bus topic has exactly one payload type.
  * Adding a new event? Add it here and TypeScript enforces the payload everywhere.
@@ -29,6 +32,11 @@ export type BusEvents = {
   // Main-process-only bridging phrase spoken over a model-swap pause (voice mode).
   // Deliberately NOT forwarded to the renderer — it must never render a chat bubble.
   'llm:filler':          { turnId: TurnId; text: string };
+  // Main-process-only speech path. The VoiceService owns the concrete queue priority
+  // and decides whether a requested post-playback pause is currently warranted.
+  'voice:priority-speech': { turnId: TurnId; outputId: OutputId; text: string; priority: PrioritySpeechCategory; pauseAfter?: boolean };
+  'voice:resume-speech': Record<string, never>;
+  'voice:discard-paused-speech': { preserveTurnId: TurnId; reason: string };
   'voice:state':         { state: VoiceState; turnId?: TurnId; captureId?: VoiceCaptureId };
   'voice:listening':     { turnId: TurnId; captureId: VoiceCaptureId };
   'voice:capture-flush-request': { captureId: VoiceCaptureId };

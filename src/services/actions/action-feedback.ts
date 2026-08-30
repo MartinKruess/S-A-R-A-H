@@ -1,4 +1,9 @@
 import type { ActionName } from './action-schemas.js';
+import {
+  formatTimerDuration,
+  parseTimerRequest,
+  parseTimerSelector,
+} from './timer-contract.js';
 
 function safeTarget(param: string): string {
   const target = param.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
@@ -46,7 +51,22 @@ export function getActionAcknowledgement(action: ActionName, param: string): str
     case 'media_previous':
       return 'Ich springe zum vorherigen Titel.';
     case 'set_timer':
-      return `Ich stelle einen Timer auf ${param} Minuten.`;
+      {
+        const timer = parseTimerRequest(param);
+        if (!timer) return 'Ich stelle den Timer.';
+        const duration = formatTimerDuration(timer.durationSeconds);
+        return timer.label
+          ? `Ich stelle den ${timer.label}-Timer auf ${duration}.`
+          : `Ich stelle einen Timer auf ${duration}.`;
+      }
+    case 'cancel_timer': {
+      const selector = parseTimerSelector(param);
+      if (!selector) return 'Ich prüfe den Timer.';
+      if (selector.kind === 'all') return 'Ich prüfe die laufenden Timer.';
+      return selector.kind === 'label'
+        ? `Ich prüfe den ${selector.label}-Timer.`
+        : `Ich prüfe die Timer mit ${formatTimerDuration(selector.durationSeconds)} Laufzeit.`;
+    }
     case 'lock_screen':
       return 'Ich sperre den Bildschirm.';
   }
@@ -65,7 +85,22 @@ export function getActionConfirmationDescription(action: ActionName, param: stri
     case 'open_program':
       return `das Programm „${safeTarget(param)}“ öffnen`;
     case 'set_timer':
-      return `einen Timer für ${param} Minuten starten`;
+      {
+        const timer = parseTimerRequest(param);
+        if (!timer) return 'den Timer starten';
+        const duration = formatTimerDuration(timer.durationSeconds);
+        return timer.label
+          ? `den ${timer.label}-Timer für ${duration} starten`
+          : `einen Timer für ${duration} starten`;
+      }
+    case 'cancel_timer': {
+      const selector = parseTimerSelector(param);
+      if (!selector) return 'den Timer abbrechen';
+      if (selector.kind === 'all') return 'alle Timer abbrechen';
+      return selector.kind === 'label'
+        ? `den ${selector.label}-Timer abbrechen`
+        : `den Timer mit ${formatTimerDuration(selector.durationSeconds)} Laufzeit abbrechen`;
+    }
     case 'lock_screen':
       return 'den Bildschirm sperren';
     case 'set_volume':
