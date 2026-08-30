@@ -12,6 +12,7 @@ import { VramManager } from './vram-manager.js';
 import { WorkerService, type WorkerResult } from './worker-service.js';
 import { linkAbortSignals, runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
+import { traceBootPerformance } from '../../core/boot-performance-trace.js';
 
 export type ModelRole = 'router' | 'local_worker';
 export type ModelAvailability = 'checking' | 'available' | 'unavailable' | 'error';
@@ -214,9 +215,17 @@ export class ModelRuntime implements ModelRuntimePort {
   private async runInit(): Promise<ModelRuntimeSnapshot> {
     this.current.state = 'starting';
     throwIfAborted(this.runtimeAbort.signal);
+    const ollamaApiStartedAt = performance.now();
+    traceBootPerformance('ollama-api', 'start');
     try {
       await this.containerManager?.ensureRunning(this.runtimeAbort.signal);
+      traceBootPerformance('ollama-api', 'ready', {
+        durationMs: performance.now() - ollamaApiStartedAt,
+      });
     } catch (value) {
+      traceBootPerformance('ollama-api', 'failed', {
+        durationMs: performance.now() - ollamaApiStartedAt,
+      });
       const message = errorMessage(value);
       this.markUnavailable('router', message);
       this.markUnavailable('local_worker', message);
@@ -243,6 +252,8 @@ export class ModelRuntime implements ModelRuntimePort {
       throw new Error(`Router model unavailable: ${this.config.routerModel}`);
     }
 
+    const routerWarmupStartedAt = performance.now();
+    traceBootPerformance('ollama-router-model', 'start');
     try {
       await this.ensureRole('router');
       if (!this.eagerLoadTransitions) {
@@ -253,7 +264,13 @@ export class ModelRuntime implements ModelRuntimePort {
           this.runtimeAbort.signal,
         );
       }
+      traceBootPerformance('ollama-router-model', 'ready', {
+        durationMs: performance.now() - routerWarmupStartedAt,
+      });
     } catch (value) {
+      traceBootPerformance('ollama-router-model', 'failed', {
+        durationMs: performance.now() - routerWarmupStartedAt,
+      });
       const message = errorMessage(value);
       this.current.state = 'error';
       this.onCapability?.('router', 'error', message);

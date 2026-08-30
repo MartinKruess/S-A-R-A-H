@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppLifecycleController } from './app-lifecycle-controller.js';
 import { MessageBus } from './message-bus.js';
 import { ServiceRegistry } from './service-registry.js';
@@ -18,6 +18,10 @@ function service(id: string, initError?: Error): SarahService {
 }
 
 describe('AppLifecycleController', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('publishes ready only after successful service initialization', async () => {
     const registry = new ServiceRegistry(new MessageBus());
     registry.register(service('router'));
@@ -114,6 +118,33 @@ describe('AppLifecycleController', () => {
     await starting;
 
     expect(lifecycle.snapshot.state).toBe('ready');
+  });
+
+  it('stays starting until a delayed voice service is actually ready', async () => {
+    vi.useFakeTimers();
+    let releaseVoice!: () => void;
+    const voiceGate = new Promise<void>((resolve) => { releaseVoice = resolve; });
+    const registry = new ServiceRegistry(new MessageBus());
+    const router = service('router');
+    const voice = service('voice');
+    voice.init = vi.fn(async () => voiceGate);
+    registry.register(router);
+    registry.register(voice, { startDelayMs: 3_000 });
+    const lifecycle = new AppLifecycleController(registry);
+
+    const starting = lifecycle.start();
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(router.init).toHaveBeenCalledOnce();
+    expect(voice.init).toHaveBeenCalledOnce();
+    expect(lifecycle.snapshot.state).toBe('starting');
+    expect(lifecycle.acceptingWork).toBe(false);
+
+    releaseVoice();
+    const snapshot = await starting;
+
+    expect(snapshot.state).toBe('ready');
+    expect(snapshot.capabilities.voice.state).toBe('ready');
   });
 
   it('runs external cleanups in reverse order and continues after errors', async () => {

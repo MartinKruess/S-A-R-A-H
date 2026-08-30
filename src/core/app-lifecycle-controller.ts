@@ -4,6 +4,7 @@ import type {
   ServiceRegistry,
 } from './service-registry.js';
 import { runWithTimeout } from './abort-utils.js';
+import { traceBootPerformance } from './boot-performance-trace.js';
 
 export type RuntimeState =
   | 'registered'
@@ -139,6 +140,8 @@ export class AppLifecycleController {
   }
 
   private async runStart(): Promise<RuntimeSnapshot> {
+    const lifecycleStartedAt = performance.now();
+    traceBootPerformance('lifecycle', 'start');
     this.generation += 1;
     this.state = 'starting';
     this.publish();
@@ -165,6 +168,9 @@ export class AppLifecycleController {
     this.startCompleted = true;
     this.state = this.deriveRunningState();
     this.publish();
+    traceBootPerformance('lifecycle', 'ready', {
+      durationMs: performance.now() - lifecycleStartedAt,
+    });
     return this.snapshot;
   }
 

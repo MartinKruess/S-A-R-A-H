@@ -8,6 +8,11 @@ describe('OllamaProvider', () => {
     provider = new OllamaProvider('http://localhost:11434', 'mistral-nemo');
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
   it('has id "ollama"', () => {
     expect(provider.id).toBe('ollama');
   });
@@ -93,6 +98,70 @@ describe('OllamaProvider', () => {
     expect(received).toEqual(['Hello', ' world']);
     expect(result).toBe('Hello world');
     vi.restoreAllMocks();
+  });
+
+  it('does not log performance diagnostics unless explicitly enabled', async () => {
+    vi.stubEnv('SARAH_PERF_TRACE', '0');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const terminalFrame = JSON.stringify({
+      message: { content: 'private response' },
+      done: true,
+      total_duration: 3_000_000_000,
+      load_duration: 500_000_000,
+      prompt_eval_count: 25,
+      prompt_eval_duration: 250_000_000,
+      eval_count: 40,
+      eval_duration: 2_000_000_000,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: new Response(terminalFrame).body,
+    } as Response);
+
+    await provider.chat([{ role: 'user', content: 'private prompt' }], () => {});
+
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('logs structured content-free performance diagnostics when explicitly enabled', async () => {
+    vi.stubEnv('SARAH_PERF_TRACE', '1');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const terminalFrame = JSON.stringify({
+      message: { content: 'private response' },
+      done: true,
+      total_duration: 3_000_000_000,
+      load_duration: 500_000_000,
+      prompt_eval_count: 25,
+      prompt_eval_duration: 250_000_000,
+      eval_count: 40,
+      eval_duration: 2_000_000_000,
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      body: new Response(terminalFrame).body,
+    } as Response);
+
+    await provider.chat([{ role: 'user', content: 'private prompt' }], () => {});
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const [prefix, payload] = logSpy.mock.calls[0];
+    expect(prefix).toBe('[OllamaPerf]');
+    expect(typeof payload).toBe('string');
+
+    const metrics = JSON.parse(String(payload)) as Record<string, number | string | null>;
+    expect(metrics).toEqual(expect.objectContaining({
+      model: 'mistral-nemo',
+      generatedTokens: 40,
+      tokensPerSecond: 20,
+      totalDurationMs: 3_000,
+      loadDurationMs: 500,
+      promptTokens: 25,
+      promptEvalMs: 250,
+      timeToFirstChunkMs: expect.any(Number),
+      wallMs: expect.any(Number),
+    }));
+    expect(String(payload)).not.toContain('private prompt');
+    expect(String(payload)).not.toContain('private response');
   });
 
   it('parses a terminal rest buffer without a trailing newline', async () => {
