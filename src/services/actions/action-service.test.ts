@@ -43,17 +43,18 @@ function makeService(over: {
   search?: Parameters<typeof makeSearch>[0];
   spotify?: SpotifyActions;
   media?: MediaController;
+  system?: SystemActions;
   drainTimeoutMs?: number;
   confirmationGate?: ActionConfirmationGate;
   confirmationLevel?: ConfirmationLevel;
   webAccessAllowed?: boolean;
-} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController } {
+} = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController; system: SystemActions } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
   bus.on('action:result', (msg) => { results.push(msg.data); });
   const launcher = { launch: vi.fn().mockResolvedValue({ ok: true }), ...over.launcher } as ProgramLauncher;
   const search = makeSearch(over.search);
-  const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+  const system = over.system ?? new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
   const spotify = over.spotify ?? makeSpotify();
   const media = over.media ?? makeMedia();
   const service = new ActionService(
@@ -78,7 +79,7 @@ function makeService(over: {
   bus.on('action:cancel', (msg) => service.onMessage(msg));
   bus.on('turn:cancel', (msg) => service.onMessage(msg));
   bus.on('turn:terminal', (msg) => service.onMessage(msg));
-  return { bus, results, service, spotify, media };
+  return { bus, results, service, spotify, media, system };
 }
 
 async function request(
@@ -195,6 +196,88 @@ describe('ActionService', () => {
     await vi.advanceTimersByTimeAsync(60_000 + 50);
     expect(notifies).toEqual([expect.objectContaining({ speak: 'Dein 1-Minuten-Timer ist abgelaufen.' })]);
     vi.useRealTimers();
+  });
+
+  it('parses canonical Timer V2 requests only immediately before SystemActions', async () => {
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    const setTimer = vi.spyOn(system, 'setTimer').mockReturnValue({ ok: true });
+    const { bus, results, service } = makeService({ system });
+    await service.init();
+
+    await request(bus, 'set_timer', '5m30s|Brötchen');
+
+    expect(setTimer).toHaveBeenCalledWith(
+      { durationSeconds: 330, label: 'Brötchen' },
+      expect.any(AbortSignal),
+    );
+    expect(results[0]).toMatchObject({ action: 'set_timer', ok: true });
+  });
+
+  it('keeps legacy bare timer integers backward compatible as minutes', async () => {
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    const setTimer = vi.spyOn(system, 'setTimer').mockReturnValue({ ok: true });
+    const { bus, service } = makeService({ system });
+    await service.init();
+
+    await request(bus, 'set_timer', '1');
+
+    expect(setTimer).toHaveBeenCalledWith(
+      { durationSeconds: 60 },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it.each([
+    ['label=Eier', { kind: 'label', label: 'Eier' }],
+    ['duration=30s', { kind: 'duration', durationSeconds: 30 }],
+    ['all', { kind: 'all' }],
+  ] as const)('dispatches cancel_timer selector %s without confirmation', async (param, expected) => {
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    const cancelTimers = vi.spyOn(system, 'cancelTimers').mockReturnValue({ ok: true });
+    const { bus, results, service } = makeService({ system });
+    await service.init();
+
+    await request(bus, 'cancel_timer', param);
+
+    expect(cancelTimers).toHaveBeenCalledWith(expected);
+    expect(results[0]).toMatchObject({ action: 'cancel_timer', ok: true });
+  });
+
+  it('forwards honest cancel_timer feedback in the correlated action result', async () => {
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    vi.spyOn(system, 'cancelTimers').mockReturnValue({
+      ok: false,
+      speak: 'Es laufen mehrere Timer mit 30 Sekunden. Bitte nenne den Timer-Namen.',
+    });
+    const { bus, results, service } = makeService({ system });
+    await service.init();
+
+    await request(bus, 'cancel_timer', 'duration=30s');
+
+    expect(results[0]).toEqual({
+      turnId: TURN_ID,
+      requestId: 'rid-1',
+      action: 'cancel_timer',
+      ok: false,
+      speak: 'Es laufen mehrere Timer mit 30 Sekunden. Bitte nenne den Timer-Namen.',
+    });
+  });
+
+  it.each([
+    ['set_timer', '30 seconds'],
+    ['cancel_timer', 'Eier'],
+  ] as const)('rejects invalid %s parameters before touching SystemActions', async (action, param) => {
+    const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
+    const setTimer = vi.spyOn(system, 'setTimer');
+    const cancelTimers = vi.spyOn(system, 'cancelTimers');
+    const { bus, results, service } = makeService({ system });
+    await service.init();
+
+    await request(bus, action, param);
+
+    expect(setTimer).not.toHaveBeenCalled();
+    expect(cancelTimers).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({ action, ok: false, speak: 'Das kann ich noch nicht.' });
   });
 
   it('removes a timer when its turn is canceled before the action result is delivered', async () => {

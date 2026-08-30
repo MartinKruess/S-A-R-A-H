@@ -2295,6 +2295,74 @@ describe('RouterService (action layer)', () => {
     expect(ctx.bus.isTurnTerminal('notify-1')).toBe(true);
   });
 
+  it('keeps Timer V2 parameters as canonical strings through RouterService dispatch', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:05m030s|  Brötchen  ]',
+      '[ACTION:cancel_timer:duration=030s]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    const setRequest = await runActionTurn('Stelle einen Brötchen-Timer auf fünfeinhalb Minuten');
+    const cancelRequest = await runActionTurn('Brich den 30-Sekunden-Timer ab');
+
+    expect(setRequest).toMatchObject({ action: 'set_timer', param: '5m30s|Brötchen' });
+    expect(cancelRequest).toMatchObject({ action: 'cancel_timer', param: 'duration=30s' });
+    expect(setRequest.param).not.toBe('[object Object]');
+    expect(cancelRequest.param).not.toBe('[object Object]');
+    expect(done).toContain('Ich stelle den Brötchen-Timer auf 5 Minuten 30 Sekunden.');
+    expect(done).toContain('Ich prüfe die Timer mit 30 Sekunden Laufzeit.');
+  });
+
+  it('removes invented and duration-shaped timer labels but keeps grounded purposes', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:30s|Halbteller]',
+      '[ACTION:set_timer:30s|Timer]',
+      '[ACTION:set_timer:1m30s|anderthalb Minuten]',
+      '[ACTION:set_timer:8m|Eier]',
+      '[ACTION:set_timer:6m|Brötchen]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    const invented = await runActionTurn('Stelle einen 30 Sekunden-Timer');
+    const generic = await runActionTurn('Stelle einen Timer auf 30 Sekunden');
+    const duration = await runActionTurn('Stelle einen Timer auf anderthalb Minuten');
+    const grounded = await runActionTurn('Stelle einen Eiertimer im Kochtopf auf 8 Minuten');
+    const timerCompound = await runActionTurn('Stelle einen Brötchen-Timer auf 6 Minuten');
+
+    expect(invented).toMatchObject({ action: 'set_timer', param: '30s' });
+    expect(generic).toMatchObject({ action: 'set_timer', param: '30s' });
+    expect(duration).toMatchObject({ action: 'set_timer', param: '1m30s' });
+    expect(grounded).toMatchObject({ action: 'set_timer', param: '8m|Eier' });
+    expect(timerCompound).toMatchObject({ action: 'set_timer', param: '6m|Brötchen' });
+    expect(done).toContain('Ich stelle einen Timer auf 30 Sekunden.');
+    expect(done).toContain('Ich stelle einen Timer auf 1 Minute 30 Sekunden.');
+    expect(done).toContain('Ich stelle den Eier-Timer auf 8 Minuten.');
+    expect(done).toContain('Ich stelle den Brötchen-Timer auf 6 Minuten.');
+  });
+
+  it('rejects invalid Timer V2 parameters before action dispatch', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:set_timer:30 seconds|Eier]');
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Eier-Timer auf 30 Sekunden');
+
+    expect(requests).toEqual([]);
+    expect(done).toEqual(['Das kann ich noch nicht.']);
+  });
+
   it('resumes a paused voice buffer locally without model output or persistence', async () => {
     const voice = new StubVoiceService(true);
     ctx.registry.register(voice);

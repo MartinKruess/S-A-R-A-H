@@ -1,6 +1,6 @@
 # Timer-Priorität und pausierbare Sprachausgabe
 
-**Stand:** Abschnitte A bis C implementiert; Abschnitt D technisch vollständig geprüft, praktische Windows-Abnahme offen
+**Stand:** Abschnitte A bis D implementiert sowie automatisiert und praktisch unter Windows abgenommen
 **Branch:** `feat/timer-interruption`
 **Scope:** Phase 1, lokaler Desktopbetrieb
 
@@ -230,11 +230,11 @@ Die konkrete Busform soll bei der Umsetzung anhand der existierenden MessageBus-
 - sichtbaren und gesprochenen Output entkoppeln.
 - `wieder da` lokal abfangen und Resume auslösen.
 
-**Sicherer Haltepunkt:** Feature technisch vollständig; praktische Windows-Abnahme steht noch aus.
+**Sicherer Haltepunkt:** Feature technisch vollständig; die praktische Windows-Abnahme folgt in Abschnitt D.
 
 ### Abschnitt D — Abschlussprüfung
 
-**Status:** Automatisierte Prüfung abgeschlossen; praktische Windows-Abnahme offen.
+**Status:** Automatisierte Prüfung und praktische Windows-Abnahme abgeschlossen.
 
 - gezielte Integrationsprüfungen,
 - beide Typechecks,
@@ -249,6 +249,16 @@ Technischer Stand:
 - Main- und Renderer-Typecheck grün,
 - Produktionsbuild grün,
 - `git diff --check` grün.
+
+Praktischer Stand unter Windows:
+
+- Timer übernimmt erst nach dem Ende des aktuell gesprochenen Satzes.
+- Zwei Timer konnten denselben längeren Antwortstrom nacheinander unterbrechen.
+- Nach jeder Timer-Meldung blieb die normale Ausgabe pausiert; die Textgenerierung durfte weiterlaufen.
+- Die Pause blieb auch während einer etwa 30 bis 40 Sekunden langen Nutzereingabe stabil.
+- Zwei gleichzeitig gestellte Timer wurden während einer bereits bestehenden Pause jeweils genau einmal und ohne Audioüberlagerung gesprochen.
+- `Ich bin wieder da` hob die Pause anschließend einmalig auf und setzte die normale Ausgabe fort.
+- Ein Timer im Leerlauf hinterließ keine künstliche Pause; die nächste normale Anfrage wurde unmittelbar beantwortet.
 
 ## 9. Automatisierte Testmatrix
 
@@ -288,6 +298,8 @@ Technischer Stand:
 
 ## 10. Praktische Windows-Abnahme
 
+**Status:** Bestanden.
+
 1. Sprachmodus starten.
 2. Einen kurzen Timer stellen.
 3. Eine Antwort mit mindestens zehn längeren Absätzen anfordern.
@@ -300,6 +312,12 @@ Technischer Stand:
 10. Einen Timer im Leerlauf ablaufen lassen und prüfen, dass danach keine künstliche Pause besteht.
 11. Zwei nahe beieinander liegende Timer während einer Antwort prüfen.
 12. Optional mit verkürztem Test-Idle prüfen, dass ein Worker-Restore den TTS-Buffer nicht berührt.
+
+Durchgeführte Mehrfachvarianten:
+
+- Zwei Timer unterbrachen denselben längeren Antwortstrom mit einer Fortsetzung zwischen den Meldungen.
+- Zwei gleich lange Timer liefen während derselben Antwort ab; der zweite Timer durfte die bereits bestehende Pause passieren. Erst nach beiden Meldungen wurde mit `Ich bin wieder da` fortgesetzt.
+- Der Leerlauffall wurde separat geprüft und erzeugte keinen zurückbleibenden Pausenzustand.
 
 ## 11. Aufwand nach Codeprüfung
 
@@ -327,3 +345,29 @@ Claude soll insbesondere prüfen:
 8. Gibt es einen belegbaren Grund, den Modell-Idle-Timer doch an die TTS-Pause zu koppeln?
 9. Führt die vorbereitete Prioritätsskala zu unnötiger Architektur, oder ist sie angesichts Timer, künftiger Wecker und kritischer Meldungen angemessen klein?
 10. Fehlt ein praktisch relevanter Negativ- oder Nebenläufigkeitstest?
+
+## 13. Timer V2 — Mini-Plan für einen separaten Folge-Branch
+
+Timer V2 erweitert ausschließlich relative Timer. Der in diesem Dokument abgenommene Prioritäts- und Pausenvertrag bleibt unverändert.
+
+### 13.1 Umfang
+
+- relative Dauern in Sekunden, Minuten und Stunden,
+- gemischte Dauern wie `5 Minuten 30 Sekunden` oder `1 Stunde 30 Minuten`,
+- optionales kurzes Label wie `Brötchen`, `Eier` oder `Kassler`,
+- Bestätigung und Ablaufmeldung mit Label, beispielsweise `Dein Brötchen-Timer ist abgelaufen`,
+- gezielter Abbruch über eindeutiges Label oder eindeutige Dauer,
+- Abbruch aller laufenden Timer,
+- vollständige Rückwärtskompatibilität für unbenannte Minuten-Timer.
+
+### 13.2 Sicherheits- und Mehrdeutigkeitsvertrag
+
+- Dauer und Label werden strukturiert durch den Router übergeben und anschließend deterministisch validiert.
+- Labels werden normalisiert, in der Länge begrenzt und ausschließlich als Daten behandelt.
+- Bei keinem Treffer wird kein Timer verändert.
+- Bei mehreren Treffern nach Label oder Dauer wird fail-closed nichts abgebrochen und eine eindeutige Auswahl verlangt.
+- `alle Timer abbrechen` ist eine ausdrückliche eigene Aktion und darf nicht aus einer mehrdeutigen Einzelaussage abgeleitet werden.
+
+### 13.3 Bewusste Abgrenzung
+
+Absolute Uhrzeiten wie `Erinnere mich um 13:45 Uhr` oder regionale Formen wie `dreiviertel zwei` sind keine relativen Timer. Sie werden als persistenz- und zeitzonenrelevante Erinnerungsfunktion auf einen eigenen Feature-Branch verschoben. Eine spätere gemeinsame Scheduler-Basis ist möglich, darf die fachlichen Verträge von Timer und Erinnerung aber nicht vermischen.

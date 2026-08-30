@@ -9,6 +9,7 @@ import type { SpotifyActions } from './spotify-actions.js';
 import type { MediaController } from './media-controller.js';
 import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
 import { evaluateActionPolicy } from './action-policy.js';
+import { parseTimerRequest, parseTimerSelector } from './timer-contract.js';
 import type { Trust } from '../../core/config-schema.js';
 import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
@@ -269,8 +270,18 @@ export class ActionService implements SarahService {
         return this.deps.media.next(parsed.data as string, signal);
       case 'media_previous':
         return this.deps.media.previous(parsed.data as string, signal);
-      case 'set_timer':
-        return this.deps.system.setTimer(parsed.data as number, signal);
+      case 'set_timer': {
+        const timer = parseTimerRequest(parsed.data as string);
+        return timer
+          ? this.deps.system.setTimer(timer, signal)
+          : { ok: false, speak: 'Die Timerdauer ist ungültig.' };
+      }
+      case 'cancel_timer': {
+        const selector = parseTimerSelector(parsed.data as string);
+        return selector
+          ? this.deps.system.cancelTimers(selector)
+          : { ok: false, speak: 'Diesen Timer kann ich nicht eindeutig zuordnen.' };
+      }
       case 'lock_screen':
         return this.deps.system.lockScreen(signal);
     }

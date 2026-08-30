@@ -2,6 +2,16 @@
 import { execFile as nodeExecFile } from 'child_process';
 import type { LaunchResult } from '../../main/program-launcher.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
+import {
+  cleanTimerLabel,
+  formatTimerDuration,
+  MAX_TIMER_DURATION_SECONDS,
+  normalizeTimerLabelForMatch,
+  parseTimerRequest,
+  serializeTimerRequest,
+  type TimerRequest,
+  type TimerSelector,
+} from './timer-contract.js';
 
 const UNSUPPORTED: LaunchResult = { ok: false, speak: 'Das unterstützt dein System nicht.' };
 const MAX_TIMERS = 5;
@@ -37,10 +47,19 @@ public class Audio {
 
 interface TimerEntry {
   id: number;
-  minutes: number;
+  durationSeconds: number;
+  label?: string;
+  normalizedLabel?: string;
   startMs: number;
   handle: ReturnType<typeof setTimeout>;
   detachAbort: () => void;
+}
+
+function describeTimer(durationSeconds: number): string {
+  if (durationSeconds % 3600 === 0) return `${durationSeconds / 3600}-Stunden-Timer`;
+  if (durationSeconds % 60 === 0) return `${durationSeconds / 60}-Minuten-Timer`;
+  if (durationSeconds < 60) return `${durationSeconds}-Sekunden-Timer`;
+  return `Timer für ${formatTimerDuration(durationSeconds)}`;
 }
 
 export class SystemActions {
@@ -92,15 +111,36 @@ export class SystemActions {
     });
   }
 
-  /** Wall-clock based timer (R4-Mi2): re-arms after standby instead of firing early. */
-  setTimer(minutes: number, signal?: AbortSignal): LaunchResult {
+  /**
+   * @param request - Canonical seconds plus optional label; numeric legacy input remains minutes.
+   *
+   * - Enforces the 24-hour domain limit and maximum of five active timers.
+   * - Re-arms from elapsed wall-clock time after standby.
+   *
+   * @returns Whether the timer was accepted.
+   *
+   * @category System Action
+   */
+  setTimer(request: TimerRequest | number, signal?: AbortSignal): LaunchResult {
     if (this.platform !== 'win32') return UNSUPPORTED;
     throwIfAborted(signal);
     if (this.timers.size >= MAX_TIMERS) {
       return { ok: false, speak: 'Ich habe schon 5 Timer laufen.' };
     }
+    const parsedRequest = typeof request === 'number'
+      ? (Number.isSafeInteger(request) && request >= 1 && request <= 1440
+          ? { durationSeconds: request * 60 }
+          : null)
+      : (() => {
+          const serialized = serializeTimerRequest(request);
+          return serialized ? parseTimerRequest(serialized) : null;
+        })();
+    if (!parsedRequest || parsedRequest.durationSeconds > MAX_TIMER_DURATION_SECONDS) {
+      return { ok: false, speak: 'Die Timerdauer ist ungültig.' };
+    }
+    const { durationSeconds, label } = parsedRequest;
     const id = this.nextTimerId++;
-    const durationMs = minutes * 60 * 1000;
+    const durationMs = durationSeconds * 1000;
     const startMs = Date.now();
     let cancel = (): void => {};
     const detachAbort = (): void => signal?.removeEventListener('abort', cancel);
@@ -120,13 +160,84 @@ export class SystemActions {
         }
         this.timers.delete(id);
         detachAbort();
-        this.onNotify(`Dein ${minutes}-Minuten-Timer ist abgelaufen.`);
+        this.onNotify(label
+          ? `Dein ${label}-Timer ist abgelaufen.`
+          : `Dein ${describeTimer(durationSeconds)} ist abgelaufen.`);
       }, delayMs);
-      this.timers.set(id, { id, minutes, startMs, handle, detachAbort });
+      this.timers.set(id, {
+        id,
+        durationSeconds,
+        ...(label
+          ? { label, normalizedLabel: normalizeTimerLabelForMatch(label) ?? label.toLocaleLowerCase('de-DE') }
+          : {}),
+        startMs,
+        handle,
+        detachAbort,
+      });
     };
     signal?.addEventListener('abort', cancel, { once: true });
     arm(durationMs);
     return { ok: true };
+  }
+
+  /**
+   * @param selector - Explicit all selector or exact label/duration selector.
+   *
+   * - Cancels one timer only for a unique match.
+   * - Cancels nothing for missing or ambiguous matches.
+   *
+   * @returns Honest German cancellation feedback.
+   *
+   * @category System Action
+   */
+  cancelTimers(selector: TimerSelector): LaunchResult {
+    if (this.platform !== 'win32') return UNSUPPORTED;
+    if (selector.kind === 'all') {
+      if (this.timers.size === 0) return { ok: false, speak: 'Es laufen keine Timer.' };
+      const count = this.timers.size;
+      this.clearAllTimers();
+      return {
+        ok: true,
+        speak: count === 1 ? 'Der laufende Timer wurde abgebrochen.' : 'Alle laufenden Timer wurden abgebrochen.',
+      };
+    }
+
+    const cleanSelectorLabel = selector.kind === 'label' ? cleanTimerLabel(selector.label) : null;
+    const normalizedLabel = cleanSelectorLabel ? normalizeTimerLabelForMatch(cleanSelectorLabel) : null;
+    if (selector.kind === 'label' && !cleanSelectorLabel) {
+      return { ok: false, speak: 'Die Timerbezeichnung ist ungültig.' };
+    }
+    if (selector.kind === 'duration'
+      && (!Number.isSafeInteger(selector.durationSeconds)
+        || selector.durationSeconds < 1
+        || selector.durationSeconds > MAX_TIMER_DURATION_SECONDS)) {
+      return { ok: false, speak: 'Die Timerdauer ist ungültig.' };
+    }
+    const matches = [...this.timers.values()].filter((entry) => selector.kind === 'label'
+      ? normalizedLabel !== null && entry.normalizedLabel === normalizedLabel
+      : entry.durationSeconds === selector.durationSeconds);
+    const description = selector.kind === 'label'
+      ? `${cleanSelectorLabel}-Timer`
+      : describeTimer(selector.durationSeconds);
+
+    if (matches.length === 0) {
+      return { ok: false, speak: `Ich finde keinen laufenden ${description}.` };
+    }
+    if (matches.length > 1) {
+      return {
+        ok: false,
+        speak: `Es laufen mehrere passende ${description}. Ich habe keinen Timer abgebrochen.`,
+      };
+    }
+
+    const entry = matches[0];
+    clearTimeout(entry.handle);
+    entry.detachAbort();
+    this.timers.delete(entry.id);
+    const cancelledDescription = selector.kind === 'label' && entry.label
+      ? `${entry.label}-Timer`
+      : description;
+    return { ok: true, speak: `Der ${cancelledDescription} wurde abgebrochen.` };
   }
 
   clearAllTimers(): void {

@@ -1,8 +1,30 @@
 import { z } from 'zod';
 import type { ConfirmationLevel } from '../../core/action-confirmation.js';
 import { evaluateActionPolicy } from './action-policy.js';
+import {
+  parseTimerRequest,
+  parseTimerSelector,
+  serializeTimerRequest,
+  serializeTimerSelector,
+} from './timer-contract.js';
 
 const integerString = z.string().trim().regex(/^-?\d+$/u).transform(Number);
+
+const timerRequestString = z.string().max(100).transform((param, context): string => {
+  const parsed = parseTimerRequest(param);
+  const canonical = parsed ? serializeTimerRequest(parsed) : null;
+  if (canonical) return canonical;
+  context.addIssue({ code: 'custom', message: 'Invalid timer request' });
+  return '';
+});
+
+const timerSelectorString = z.string().max(100).transform((param, context): string => {
+  const parsed = parseTimerSelector(param);
+  const canonical = parsed ? serializeTimerSelector(parsed) : null;
+  if (canonical) return canonical;
+  context.addIssue({ code: 'custom', message: 'Invalid timer selector' });
+  return '';
+});
 
 /**
  * Single source of truth for V1 actions: names (allowlist) + param schemas.
@@ -17,7 +39,8 @@ export const ACTION_SCHEMAS = {
   spotify_volume: integerString.pipe(z.number().int().min(0).max(100)),
   // Signed delta; the parser delivers e.g. "-25" for a relative change.
   spotify_volume_adjust: integerString.pipe(z.number().int().min(-100).max(100)),
-  set_timer: integerString.pipe(z.number().int().min(1).max(1440)),
+  set_timer: timerRequestString,
+  cancel_timer: timerSelectorString,
   // Parser delivers '' for a param-less tag; any non-empty param is invalid (R4-Mi3).
   lock_screen: z.literal(''),
   // Generic media transport (Schicht 1). Param = optional target: '' = active session,

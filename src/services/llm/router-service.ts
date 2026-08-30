@@ -41,6 +41,10 @@ import {
   getActionAcknowledgement,
   getActionConfirmationDescription,
 } from '../actions/action-feedback.js';
+import {
+  parseTimerRequest,
+  serializeTimerRequest,
+} from '../actions/timer-contract.js';
 import { resolveProfileResponse } from './profile-response.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 import {
@@ -88,6 +92,44 @@ type HistoryEntry = ChatMessage & {
 
 const MAX_LIVE_HISTORY_TURNS = 24;
 const DEFAULT_MEMORY_POLICY_WAIT_TIMEOUT_MS = 30_000;
+const TIMER_DURATION_LABEL_PATTERN = /(?:^|[^\p{L}\p{N}])(?:sekunde(?:n)?|minute(?:n)?|stunde(?:n)?)(?=$|[^\p{L}\p{N}])/iu;
+const GENERIC_TIMER_LABELS: ReadonlySet<string> = new Set(['timer', 'wecker']);
+
+function normalizeGroundingText(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('de-DE');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+/**
+ * @param param - Valid compact timer candidate emitted by the routing model.
+ * @param userText - Current user utterance used only as label-grounding evidence.
+ *
+ * - Leaves the codec-owned duration untouched.
+ * - Removes an ungrounded or duration-shaped label without rejecting the timer.
+ *
+ * @returns Original or label-free compact timer parameter.
+ *
+ * @category Validation Transformation
+ */
+function groundTimerLabel(param: string, userText: string): string {
+  const request = parseTimerRequest(param);
+  if (!request?.label) return param;
+  const normalizedLabel = normalizeGroundingText(request.label);
+  const normalizedUserText = normalizeGroundingText(userText);
+  const groundedPhrase = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${escapeRegExp(normalizedLabel)}(?:\\s*-?\\s*timer)?(?=$|[^\\p{L}\\p{N}])`,
+    'u',
+  ).test(normalizedUserText);
+  if (
+    groundedPhrase
+    && !TIMER_DURATION_LABEL_PATTERN.test(normalizedLabel)
+    && !GENERIC_TIMER_LABELS.has(normalizedLabel)
+  ) return param;
+  return serializeTimerRequest({ durationSeconds: request.durationSeconds }) ?? param;
+}
 const DEFAULT_ACTION_RESULT_TIMEOUT_MS = 35_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 const DELETE_ALL_MEMORY_CONFIRMATION_TIMEOUT_MS = 2 * 60_000;
@@ -1231,7 +1273,10 @@ export class RouterService implements SarahService {
     param: string,
     signal: AbortSignal,
   ): Promise<void> {
-    const parsed = ACTION_SCHEMAS[action].safeParse(param);
+    const groundedParam = action === 'set_timer'
+      ? groundTimerLabel(param, envelope.normalizedText)
+      : param;
+    const parsed = ACTION_SCHEMAS[action].safeParse(groundedParam);
     if (!parsed.success) {
       await this.emitAssistantResponse(envelope.turnId, 'Das kann ich noch nicht.', signal);
       return;

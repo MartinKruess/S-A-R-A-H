@@ -38,6 +38,7 @@ export const ACTION_PERMISSION_METADATA: Record<ActionName, ActionPermissionMeta
   spotify_volume: { permission: 'spotify.volume', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   spotify_volume_adjust: { permission: 'spotify.volume', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   set_timer: { permission: 'system.timer', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
+  cancel_timer: { permission: 'system.timer', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   lock_screen: { permission: 'system.lock', risk: 'sensitive', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   media_play: { permission: 'media.transport', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
   media_pause: { permission: 'media.transport', risk: 'reversible', filePermission: 'none', externalCommitment: false, mayCostMoney: false, dataDisclosure: 'none' },
