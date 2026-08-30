@@ -2,6 +2,7 @@
 import type { SarahService } from '../../core/service.interface.js';
 import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
+import { traceBootPerformance } from '../../core/boot-performance-trace.js';
 import type { SttAvailability, SttProvider } from './stt-provider.interface.js';
 import type { TtsAvailability, TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
@@ -412,10 +413,18 @@ export class VoiceService implements SarahService {
 
     // STT and TTS are independent capabilities (A5): one failing must not
     // silently kill the other — degrade instead of dying.
+    const whisperStartedAt = performance.now();
+    traceBootPerformance('whisper', 'start');
     try {
       await this.stt.init(signal);
       this.applySttAvailability({ available: true });
+      traceBootPerformance('whisper', 'ready', {
+        durationMs: performance.now() - whisperStartedAt,
+      });
     } catch (err) {
+      traceBootPerformance('whisper', 'failed', {
+        durationMs: performance.now() - whisperStartedAt,
+      });
       if (!this.stt.recoversAfterInitFailure) {
         await this.cleanupFailedProvider('STT', () => this.stt.destroy());
       }
@@ -428,10 +437,18 @@ export class VoiceService implements SarahService {
       );
     }
 
+    const piperStartedAt = performance.now();
+    traceBootPerformance('piper', 'start');
     try {
       await this.tts.init(signal);
       this.applyTtsAvailability({ available: true });
+      traceBootPerformance('piper', 'ready', {
+        durationMs: performance.now() - piperStartedAt,
+      });
     } catch (err) {
+      traceBootPerformance('piper', 'failed', {
+        durationMs: performance.now() - piperStartedAt,
+      });
       await this.cleanupFailedProvider('TTS', () => this.tts.destroy());
       throwIfAborted(signal);
       console.error('[VoiceService] TTS init failed:', err);

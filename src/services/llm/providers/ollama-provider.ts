@@ -42,6 +42,8 @@ export class OllamaProvider implements LlmProvider {
     onChunk: (text: string) => void,
     options?: ChatOptions,
   ): Promise<string> {
+    const requestStartedAt = performance.now();
+    let firstChunkAt: number | null = null;
     const mergedOptions = {
       ...this.options,
       ...(options?.num_predict != null && { num_predict: options.num_predict }),
@@ -82,13 +84,41 @@ export class OllamaProvider implements LlmProvider {
         const parsed = JSON.parse(line) as {
           message?: { content?: string };
           done?: boolean;
+          total_duration?: number;
+          load_duration?: number;
+          prompt_eval_count?: number;
+          prompt_eval_duration?: number;
+          eval_count?: number;
+          eval_duration?: number;
         };
         const chunk = parsed.message?.content ?? '';
         if (chunk) {
+          firstChunkAt ??= performance.now();
           fullText += chunk;
           onChunk(chunk);
         }
-        if (parsed.done === true) terminalFrameReceived = true;
+        if (parsed.done === true) {
+          terminalFrameReceived = true;
+          if (process.env.SARAH_PERF_TRACE === '1') {
+            const generatedTokens = parsed.eval_count ?? 0;
+            const evalSeconds = (parsed.eval_duration ?? 0) / 1_000_000_000;
+            console.log(
+              '[OllamaPerf]',
+              JSON.stringify({
+                model: this.model,
+                generatedTokens,
+                tokensPerSecond: evalSeconds > 0 ? generatedTokens / evalSeconds : null,
+                timeToFirstChunkMs:
+                  firstChunkAt === null ? null : firstChunkAt - requestStartedAt,
+                wallMs: performance.now() - requestStartedAt,
+                totalDurationMs: (parsed.total_duration ?? 0) / 1_000_000,
+                loadDurationMs: (parsed.load_duration ?? 0) / 1_000_000,
+                promptTokens: parsed.prompt_eval_count ?? 0,
+                promptEvalMs: (parsed.prompt_eval_duration ?? 0) / 1_000_000,
+              }),
+            );
+          }
+        }
       } catch {
         // Ignore malformed intermediate frames. A missing terminal frame still
         // fails the complete response below, so partial output is never accepted.

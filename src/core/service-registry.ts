@@ -1,6 +1,7 @@
 import type { MessageBus } from './message-bus.js';
 import type { SarahService } from './service.interface.js';
 import { abortError, runWithTimeout, waitForSettlement } from './abort-utils.js';
+import { traceBootPerformance } from './boot-performance-trace.js';
 
 export interface ServiceInitResult {
   id: string;
@@ -31,6 +32,11 @@ export interface ServiceRegistryOptions {
   destroyTimeoutMs?: number;
 }
 
+export interface ServiceRegistrationOptions {
+  /** Start this service after the delay while earlier services continue initializing. */
+  startDelayMs?: number;
+}
+
 const DEFAULT_INIT_TIMEOUT_MS = 120_000;
 const DEFAULT_INIT_DRAIN_TIMEOUT_MS = 2_000;
 const DEFAULT_DESTROY_TIMEOUT_MS = 10_000;
@@ -50,6 +56,7 @@ export class ServiceRegistry {
   private initAbort = new AbortController();
   private initializing = new Set<string>();
   private cleanupPromises = new Map<string, Promise<ServiceDestroyResult>>();
+  private delayedStart: { serviceId: string; delayMs: number } | null = null;
   private destroyed = false;
 
   private readonly initTimeoutMs: number;
@@ -63,12 +70,22 @@ export class ServiceRegistry {
   }
 
   /** Register a service. Must be called before initAll(). */
-  register(service: SarahService): void {
+  register(service: SarahService, options: ServiceRegistrationOptions = {}): void {
     if (this.initPromise || this.destroyed) {
       throw new Error('Services can only be registered before initialization');
     }
     if (this.serviceMap.has(service.id)) {
       throw new Error(`Service "${service.id}" already registered`);
+    }
+    const startDelayMs = options.startDelayMs ?? 0;
+    if (!Number.isFinite(startDelayMs) || startDelayMs < 0) {
+      throw new Error(`Invalid start delay for service "${service.id}"`);
+    }
+    if (startDelayMs > 0) {
+      if (this.delayedStart) {
+        throw new Error('Only one delayed service start is supported');
+      }
+      this.delayedStart = { serviceId: service.id, delayMs: startDelayMs };
     }
     this.services.push(service);
     this.serviceMap.set(service.id, service);
@@ -102,10 +119,11 @@ export class ServiceRegistry {
   }
 
   private async runInit(onResult?: (result: ServiceInitResult) => void): Promise<ServiceInitReport> {
-    const results: ServiceInitResult[] = [];
-
-    for (const service of this.services) {
-      if (this.initAbort.signal.aborted || this.destroyed) break;
+    const results = new Map<string, ServiceInitResult>();
+    const initialize = async (service: SarahService): Promise<void> => {
+      if (this.initAbort.signal.aborted || this.destroyed) return;
+      const serviceStartedAt = performance.now();
+      traceBootPerformance(`service:${service.id}`, 'start');
       const serviceUnsubscribers = service.subscriptions.map((topic) =>
         this.bus.on(topic, (msg) => service.onMessage(msg)),
       );
@@ -125,7 +143,10 @@ export class ServiceRegistry {
         }
         this.initialized.add(service.id);
         const result = { id: service.id, ok: true } satisfies ServiceInitResult;
-        results.push(result);
+        results.set(service.id, result);
+        traceBootPerformance(`service:${service.id}`, 'ready', {
+          durationMs: performance.now() - serviceStartedAt,
+        });
         onResult?.(result);
       } catch (value) {
         for (const unsubscribe of serviceUnsubscribers) unsubscribe();
@@ -138,19 +159,65 @@ export class ServiceRegistry {
         };
         const cleanup = await this.destroyServiceOnce(service);
         if (!cleanup.ok) result.cleanupError = cleanup.error;
-        results.push(result);
+        results.set(service.id, result);
+        traceBootPerformance(`service:${service.id}`, 'failed', {
+          durationMs: performance.now() - serviceStartedAt,
+        });
         onResult?.(result);
       } finally {
         this.initializing.delete(service.id);
       }
+    };
+    const initializeSequentially = async (services: SarahService[]): Promise<void> => {
+      for (const service of services) {
+        if (this.initAbort.signal.aborted || this.destroyed) break;
+        await initialize(service);
+      }
+    };
+
+    const delayed = this.delayedStart;
+    if (!delayed) {
+      await initializeSequentially(this.services);
+    } else {
+      const delayedIndex = this.services.findIndex((service) => service.id === delayed.serviceId);
+      const delayedService = this.services[delayedIndex];
+      const delayedInitialization = this.waitForStartDelay(delayed.delayMs)
+        .then((elapsed) => elapsed && delayedService ? initialize(delayedService) : undefined);
+
+      await initializeSequentially(this.services.slice(0, delayedIndex));
+      await delayedInitialization;
+      await initializeSequentially(this.services.slice(delayedIndex + 1));
     }
 
+    const orderedResults = this.services
+      .map((service) => results.get(service.id))
+      .filter((result): result is ServiceInitResult => result !== undefined);
+
     const report = {
-      services: results,
-      ok: results.every((result) => result.ok),
+      services: orderedResults,
+      ok: orderedResults.every((result) => result.ok),
     } satisfies ServiceInitReport;
     this.initReport = report;
     return report;
+  }
+
+  private waitForStartDelay(delayMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const signal = this.initAbort.signal;
+      if (signal.aborted || this.destroyed) {
+        resolve(false);
+        return;
+      }
+      const finish = (elapsed: boolean): void => {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        resolve(elapsed);
+      };
+      const onAbort = (): void => finish(false);
+      const timer = setTimeout(() => finish(true), delayMs);
+      timer.unref?.();
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /**

@@ -327,7 +327,9 @@ function startPrimaryInstance(): void {
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before
-  // RouterService releases Ollama models.
+  // RouterService releases Ollama models. Voice starts on its own delayed lane
+  // while this model-dependent prefix initializes; reminders still wait for
+  // both lanes and therefore keep their existing dependency position.
   appContext.registry.register(routerService);
   appContext.registry.register(searchService);
   appContext.registry.register(actionService);
@@ -353,7 +355,7 @@ function startPrimaryInstance(): void {
     audioManager,
     hotkeyManager,
   );
-  appContext.registry.register(voiceService);
+  appContext.registry.register(voiceService, { startDelayMs: 3_000 });
   appContext.registry.register(reminderService);
   const reconcileRemindersAfterResume = (): void => {
     if (reminderService.status !== 'running') return;
