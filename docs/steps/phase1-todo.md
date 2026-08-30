@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach der vollständigen praktischen Layer-2-Windows-Abnahme (10 von 10 Testblöcken bestanden):** 704 Prüfpunkte — 202 🟢, 69 🟡, 416 🔴, 17 ⚪
+**Aktueller Zählstand nach der vollständigen praktischen Layer-2-Windows-Abnahme sowie der praktischen Timer-V2- und Erinnerungs-MVP-Abnahme:** 704 Prüfpunkte — 209 🟢, 69 🟡, 409 🔴, 17 ⚪
 
 ---
 
@@ -699,27 +699,27 @@ Sarah Desktop V1 soll einen definierten Satz verbreiteter Programme auf grundleg
 ## 11.1 Timer
 
 - 🟢 Timer können erstellt werden.
-- 🔴 Timer können benannt werden.
+- 🟢 Timer können mit einem frei formulierten kurzen Label benannt werden; Bestätigung, Ablaufmeldung und gezielter Abbruch verwenden dieses Label.
 - 🟢 mehrere Timer können parallel laufen.
 - 🟢 Ablauf eines Timers wird aktiv gemeldet.
-- 🟡 Timertexte können natürlich formuliert werden.
-- 🔴 „Timer wegen der Brötchen“ kann sinnvoll als „Deine Brötchen sind fertig“ ausgegeben werden.
+- 🟢 Timerwünsche können mit Sekunden, Minuten, Stunden, gemischten und umgangssprachlichen Dauern natürlich formuliert werden.
+- 🟡 Benannte Timer werden bereits verständlich als „Brötchen-Timer“ gemeldet; eine freiere Ergebnisformulierung wie „Deine Brötchen sind fertig“ fehlt noch.
 
 ## 11.2 Erinnerungen
 
-- 🔴 einmalige Erinnerungen können erstellt werden.
+- 🟢 einmalige Erinnerungen können mit relativem oder absolutem lokalem Zeitpunkt persistent erstellt werden.
 - 🔴 wiederkehrende Erinnerungen können erstellt werden.
-- 🔴 Erinnerungen können benannt werden.
+- 🟢 Erinnerungen besitzen einen frei formulierten Inhalt, der bei Bestätigung, Auflistung, Fälligkeit und Abbruch verwendet wird.
 - 🔴 Erinnerungen können geändert werden.
-- 🔴 Erinnerungen können gelöscht werden.
-- 🔴 Erinnerungen erscheinen zum passenden Zeitpunkt.
+- 🟢 einzelne, ausgewählte oder ausdrücklich alle offenen Erinnerungen können abgebrochen werden; mehrdeutige Treffer werden nicht geraten.
+- 🟢 Erinnerungen erscheinen zum passenden Zeitpunkt und werden nach Neustart oder Resume bei Bedarf als überfällig nachgeholt.
 
 ## 11.3 Termine
 
 - 🔴 feste bekannte Termine können berücksichtigt werden.
 - ⚪ spätere Kalenderintegration ist vorgesehen.
 - 🔴 bevorstehende Termine können proaktiv gemeldet werden.
-- 🔴 Erinnerungszeitpunkte können konfiguriert werden.
+- 🟢 Erinnerungszeitpunkte können relativ oder als lokales Datum mit Uhrzeit festgelegt werden.
 
 ## 11.4 E-Mail-Proaktivität
 
