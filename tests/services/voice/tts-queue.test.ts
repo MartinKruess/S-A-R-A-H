@@ -550,6 +550,55 @@ describe('TtsQueue', () => {
     playbackDone(2);
   });
 
+  it('preempts a normal playback synthesis that has not started playing yet', async () => {
+    let resolveNormal = (_audio: Float32Array): void => {};
+    vi.mocked(mockTts.speak)
+      .mockImplementationOnce(() => new Promise<Float32Array>((resolve) => {
+        resolveNormal = resolve;
+      }))
+      .mockResolvedValueOnce(new Float32Array([2]))
+      .mockResolvedValueOnce(new Float32Array([3]));
+
+    queue.enqueue(item('Slow normal.'));
+    await vi.waitFor(() => expect(mockTts.speak).toHaveBeenCalledOnce());
+    queue.enqueue({
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+    });
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    expect(onAudioReady.mock.calls[0][0].turnId).toBe('timer-turn');
+    resolveNormal(new Float32Array([1]));
+    playbackDone(0);
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0].text).toBe('Slow normal.');
+    playbackDone(1);
+  });
+
+  it('keeps an intentional pause for lower-priority chunks that arrive later', async () => {
+    queue.enqueue({
+      turnId: 'timer-turn',
+      outputId: 'timer-output',
+      text: 'Timer elapsed.',
+      priority: TTS_PRIORITY.TIMER,
+      pauseAfterPlayback: true,
+    });
+
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledOnce());
+    playbackDone(0);
+
+    expect(queue.isPaused).toBe(true);
+    queue.enqueue(item('Later streaming chunk.'));
+    expect(onAudioReady).toHaveBeenCalledOnce();
+
+    queue.resume();
+    await vi.waitFor(() => expect(onAudioReady).toHaveBeenCalledTimes(2));
+    expect(onAudioReady.mock.calls[1][0].text).toBe('Later streaming chunk.');
+    playbackDone(1);
+  });
+
   it('lets all equal-priority timers cross the pause barrier before blocking normal speech', async () => {
     const normal = item('Normal after timers.');
     const timerOne: TtsQueueItem = {

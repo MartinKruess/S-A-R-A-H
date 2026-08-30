@@ -1510,12 +1510,11 @@ describe('RouterService (action layer)', () => {
     expect(terminals.at(-1)).toMatchObject({ status: 'error' });
   });
 
-  it('accepts a natural spoken confirmation and ignores an unrelated answer', async () => {
+  it('accepts an immediate natural spoken confirmation', async () => {
     ctx.parsedConfig.trust.confirmationLevel = 'maximal';
     const routerP = new ScriptedProvider(
       'ok',
       '[ACTION:open_program:spotify]',
-      'Natürlich.',
     );
     router = new RouterService(ctx, routerP, new ScriptedProvider('Keine Aktion.'));
     await router.init();
@@ -1537,9 +1536,6 @@ describe('RouterService (action layer)', () => {
     expect(spokenOnly[0]).not.toContain('/confirm');
     expect(speechPolicies).toHaveLength(1);
 
-    await router.handleChatMessage('Vielleicht', 'voice');
-    expect(requests).toEqual([]);
-
     const confirmationTurn = router.handleChatMessage(
       'Ja, ich bestätige das.',
       'voice',
@@ -1552,6 +1548,25 @@ describe('RouterService (action layer)', () => {
       ok: true,
     });
     await confirmationTurn;
+  });
+
+  it('expires natural confirmation authority on the first unrelated turn', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'maximal';
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:open_program:spotify]',
+      '[ROUTE:9b]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider('Keine Aktion.'));
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+
+    await router.handleChatMessage('Öffne Spotify', 'voice');
+    await router.handleChatMessage('Wie heiße ich?', 'voice');
+    await router.handleChatMessage('Ja', 'voice');
+
+    expect(requests).toEqual([]);
   });
 
   it('cancels the single pending action through a natural voice phrase', async () => {
@@ -1862,6 +1877,49 @@ describe('RouterService (action layer)', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({ action: 'open_program', param: 'spotify' });
     expect(routerP.lastMessages?.at(-1)).toEqual({ role: 'user', content: 'Öffne Spotify' });
+  });
+
+  it('refuses a disabled web action before announcing or dispatching it', async () => {
+    ctx.parsedConfig.trust.webAccessAllowed = false;
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', '[ACTION:web_search:private query]'),
+      new ScriptedProvider(),
+    );
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Suche private query');
+
+    expect(requests).toEqual([]);
+    expect(done).toEqual(['Der Browserzugriff ist in den Einstellungen deaktiviert.']);
+    expect(done).not.toContain('Ich suche nach „private query“.');
+  });
+
+  it('grounds timer and reminder actions against the trusted custom-command expansion', async () => {
+    ctx.parsedConfig.controls.customCommands = [
+      { command: '/brot', prompt: 'Stelle einen Brötchen-Timer auf 5 Minuten' },
+      { command: '/essen', prompt: 'Erinnere mich in 10 Minuten an Essen' },
+    ];
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:5m|Brötchen]',
+      '[ACTION:set_reminder:after=10m|text=Essen]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+
+    const timer = await runActionTurn('/brot');
+    const reminder = await runActionTurn('/essen');
+
+    expect(timer).toMatchObject({ action: 'set_timer', param: '5m|Brötchen' });
+    expect(reminder).toMatchObject({
+      action: 'set_reminder',
+      param: expect.stringMatching(/^at=date:\d{4}-\d{2}-\d{2}@\d{2}:\d{2}\|text=Essen$/u),
+    });
   });
 
   it('rejects unknown slash commands without calling an LLM', async () => {
@@ -2246,7 +2304,7 @@ describe('RouterService (action layer)', () => {
     expect(await ctx.db.query('messages')).toHaveLength(0);
   });
 
-  it('publishes timer priority speech immediately and keeps one correlated visible output serialized', async () => {
+  it('publishes timer speech and its correlated visible output immediately over a blocked worker', async () => {
     const workerP = new BlockingProvider();
     router = new RouterService(ctx, new ScriptedProvider('ok'), workerP);
     await router.init();
@@ -2269,6 +2327,7 @@ describe('RouterService (action layer)', () => {
       notificationId: 'notify-1',
       kind: 'timer',
       speak: 'Dein Timer ist abgelaufen.',
+      originMode: 'chat',
     });
 
     expect(prioritySpeech).toEqual([{
@@ -2279,31 +2338,49 @@ describe('RouterService (action layer)', () => {
       pauseAfter: true,
     }]);
     expect(outputPolicies).toEqual([{ turnId: 'notify-1', speech: 'suppress' }]);
-    expect(ctx.bus.isTurnOpen('notify-1')).toBe(true);
-    expect(events.some((event) => event.endsWith(':Dein Timer ist abgelaufen.'))).toBe(false);
+    expect(events.some((event) => event.endsWith(':Dein Timer ist abgelaufen.'))).toBe(true);
+    await vi.waitFor(() => expect(ctx.bus.isTurnTerminal('notify-1')).toBe(true));
 
     workerP.releaseFirst();
     await turn;
-    await vi.waitFor(() => {
-      expect(events.some((event) => event.endsWith(':Dein Timer ist abgelaufen.'))).toBe(true);
-    });
 
     const doneIdx = events.findIndex((event) => event.endsWith(':Antwort 1'));
     const notifyIdx = events.findIndex((event) => event.endsWith(':Dein Timer ist abgelaufen.'));
     expect(doneIdx).toBeGreaterThan(-1);
-    expect(notifyIdx).toBeGreaterThan(doneIdx);
+    expect(notifyIdx).toBeLessThan(doneIdx);
     expect(events.filter((event) => (
       event.startsWith('done:') && event.endsWith(':Dein Timer ist abgelaufen.')
     ))).toHaveLength(1);
     expect(events[notifyIdx]).toContain(prioritySpeech[0].outputId);
-    expect(ctx.bus.isTurnTerminal('notify-1')).toBe(true);
+  });
+
+  it('keeps a private timer visible without speaking its label', async () => {
+    router = new RouterService(ctx, new ScriptedProvider('ok'), new ScriptedProvider());
+    await router.init();
+    const prioritySpeech: BusEvents['voice:priority-speech'][] = [];
+    const visible: string[] = [];
+    ctx.bus.on('voice:priority-speech', (message) => prioritySpeech.push(message.data));
+    ctx.bus.on('llm:done', (message) => visible.push(message.data.fullText));
+
+    ctx.bus.emit('test', 'action:notify', {
+      notificationId: 'private-timer-1',
+      kind: 'timer',
+      speak: 'Dein Arznei-Timer ist abgelaufen.',
+      originMode: 'chat',
+      privateContext: true,
+    });
+
+    await vi.waitFor(() => expect(visible).toContain('Dein Arznei-Timer ist abgelaufen.'));
+    expect(prioritySpeech).toEqual([]);
   });
 
   it('publishes reminders through the same sentence-boundary priority path', async () => {
     router = new RouterService(ctx, new ScriptedProvider('ok'), new ScriptedProvider());
     await router.init();
     const prioritySpeech: BusEvents['voice:priority-speech'][] = [];
+    const accepted: BusEvents['action:notify-accepted'][] = [];
     ctx.bus.on('voice:priority-speech', (message) => prioritySpeech.push(message.data));
+    ctx.bus.on('action:notify-accepted', (message) => accepted.push(message.data));
 
     ctx.bus.emit('test', 'action:notify', {
       notificationId: 'reminder-notify-1',
@@ -2318,6 +2395,9 @@ describe('RouterService (action layer)', () => {
       priority: 'timer',
       pauseAfter: true,
     }]);
+    await vi.waitFor(() => expect(accepted).toEqual([{
+      notificationId: 'reminder-notify-1',
+    }]));
   });
 
   it('keeps Timer V2 parameters as canonical strings through RouterService dispatch', async () => {
@@ -2372,7 +2452,7 @@ describe('RouterService (action layer)', () => {
 
     expect(setRequest).toMatchObject({
       action: 'set_reminder',
-      param: 'after=30m|text=Steuerberater anrufen',
+      param: 'at=date:2026-08-30@10:45|text=Steuerberater anrufen',
     });
     expect(cancelRequest).toMatchObject({
       action: 'cancel_reminder',
@@ -2398,7 +2478,10 @@ describe('RouterService (action layer)', () => {
 
     expect(request).toMatchObject({
       action: 'set_reminder',
-      param: reminderParam,
+      param: expect.stringMatching(new RegExp(
+        `^at=date:\\d{4}-\\d{2}-\\d{2}@\\d{2}:\\d{2}\\|text=${reminderParam.split('|text=')[1]}$`,
+        'u',
+      )),
     });
   });
 
@@ -2650,6 +2733,65 @@ describe('RouterService (action layer)', () => {
     expect(done).toContain('Ich stelle den Brötchen-Timer auf 6 Minuten.');
   });
 
+  it('drops reminder-cancel ambiguity when its owning turn is canceled', async () => {
+    const routerProvider = new ScriptedProvider(
+      'ok',
+      '[ACTION:cancel_reminder:text=Steuerberater anrufen]',
+      '[ROUTE:9b]',
+    );
+    router = new RouterService(ctx, routerProvider, new ScriptedProvider('Keine Auswahl.'));
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+
+    const first = await startAction(ctx, router, 'Brich die Erinnerung Steuerberater anrufen ab');
+    ctx.bus.emit('test', 'action:result', {
+      turnId: first.request.turnId,
+      requestId: first.request.requestId,
+      action: first.request.action,
+      ok: false,
+      speak: 'Es gibt mehrere passende Erinnerungen.',
+      reminderCancelAmbiguity: {
+        candidates: [
+          { id: 41, dueLocal: '2026-08-30T16:30' },
+          { id: 42, dueLocal: '2026-08-30T17:05' },
+        ],
+      },
+    });
+    ctx.bus.emit('test', 'turn:cancel', {
+      turnId: first.request.turnId,
+      reason: 'barge-in before ambiguity output',
+    });
+    await first.actionTurn;
+
+    await router.handleChatMessage('Die erste.');
+
+    expect(requests).toHaveLength(1);
+  });
+
+  it('rejects invented timer durations and destructive selector escalation', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_timer:50m]',
+      '[ACTION:cancel_timer:all]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Timer auf 5 Minuten.');
+    await router.handleChatMessage('Brich den Eier-Timer ab.');
+
+    expect(requests).toEqual([]);
+    expect(done).toEqual([
+      'Ich konnte die Timerdauer nicht eindeutig aus deiner Anfrage übernehmen.',
+      'Diesen Timer kann ich aus deiner Angabe nicht eindeutig zuordnen.',
+    ]);
+  });
+
   it('rejects invalid Timer V2 parameters before action dispatch', async () => {
     const routerP = new ScriptedProvider('ok', '[ACTION:set_timer:30 seconds|Eier]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
@@ -2662,7 +2804,7 @@ describe('RouterService (action layer)', () => {
     await router.handleChatMessage('Stelle einen Eier-Timer auf 30 Sekunden');
 
     expect(requests).toEqual([]);
-    expect(done).toEqual(['Das kann ich noch nicht.']);
+    expect(done).toEqual(['Ich konnte die Timerdauer nicht eindeutig aus deiner Anfrage übernehmen.']);
   });
 
   it('resumes a paused voice buffer locally without model output or persistence', async () => {

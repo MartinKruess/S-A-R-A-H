@@ -6,6 +6,7 @@ import type {
   ReminderRecord,
   ReminderStateTransition,
 } from './reminder-types.js';
+import { throwIfAborted } from '../../core/abort-utils.js';
 
 export type {
   ReminderAgendaItem,
@@ -61,7 +62,7 @@ export interface ReminderTimeouts {
 
 export interface ReminderServiceOptions {
   store: ReminderStorePort;
-  notify: (notification: ReminderNotification) => boolean | Promise<boolean>;
+  notify: (notification: ReminderNotification, signal?: AbortSignal) => boolean | Promise<boolean>;
   clock?: ReminderClock;
   timeouts?: ReminderTimeouts;
   onError?: (error: Error) => void;
@@ -100,7 +101,7 @@ function localMinuteKey(value: Date): string {
   return `${localDateKey(value)}T${pad(value.getHours())}:${pad(value.getMinutes())}`;
 }
 
-function parseDueLocal(value: string): Date | null {
+function parseDueLocal(value: string, afterMs?: number): Date | null {
   const match = DUE_LOCAL_PATTERN.exec(value);
   if (!match) return null;
   const year = Number(match[1]);
@@ -116,7 +117,18 @@ function parseDueLocal(value: string): Date | null {
     || parsed.getHours() !== hour
     || parsed.getMinutes() !== minute
   ) return null;
-  return parsed;
+  if (afterMs === undefined) return parsed;
+  const overlapWindowMs = 3 * 60 * 60_000;
+  const candidates = Array.from(
+    { length: (2 * overlapWindowMs) / 60_000 + 1 },
+    (_unused, index) => parsed.getTime() - overlapWindowMs + index * 60_000,
+  )
+    .map((epochMs) => new Date(epochMs))
+    .filter((candidate) => localMinuteKey(candidate) === value)
+    .sort((left, right) => left.getTime() - right.getTime());
+  return candidates.find((candidate) => candidate.getTime() > afterMs)
+    ?? candidates.at(-1)
+    ?? parsed;
 }
 
 function normalizeText(value: string): string {
@@ -160,6 +172,7 @@ export class ReminderService implements SarahService {
   private operationTail: Promise<void> = Promise.resolve();
   private cancelScheduled: (() => void) | null = null;
   private scheduleGeneration = 0;
+  private readonly notificationAbort = new AbortController();
   private initialized = false;
   private destroyed = false;
 
@@ -209,33 +222,47 @@ export class ReminderService implements SarahService {
   }
 
   /** Persists one already validated local reminder and immediately replans the scheduler. */
-  create(input: { dueLocal: string; text: string }): Promise<ReminderAgendaItem> {
+  create(input: { dueLocal: string; text: string }, signal?: AbortSignal): Promise<ReminderAgendaItem> {
     this.assertOperational();
+    throwIfAborted(signal);
     if (!this.store.persistent) return Promise.reject(new ReminderServiceError('not_persistent'));
-    const due = parseDueLocal(input.dueLocal);
+    const due = parseDueLocal(input.dueLocal, this.clock.now().getTime());
     if (!due || !input.text.trim()) return Promise.reject(new ReminderServiceError('invalid_input'));
     if (due.getTime() <= this.clock.now().getTime()) return Promise.reject(new ReminderServiceError('past_due'));
 
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const open = await this.store.listOpen();
+      throwIfAborted(signal);
       if (open.length >= this.maxOpenReminders) throw new ReminderServiceError('limit_reached');
+      if (due.getTime() <= this.clock.now().getTime()) throw new ReminderServiceError('past_due');
+      // The persistent create below is the commit boundary. Once it starts, the
+      // operation completes and ActionService reports a late success separately.
       const record = await this.store.create({
         dueLocal: input.dueLocal,
         text: input.text,
         sourceKind: 'local',
         createdAt: this.clock.now().toISOString(),
       });
-      await this.reconcileOnce();
+      try {
+        await this.reconcileOnce();
+      } catch (error) {
+        this.onError(error instanceof Error ? error : new Error('Reminder reconcile failed after create'));
+      }
       return agendaItem(record);
     });
   }
 
   /** Lists today's or every open reminder in stable chronological order. */
-  list(scope: ReminderListScope): Promise<ReminderAgendaItem[]> {
+  list(scope: ReminderListScope, signal?: AbortSignal): Promise<ReminderAgendaItem[]> {
     this.assertOperational();
+    throwIfAborted(signal);
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const today = localDateKey(this.clock.now());
-      return (await this.store.listOpen())
+      const open = await this.store.listOpen();
+      throwIfAborted(signal);
+      return open
         .filter((record) => scope === 'upcoming' || record.dueLocal.startsWith(`${today}T`))
         .sort(compareRecords)
         .map(agendaItem);
@@ -243,10 +270,13 @@ export class ReminderService implements SarahService {
   }
 
   /** Cancels one unambiguous pending reminder or explicitly all pending reminders. */
-  cancel(selector: ReminderCancelSelector): Promise<ReminderCancelResult> {
+  cancel(selector: ReminderCancelSelector, signal?: AbortSignal): Promise<ReminderCancelResult> {
     this.assertOperational();
+    throwIfAborted(signal);
     return this.enqueue(async () => {
+      throwIfAborted(signal);
       const open = [...await this.store.listOpen()].sort(compareRecords);
+      throwIfAborted(signal);
       const matches = this.select(open, selector);
       if (matches.length === 0) return { status: 'none', cancelled: [], candidates: [] };
       if (selector.kind !== 'all' && matches.length > 1) {
@@ -256,21 +286,37 @@ export class ReminderService implements SarahService {
       const cancelled: ReminderAgendaItem[] = [];
       const firing: ReminderAgendaItem[] = [];
       const at = this.clock.now().toISOString();
-      for (const record of matches) {
+      // The first compare-and-set is the commit boundary. Cancellation before
+      // it prevents every mutation; cancellation after it never leaves the
+      // remaining selected records silently unprocessed.
+      throwIfAborted(signal);
+      for (const [index, record] of matches.entries()) {
         if (record.state === 'firing') {
           firing.push(agendaItem(record));
           continue;
         }
-        const changed = await this.store.compareAndSetState({
-          id: record.id,
-          expected: 'pending',
-          next: 'cancelled',
-          at,
-        });
+        let changed: boolean;
+        try {
+          changed = await this.store.compareAndSetState({
+            id: record.id,
+            expected: 'pending',
+            next: 'cancelled',
+            at,
+          });
+        } catch (error) {
+          if (cancelled.length === 0) throw error;
+          this.onError(error instanceof Error ? error : new Error('Reminder cancellation failed after commit'));
+          firing.push(...matches.slice(index).map(agendaItem));
+          break;
+        }
         if (changed) cancelled.push(agendaItem(record));
         else firing.push(agendaItem(record));
       }
-      await this.reconcileOnce();
+      try {
+        await this.reconcileOnce();
+      } catch (error) {
+        this.onError(error instanceof Error ? error : new Error('Reminder reconcile failed after cancel'));
+      }
       if (firing.length > 0 && cancelled.length > 0) {
         return { status: 'partially_cancelled', cancelled, candidates: firing };
       }
@@ -292,6 +338,7 @@ export class ReminderService implements SarahService {
     if (this.destroyed) return;
     this.destroyed = true;
     this.initialized = false;
+    this.notificationAbort.abort();
     this.clearSchedule();
     await this.operationTail;
     this.clearSchedule();
@@ -319,7 +366,7 @@ export class ReminderService implements SarahService {
     const open = [...await this.store.listOpen()].sort(compareRecords);
     for (const record of open) {
       if (record.state !== 'pending') continue;
-      const due = parseDueLocal(record.dueLocal);
+      const due = parseDueLocal(record.dueLocal, nowMs);
       if (!due || due.getTime() > nowMs) continue;
       const firing = await this.store.compareAndSetState({
         id: record.id,
@@ -337,7 +384,7 @@ export class ReminderService implements SarahService {
           text: record.text,
           overdue,
           speak: notificationText(record.text, overdue),
-        });
+        }, this.notificationAbort.signal);
       } catch (error) {
         this.onError(error instanceof Error ? error : new Error('Reminder notification failed'));
       }
@@ -358,8 +405,8 @@ export class ReminderService implements SarahService {
     const today = localDateKey(now);
     const nextToday = open
       .filter((record) => record.state === 'pending' && record.dueLocal.startsWith(`${today}T`))
-      .map((record) => parseDueLocal(record.dueLocal)?.getTime())
-      .filter((value): value is number => value != null && value > nowMs)
+      .map((record) => parseDueLocal(record.dueLocal, nowMs)?.getTime())
+      .filter((value): value is number => value !== undefined && value > nowMs)
       .sort((left, right) => left - right)[0];
     if (open.length === 0) return;
     const preciseDelay = nextToday == null ? this.guardIntervalMs : nextToday - nowMs;

@@ -142,4 +142,26 @@ describe('local reminder resolution', () => {
     expect(resolveReminderDueLocal({ kind: 'date', date: '2027-03-17', time: '09:00' }, clock)).toBe('2027-03-17T09:00');
     expect(resolveReminderDueLocal({ kind: 'date', date: '2026-08-29', time: '09:00' }, clock)).toBeNull();
   });
+
+  it('accepts a repeated local minute only when the later DST occurrence is still ahead', () => {
+    const nowMs = Date.parse('2026-10-25T00:30:30.000Z');
+    const repeatedMinuteClock: ReminderClock = {
+      nowMs: () => nowMs,
+      toLocal: (epochMs) => {
+        if (epochMs === nowMs || epochMs === nowMs + 60 * 60_000 - 30_000) {
+          return '2026-10-25T02:30';
+        }
+        return '2026-10-25T02:31';
+      },
+    };
+
+    expect(resolveReminderDueLocal(
+      { kind: 'date', date: '2026-10-25', time: '02:30' },
+      repeatedMinuteClock,
+    )).toBe('2026-10-25T02:30');
+    expect(resolveReminderDueLocal(
+      { kind: 'date', date: '2026-10-25', time: '02:29' },
+      repeatedMinuteClock,
+    )).toBeNull();
+  });
 });

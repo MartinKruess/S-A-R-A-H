@@ -91,6 +91,15 @@ function addCivilDays(date: CivilDate, days: number): CivilDate {
   };
 }
 
+function hasFutureRepeatedLocalMinute(dueLocal: string, clock: ReminderClock, nowMs: number): boolean {
+  const firstWholeMinute = Math.ceil((nowMs + 1) / 60_000) * 60_000;
+  const overlapWindowEnd = nowMs + 3 * 60 * 60_000;
+  for (let candidateMs = firstWholeMinute; candidateMs <= overlapWindowEnd; candidateMs += 60_000) {
+    if (clock.toLocal(candidateMs) === dueLocal) return true;
+  }
+  return false;
+}
+
 function weekdayOf(date: CivilDate): ReminderWeekday {
   return WEEKDAYS[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()];
 }
@@ -280,7 +289,9 @@ export function resolveReminderDueLocal(schedule: ReminderSchedule, clock: Remin
     if (!duration) return null;
     const targetMs = nowMs + schedule.minutes * 60_000;
     const due = clock.toLocal(Math.ceil(targetMs / 60_000) * 60_000);
-    return parseLocal(due) && due > nowLocal ? due : null;
+    // During the autumn DST overlap, a positive duration can legitimately map
+    // to the same wall-clock minute in the second occurrence of that hour.
+    return parseLocal(due) ? due : null;
   }
 
   let date: CivilDate;
@@ -309,11 +320,12 @@ export function resolveReminderDueLocal(schedule: ReminderSchedule, clock: Remin
   }
 
   let due = formatLocal(date, schedule.time);
-  if (schedule.kind === 'time' && due <= nowLocal) {
+  if (due > nowLocal || hasFutureRepeatedLocalMinute(due, clock, nowMs)) return due;
+  if (schedule.kind === 'time') {
     due = formatLocal(addCivilDays(date, 1), schedule.time);
-  } else if (schedule.kind === 'weekday' && due <= nowLocal) {
+  } else if (schedule.kind === 'weekday') {
     due = formatLocal(addCivilDays(date, 7), schedule.time);
-  } else if (schedule.kind === 'month-day' && due <= nowLocal) {
+  } else if (schedule.kind === 'month-day') {
     let year = date.year + 1;
     let candidate = { year, month: schedule.month, day: schedule.day };
     while (!isValidCivilDate(candidate)) {

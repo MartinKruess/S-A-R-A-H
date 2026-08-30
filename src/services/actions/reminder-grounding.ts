@@ -55,6 +55,10 @@ function normalizeUserText(value: string): string {
   return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('de-DE');
 }
 
+function reminderScheduleClause(userText: string): string {
+  return normalizeUserText(userText).split(/\b(?:daran|damit|um\s+zu|an)\b/u, 1)[0].trim();
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
@@ -81,36 +85,76 @@ function parseAmount(value: string): number | null {
   return NUMBER_WORDS[value] ?? null;
 }
 
+function relativeUnitMinutes(unit: string): number {
+  if (unit.startsWith('woche')) return 7 * 24 * 60;
+  if (unit.startsWith('tag')) return 24 * 60;
+  if (unit.startsWith('stunde')) return 60;
+  return 1;
+}
+
+function relativeUnitRank(unit: string): number {
+  if (unit.startsWith('woche')) return 4;
+  if (unit.startsWith('tag')) return 3;
+  if (unit.startsWith('stunde')) return 2;
+  return 1;
+}
+
 function groundedRelativeMinutes(userText: string): readonly number[] {
   const normalized = normalizeUserText(userText);
-  const afterIn = /\bin\s+(.+)$/u.exec(normalized)?.[1];
-  const shorthand = /\b(?:erinnerung|reminder)\b/u.test(normalized)
-    ? normalized
+  const scheduleClause = reminderScheduleClause(userText);
+  if (/\bund\s+in\s+(?:\d+|ein|eine|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf)\b/u.test(normalized)) {
+    return [];
+  }
+  const afterIn = /\bin\s+(.+)$/u.exec(scheduleClause)?.[1];
+  const shorthand = /\b(?:erinnerung|reminder)\b/u.test(scheduleClause)
+    ? scheduleClause
     : null;
   const durationSource = afterIn ?? shorthand;
   if (!durationSource) return [];
-  const bounded = durationSource.split(/\b(?:daran|damit|um\s+zu)\b/u, 1)[0];
+  const bounded = durationSource;
   const results = new Set<number>();
-  if (/\b(?:anderthalb|eineinhalb)\s+stunden?\b/u.test(bounded)) results.add(90);
-  if (/\b(?:eine\s+)?dreiviertelstunde\b/u.test(bounded)) results.add(45);
+  const specialDurations = [
+    { match: /\b(?:anderthalb|eineinhalb)\s+stunden?\b/u.exec(bounded), minutes: 90 },
+    { match: /\b(?:eine\s+)?dreiviertelstunde\b/u.exec(bounded), minutes: 45 },
+  ] as const;
+  for (const special of specialDurations) {
+    if (special.match) results.add(special.minutes);
+  }
 
   const unitPattern = /(\d+|ein|eine|einen|einer|einem|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf)\s*(minuten?|stunden?|tage?|wochen?)/gu;
-  let sum = 0;
-  let found = false;
+  const parts: Array<{ start: number; end: number; minutes: number; rank: number }> = [];
   for (const match of bounded.matchAll(unitPattern)) {
     const amount = parseAmount(match[1]);
-    if (amount === null) continue;
-    found = true;
-    const unit = match[2];
-    sum += unit.startsWith('minute')
-      ? amount
-      : unit.startsWith('stunde')
-        ? amount * 60
-        : unit.startsWith('tag')
-          ? amount * 24 * 60
-          : amount * 7 * 24 * 60;
+    if (amount === null || match.index === undefined) continue;
+    parts.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      minutes: amount * relativeUnitMinutes(match[2]),
+      rank: relativeUnitRank(match[2]),
+    });
   }
-  if (found) results.add(sum);
+  const lastDurationEnd = Math.max(
+    ...parts.map((part) => part.end),
+    ...specialDurations.map(({ match }) => match?.index === undefined ? 0 : match.index + match[0].length),
+  );
+  const scheduleEvidence = lastDurationEnd > 0 ? bounded.slice(0, lastDurationEnd) : bounded;
+  if (/\b(?:oder|sondern)\b/u.test(scheduleEvidence)) return [];
+  let group: typeof parts = [];
+  const commitGroup = (): void => {
+    if (group.length > 0) results.add(group.reduce((sum, part) => sum + part.minutes, 0));
+  };
+  for (const part of parts) {
+    const previous = group[group.length - 1];
+    const joinsPrevious = previous
+      && part.rank < previous.rank
+      && /^[\s,]*(?:und[\s,]*)?$/u.test(bounded.slice(previous.end, part.start));
+    if (!joinsPrevious) {
+      commitGroup();
+      group = [];
+    }
+    group.push(part);
+  }
+  commitGroup();
   return [...results];
 }
 
@@ -123,6 +167,21 @@ function isTimeGrounded(time: string, userText: string): boolean {
   if (new RegExp(`(?:^|\\D)${hour}[.:]${minuteText}(?=$|\\D)`, 'u').test(normalized)) return true;
   if (minuteText === '00' && new RegExp(`(?:^|\\D)${hour}\\s+uhr(?=$|\\D)`, 'u').test(normalized)) return true;
   return new RegExp(`(?:^|\\D)${hour}\\s+uhr\\s+${minute}(?=$|\\D)`, 'u').test(normalized);
+}
+
+function groundedClockTimes(userText: string): ReadonlySet<string> {
+  const normalized = reminderScheduleClause(userText);
+  const times = new Set<string>();
+  const add = (hour: string, minute: string): void => {
+    times.add(`${String(Number(hour)).padStart(2, '0')}:${minute.padStart(2, '0')}`);
+  };
+  for (const match of normalized.matchAll(/(?:^|\D)([01]?\d|2[0-3])[.:]([0-5]\d)(?!\.\d)(?=$|\D)/gu)) {
+    add(match[1], match[2]);
+  }
+  for (const match of normalized.matchAll(/\b([01]?\d|2[0-3])\s+uhr(?:\s+([0-5]?\d))?\b/gu)) {
+    add(match[1], match[2] ?? '00');
+  }
+  return times;
 }
 
 function isAbsoluteDayGrounded(schedule: ReminderAbsoluteSchedule, userText: string): boolean {
@@ -168,9 +227,16 @@ function hasExplicitDaySelector(normalizedUserText: string): boolean {
 /** Checks whether the compact schedule has explicit evidence in the current utterance. */
 export function isReminderScheduleGrounded(schedule: ReminderSchedule, userText: string): boolean {
   if (schedule.kind === 'after') {
-    return groundedRelativeMinutes(userText).includes(schedule.minutes);
+    const candidates = groundedRelativeMinutes(userText);
+    return candidates.length === 1 && candidates[0] === schedule.minutes;
   }
-  return isTimeGrounded(schedule.time, userText) && isAbsoluteDayGrounded(schedule, userText);
+  const scheduleClause = reminderScheduleClause(userText);
+  if (/\b(?:oder|sondern)\b/u.test(scheduleClause)) return false;
+  const groundedTimes = groundedClockTimes(userText);
+  return groundedTimes.size === 1
+    && groundedTimes.has(schedule.time)
+    && isTimeGrounded(schedule.time, scheduleClause)
+    && isAbsoluteDayGrounded(schedule, scheduleClause);
 }
 
 export function isReminderTextGrounded(text: string, userText: string): boolean {
@@ -205,9 +271,6 @@ export function groundSetReminderRequest(
     && !hasExplicitDaySelector(normalizedUser)
     ? { kind: 'time' as const, time: request.schedule.time }
     : request.schedule;
-  const groundedRequest = { ...request, schedule };
-  const canonicalParam = serializeSetReminderParam(groundedRequest);
-  if (!canonicalParam) return { ok: false, reason: 'invalid_param' };
   if (!isReminderTextGrounded(request.text, userText)) {
     return { ok: false, reason: 'ungrounded_text' };
   }
@@ -215,7 +278,13 @@ export function groundSetReminderRequest(
     return { ok: false, reason: 'ungrounded_time' };
   }
   const dueLocal = resolveReminderDueLocal(schedule, clock);
-  return dueLocal
+  if (!dueLocal) return { ok: false, reason: 'non_future_time' };
+  const [date, time] = dueLocal.split('T');
+  const canonicalParam = serializeSetReminderParam({
+    schedule: { kind: 'date', date, time },
+    text: request.text,
+  });
+  return canonicalParam
     ? { ok: true, canonicalParam, dueLocal }
-    : { ok: false, reason: 'non_future_time' };
+    : { ok: false, reason: 'invalid_param' };
 }

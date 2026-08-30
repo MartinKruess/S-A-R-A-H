@@ -53,7 +53,6 @@ export class TtsQueue {
   } | null = null;
   private playbackAckTimer: ReturnType<typeof setTimeout> | null = null;
   private activeSynthesis: QueueEntry | null = null;
-  private activeSynthesisMode: 'playback' | 'prebuffer' | null = null;
   private pauseRequests: PauseRequest[] = [];
   private nextSequence = 0;
   private generation = 0;
@@ -79,7 +78,6 @@ export class TtsQueue {
     this.insertQueued(entry);
     if (
       this.activeSynthesis
-      && this.activeSynthesisMode === 'prebuffer'
       && this.compareEntries(entry, this.activeSynthesis) < 0
     ) {
       const interrupted = this.activeSynthesis;
@@ -127,7 +125,10 @@ export class TtsQueue {
     this.activePlayback = null;
     this.onPlaybackProgress?.(completedEntry.item.turnId);
 
-    if (completedSuccessfully && completedEntry.item.pauseAfterPlayback) {
+    if (
+      completedSuccessfully
+      && completedEntry.item.pauseAfterPlayback
+    ) {
       this.pauseRequests.push({
         turnId: completedEntry.item.turnId,
         priority: this.priorityOf(completedEntry),
@@ -249,14 +250,12 @@ export class TtsQueue {
   private async synthesizeForPlayback(entry: QueueEntry): Promise<void> {
     const generation = this.generation;
     this.activeSynthesis = entry;
-    this.activeSynthesisMode = 'playback';
     this.state = 'synthesizing';
     try {
       const startedAt = performance.now();
       const audio = await this.tts.speak(entry.item.text, this.synthesisAbort.signal);
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
-      this.activeSynthesisMode = null;
       this.onTiming?.(Math.round(performance.now() - startedAt), entry.item.turnId);
       this.state = 'playing';
       this.emitAudio(entry, audio);
@@ -264,7 +263,6 @@ export class TtsQueue {
     } catch (value) {
       if (generation !== this.generation || this.synthesisAbort.signal.aborted) return;
       this.activeSynthesis = null;
-      this.activeSynthesisMode = null;
       this.onError(value instanceof Error ? value : new Error(String(value)), entry.item);
       await this.continueQueue();
     }
@@ -276,13 +274,11 @@ export class TtsQueue {
     if (!entry) return;
     const generation = this.generation;
     this.activeSynthesis = entry;
-    this.activeSynthesisMode = 'prebuffer';
     this.state = 'prebuffering';
 
     void this.tts.speak(entry.item.text, this.synthesisAbort.signal).then((audio) => {
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
-      this.activeSynthesisMode = null;
       this.preBuffer = { entry, audio };
       if (this.activePlayback) {
         this.state = 'prebuffering';
@@ -292,7 +288,6 @@ export class TtsQueue {
     }, (value) => {
       if (generation !== this.generation || this.synthesisAbort.signal.aborted) return;
       this.activeSynthesis = null;
-      this.activeSynthesisMode = null;
       this.onError(value instanceof Error ? value : new Error(String(value)), entry.item);
       if (this.activePlayback) {
         this.state = 'playing';
@@ -357,7 +352,6 @@ export class TtsQueue {
     this.synthesisAbort.abort();
     this.synthesisAbort = new AbortController();
     this.activeSynthesis = null;
-    this.activeSynthesisMode = null;
   }
 
   private clearPlaybackAckTimer(): void {

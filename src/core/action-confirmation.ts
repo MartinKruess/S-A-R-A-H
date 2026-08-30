@@ -58,7 +58,7 @@ export function resolveActionConfirmationIntent(value: string): ActionConfirmati
   if (!normalized) return 'none';
 
   if (
-    /\b(?:nein|abbruch|abbrechen|stopp|stoppen)\b/u.test(normalized)
+    /^(?:nein|abbruch|(?:bitte\s+)?abbrechen|stopp|stoppen)$/u.test(normalized)
     || /\b(?:doch|lieber)\s+nicht\b/u.test(normalized)
     || /\bnicht\s+(?:bestätigen|ausführen|buchen|bestellen|löschen|starten)\b/u.test(normalized)
     || /^(?:lass|lassen)\s+(?:es|das)(?:\s+sein)?$/u.test(normalized)
@@ -77,7 +77,6 @@ export function resolveActionConfirmationIntent(value: string): ActionConfirmati
   if (/^(?:ja[,\s]+)?(?:du\s+)?darfst\s+(?:das|diese\s+aktion|die aktion)(?:\s+ausführen)?$/u.test(normalized)) {
     return 'confirm';
   }
-  if (/^ja\b.*\b(?:darfst|mach|mache|ausführen)\b/u.test(normalized)) return 'confirm';
   if (/^(?:ja[,\s]+)?(?:mach|mache|führ|führe)\s+(?:das|die aktion)(?:\s+aus)?$/u.test(normalized)) {
     return 'confirm';
   }
@@ -121,6 +120,10 @@ export class ActionConfirmationGate {
         && pending.param === param
         && pending.sourceRequestId === sourceRequestId
       ) {
+        if (pending.requestedTurnId !== requestedTurnId) {
+          this.pending.delete(id);
+          break;
+        }
         pending.expiresAt = this.now() + this.ttlMs;
         return id;
       }

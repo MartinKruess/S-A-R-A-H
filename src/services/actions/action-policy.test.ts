@@ -57,6 +57,19 @@ describe('action policy', () => {
     });
   });
 
+  it('requires standard confirmation before cancelling every reminder', () => {
+    expect(evaluateActionPolicy('cancel_reminder', {
+      confirmationLevel: 'standard',
+      fileAccess: 'none',
+      param: 'all',
+    })).toMatchObject({ effect: 'confirm', metadata: { risk: 'sensitive' } });
+    expect(evaluateActionPolicy('cancel_reminder', {
+      confirmationLevel: 'standard',
+      fileAccess: 'none',
+      param: 'id=1',
+    }).effect).toBe('allow');
+  });
+
   it.each(['minimal', 'standard', 'maximal'] as const)(
     'uses the persistent browser grant instead of per-search confirmation at %s level',
     (confirmationLevel) => {

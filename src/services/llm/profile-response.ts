@@ -25,6 +25,11 @@ export function resolveProfileResponse(
 ): string | null {
   const normalized = text.normalize('NFC').trim();
   if (!NAME_QUESTION_PATTERNS.some((pattern) => pattern.test(normalized))) return null;
+  if (
+    /\b(?:und|aber|außerdem|danach|dann|anschließend|zusätzlich|sowie)\b/iu.test(normalized)
+    || /[.!?;:]\s*\p{L}/u.test(normalized)
+    || /[\r\n]/u.test(normalized)
+  ) return null;
 
   const name = profile.displayName.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200);
   return name ? `Du heißt ${name}.` : 'Du hast mir noch keinen Namen genannt.';

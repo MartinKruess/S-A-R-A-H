@@ -209,11 +209,20 @@ describe('ActionService', () => {
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();
-    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'r', action: 'set_timer', param: '1' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'r',
+      action: 'set_timer',
+      param: '1',
+      originMode: 'chat',
+      privateContext: true,
+    });
     await vi.advanceTimersByTimeAsync(60_000 + 50);
     expect(notifies).toEqual([expect.objectContaining({
       kind: 'timer',
       speak: 'Dein 1-Minuten-Timer ist abgelaufen.',
+      originMode: 'chat',
+      privateContext: true,
     })]);
     vi.useRealTimers();
   });
@@ -229,6 +238,7 @@ describe('ActionService', () => {
     expect(setTimer).toHaveBeenCalledWith(
       { durationSeconds: 330, label: 'Brötchen' },
       expect.any(AbortSignal),
+      { originMode: 'voice', privateContext: false },
     );
     expect(results[0]).toMatchObject({ action: 'set_timer', ok: true });
   });
@@ -244,6 +254,7 @@ describe('ActionService', () => {
     expect(setTimer).toHaveBeenCalledWith(
       { durationSeconds: 60 },
       expect.any(AbortSignal),
+      { originMode: 'voice', privateContext: false },
     );
   });
 
@@ -262,7 +273,7 @@ describe('ActionService', () => {
     expect(reminders.create).toHaveBeenCalledWith({
       dueLocal: '2026-08-30T10:45',
       text: 'Steuerberater anrufen',
-    });
+    }, expect.any(AbortSignal));
     expect(results[0]).toMatchObject({
       action: 'set_reminder',
       ok: true,
@@ -281,7 +292,7 @@ describe('ActionService', () => {
 
     await request(bus, 'list_reminders', 'today');
 
-    expect(reminders.list).toHaveBeenCalledWith('today');
+    expect(reminders.list).toHaveBeenCalledWith('today', expect.any(AbortSignal));
     expect(results[0]).toMatchObject({
       action: 'list_reminders',
       ok: true,

@@ -26,5 +26,9 @@ describe('resolveProfileResponse', () => {
 
   it('does not intercept broader profile or conversation questions', () => {
     expect(resolveProfileResponse('Was weißt du über mich?', profile('Martin'))).toBeNull();
+    expect(resolveProfileResponse('Wie heiße ich und öffne Spotify?', profile('Martin'))).toBeNull();
+    expect(resolveProfileResponse('Wie heiße ich, aber antworte ausführlich.', profile('Martin'))).toBeNull();
+    expect(resolveProfileResponse('Wie heiße ich? Öffne Spotify.', profile('Martin'))).toBeNull();
+    expect(resolveProfileResponse('Wie heiße ich; anschließend öffne Spotify.', profile('Martin'))).toBeNull();
   });
 });

@@ -55,7 +55,7 @@ export type BusEvents = {
   'storage:degraded':    { message: string };
   'privacy:incognito':   { active: boolean; turnId: TurnId };
   'search:discard-session': { requestId: string };
-  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference };
+  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference; originMode?: TurnMode; privateContext?: boolean };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };
   'action:result':       {
     turnId: TurnId;
@@ -67,7 +67,8 @@ export type BusEvents = {
       candidates: Array<{ id: number; dueLocal: string }>;
     };
   };
-  'action:notify':       { notificationId: string; kind: 'timer' | 'reminder'; speak: string };
+  'action:notify':       { notificationId: string; kind: 'timer' | 'reminder'; speak: string; originMode?: TurnMode; privateContext?: boolean };
+  'action:notify-accepted': { notificationId: string };
 };
 
 /** All valid bus topic strings */
