@@ -290,6 +290,7 @@ describe('bootstrap', () => {
   });
 
   it('shutdown is safe when called repeatedly', async () => {
+    expect(ctx.databasePersistent).toBe(true);
     await expect(Promise.all([ctx.shutdown(), ctx.shutdown()])).resolves.not.toThrow();
     expect(ctx.lifecycle.snapshot.state).toBe('stopped');
   });
@@ -308,6 +309,7 @@ describe('bootstrap', () => {
       state: 'degraded',
       message: expect.stringContaining('Datenbank ist nicht verfügbar'),
     });
+    expect(degraded.databasePersistent).toBe(false);
     expect(fs.readFileSync(dbPath, 'utf-8')).toBe('not a sqlite database');
     await degraded.shutdown();
     expect(() => fs.rmSync(brokenDir, { recursive: true, force: true })).not.toThrow();

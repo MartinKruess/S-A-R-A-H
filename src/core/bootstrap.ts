@@ -18,6 +18,8 @@ export interface AppContext {
   lifecycle: AppLifecycleController;
   config: StorageProvider;
   db: StorageProvider;
+  /** Whether writes to `db` survive an application restart. */
+  databasePersistent: boolean;
   /** Validated and defaulted config snapshot. Re-read after save-config. */
   parsedConfig: SarahConfig;
   /** Shared one-time authorization boundary for state-changing actions. */
@@ -262,6 +264,7 @@ export async function bootstrap(
       lifecycle,
       config,
       db,
+      databasePersistent: databaseError === null,
       parsedConfig,
       actionConfirmations,
       configErrors,

@@ -10,6 +10,21 @@ import type { MediaController } from './media-controller.js';
 import { ACTION_SCHEMAS, isActionName } from './action-schemas.js';
 import { evaluateActionPolicy } from './action-policy.js';
 import { parseTimerRequest, parseTimerSelector } from './timer-contract.js';
+import {
+  createSystemReminderClock,
+  parseCancelReminderParam,
+  parseListReminderParam,
+  parseSetReminderParam,
+  resolveReminderDueLocal,
+  type ReminderClock,
+} from './reminder-contract.js';
+import {
+  ReminderServiceError,
+  type ReminderCancelResult,
+  type ReminderCancelSelector,
+  type ReminderService,
+} from '../reminders/reminder-service.js';
+import type { ReminderAgendaItem } from '../reminders/reminder-types.js';
 import type { Trust } from '../../core/config-schema.js';
 import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
@@ -39,6 +54,8 @@ export interface ActionDeps {
   system: SystemActions;
   spotify: SpotifyActions;
   media: MediaController;
+  reminders: Pick<ReminderService, 'create' | 'list' | 'cancel'>;
+  reminderClock?: ReminderClock;
   confirmationGate?: ActionConfirmationGate;
   getConfirmationLevel?: () => ConfirmationLevel;
   getFileAccess?: () => Trust['fileAccess'];
@@ -51,6 +68,92 @@ export interface ActionServiceOptions {
 
 const DEFAULT_ACTION_DRAIN_TIMEOUT_MS = 2_000;
 
+type ActionExecutionResult = LaunchResult & {
+  reminderCancelAmbiguity?: BusEvents['action:result']['reminderCancelAmbiguity'];
+};
+
+function formatReminderDueLocal(dueLocal: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u.exec(dueLocal);
+  if (!match) return dueLocal;
+  return `${Number(match[3])}.${Number(match[2])}.${match[1]} um ${match[4]}:${match[5]} Uhr`;
+}
+
+function ensureSentence(value: string): string {
+  const trimmed = value.trim();
+  return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function formatReminderList(items: readonly ReminderAgendaItem[], scope: 'today' | 'upcoming'): string {
+  if (items.length === 0) {
+    return scope === 'today'
+      ? 'Heute stehen keine Erinnerungen an.'
+      : 'Es gibt keine offenen Erinnerungen.';
+  }
+  const heading = scope === 'today'
+    ? `Heute ${items.length === 1 ? 'steht eine Erinnerung' : `stehen ${items.length} Erinnerungen`} an.`
+    : `${items.length === 1 ? 'Eine Erinnerung ist' : `${items.length} Erinnerungen sind`} offen.`;
+  const entries = items.map((item, index) => (
+    `${index + 1}. ${formatReminderDueLocal(item.dueLocal)}: ${ensureSentence(item.text)}`
+  ));
+  return [heading, ...entries].join(' ');
+}
+
+function formatReminderCancelResult(result: ReminderCancelResult, all: boolean): ActionExecutionResult {
+  if (result.status === 'none') {
+    return { ok: false, speak: 'Ich finde keine passende offene Erinnerung.' };
+  }
+  if (result.status === 'ambiguous') {
+    return {
+      ok: false,
+      speak: `Es gibt mehrere passende Erinnerungen. Bitte nenne zusätzlich den Zeitpunkt, zum Beispiel: Die um 17:05 Uhr. ${formatReminderList(result.candidates, 'upcoming')}`,
+      reminderCancelAmbiguity: {
+        candidates: result.candidates.map(({ id, dueLocal }) => ({ id, dueLocal })),
+      },
+    };
+  }
+  if (result.status === 'already_firing') {
+    return { ok: false, speak: 'Die passende Erinnerung ist bereits fällig und wird gerade ausgegeben.' };
+  }
+  if (result.status === 'partially_cancelled') {
+    return {
+      ok: true,
+      speak: `${result.cancelled.length} Erinnerungen wurden abgebrochen. ${result.candidates.length} waren bereits fällig.`,
+    };
+  }
+  if (all) {
+    return {
+      ok: true,
+      speak: result.cancelled.length === 1
+        ? 'Die offene Erinnerung wurde abgebrochen.'
+        : `Alle ${result.cancelled.length} offenen Erinnerungen wurden abgebrochen.`,
+    };
+  }
+  const [cancelled] = result.cancelled;
+  return {
+    ok: true,
+    speak: cancelled
+      ? `Die Erinnerung „${cancelled.text}“ wurde abgebrochen.`
+      : 'Die Erinnerung wurde abgebrochen.',
+  };
+}
+
+function reminderErrorResult(error: object): LaunchResult {
+  if (error instanceof ReminderServiceError) {
+    switch (error.code) {
+      case 'not_persistent':
+        return { ok: false, speak: 'Persistente Erinnerungen sind gerade nicht verfügbar.' };
+      case 'past_due':
+        return { ok: false, speak: 'Dieser Zeitpunkt liegt bereits in der Vergangenheit.' };
+      case 'limit_reached':
+        return { ok: false, speak: 'Es sind bereits zu viele offene Erinnerungen gespeichert.' };
+      case 'invalid_input':
+      case 'not_initialized':
+        return { ok: false, speak: 'Die Erinnerung kann ich gerade nicht speichern.' };
+    }
+  }
+  return { ok: false, speak: 'Die Erinnerungsfunktion ist gerade nicht verfügbar.' };
+}
+
 /**
  * Validates and dispatches actions. Deliberately NO AppContext (Mi1):
  * only the bus and its concrete deps — it can never touch history or DB.
@@ -61,7 +164,7 @@ export class ActionService implements SarahService {
   status: ServiceStatus = 'pending';
   private activeActions = new Map<string, {
     turnId: string;
-    operation: Promise<LaunchResult>;
+    operation: Promise<ActionExecutionResult>;
     controller: AbortController;
   }>();
   private readonly seenRequestIds = new Set<string>();
@@ -85,7 +188,11 @@ export class ActionService implements SarahService {
 
   async init(): Promise<void> {
     this.deps.system.setNotifyHandler((speak) => {
-      this.bus.emit(this.id, 'action:notify', { notificationId: randomUUID(), speak });
+      this.bus.emit(this.id, 'action:notify', {
+        notificationId: randomUUID(),
+        kind: 'timer',
+        speak,
+      });
     });
     this.status = 'running';
   }
@@ -176,7 +283,7 @@ export class ActionService implements SarahService {
     requestId: string,
     action: string,
     param: string,
-    result: LaunchResult,
+    result: ActionExecutionResult,
   ): void {
     console.log('[Actions] completed', { action, ok: result.ok, hasSpeech: result.speak != null });
     // Exactly ONE result per request — also for silent successes (Spec §3).
@@ -186,6 +293,9 @@ export class ActionService implements SarahService {
       action,
       ok: result.ok,
       ...(result.speak != null && { speak: result.speak }),
+      ...(result.reminderCancelAmbiguity && {
+        reminderCancelAmbiguity: result.reminderCancelAmbiguity,
+      }),
     });
   }
 
@@ -204,7 +314,7 @@ export class ActionService implements SarahService {
     sourceRequestId: string | undefined,
     confirmation: BusEvents['action:request']['confirmation'],
     signal: AbortSignal,
-  ): Promise<LaunchResult> {
+  ): Promise<ActionExecutionResult> {
     throwIfAborted(signal);
     if (!isActionName(action)) {
       console.warn('[Actions] unknown action refused');
@@ -281,6 +391,55 @@ export class ActionService implements SarahService {
         return selector
           ? this.deps.system.cancelTimers(selector)
           : { ok: false, speak: 'Diesen Timer kann ich nicht eindeutig zuordnen.' };
+      }
+      case 'set_reminder': {
+        const reminder = parseSetReminderParam(parsed.data as string);
+        const clock = this.deps.reminderClock ?? createSystemReminderClock();
+        const dueLocal = reminder ? resolveReminderDueLocal(reminder.schedule, clock) : null;
+        if (!reminder || !dueLocal) {
+          return { ok: false, speak: 'Zeitpunkt und Inhalt der Erinnerung sind nicht eindeutig.' };
+        }
+        try {
+          const created = await this.deps.reminders.create({ dueLocal, text: reminder.text });
+          return {
+            ok: true,
+            speak: `Ich erinnere dich am ${formatReminderDueLocal(created.dueLocal)}: ${ensureSentence(created.text)}`,
+          };
+        } catch (error) {
+          return reminderErrorResult(error instanceof Error ? error : new Error('Reminder creation failed'));
+        }
+      }
+      case 'list_reminders': {
+        const scope = parseListReminderParam(parsed.data as string);
+        if (!scope) return { ok: false, speak: 'Diesen Zeitraum kann ich nicht auflisten.' };
+        try {
+          return { ok: true, speak: formatReminderList(await this.deps.reminders.list(scope), scope) };
+        } catch (error) {
+          return reminderErrorResult(error instanceof Error ? error : new Error('Reminder listing failed'));
+        }
+      }
+      case 'cancel_reminder': {
+        const request = parseCancelReminderParam(parsed.data as string);
+        if (!request) return { ok: false, speak: 'Diese Erinnerung kann ich nicht eindeutig zuordnen.' };
+        let selector: ReminderCancelSelector;
+        if (request.kind === 'all' || request.kind === 'id' || request.kind === 'text') {
+          selector = request;
+        } else {
+          const clock = this.deps.reminderClock ?? createSystemReminderClock();
+          const dueLocal = resolveReminderDueLocal(request.schedule, clock);
+          if (!dueLocal) return { ok: false, speak: 'Dieser Erinnerungszeitpunkt ist nicht eindeutig.' };
+          selector = request.text
+            ? { kind: 'exact', dueLocal, text: request.text }
+            : { kind: 'due', dueLocal };
+        }
+        try {
+          return formatReminderCancelResult(
+            await this.deps.reminders.cancel(selector),
+            request.kind === 'all',
+          );
+        } catch (error) {
+          return reminderErrorResult(error instanceof Error ? error : new Error('Reminder cancellation failed'));
+        }
       }
       case 'lock_screen':
         return this.deps.system.lockScreen(signal);

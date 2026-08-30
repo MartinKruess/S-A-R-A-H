@@ -45,6 +45,18 @@ import {
   parseTimerRequest,
   serializeTimerRequest,
 } from '../actions/timer-contract.js';
+import {
+  createSystemReminderClock,
+  parseCancelReminderParam,
+  parseSetReminderParam,
+  serializeCancelReminderParam,
+  serializeSetReminderParam,
+  type ReminderClock,
+} from '../actions/reminder-contract.js';
+import {
+  groundSetReminderRequest,
+  isCancelReminderRequestGrounded,
+} from '../actions/reminder-grounding.js';
 import { resolveProfileResponse } from './profile-response.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 import {
@@ -132,16 +144,99 @@ function groundTimerLabel(param: string, userText: string): string {
 }
 const DEFAULT_ACTION_RESULT_TIMEOUT_MS = 35_000;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+const REMINDER_CANCEL_FOLLOWUP_TIMEOUT_MS = 2 * 60_000;
 const DELETE_ALL_MEMORY_CONFIRMATION_TIMEOUT_MS = 2 * 60_000;
 const REMEMBER_INTENT_PATTERN = /\b(?:merk(?:e)?\s+dir|erinner(?:e)?\s+dich|behalt(?:e)?\s+(?:das|dies)|speicher(?:e)?\s+(?:dir\s+)?(?:als\s+)?erinnerung)\b/iu;
 const EXPLICIT_REMEMBER_PATTERN = /^(?:bitte\s+)?(?:merk(?:e)?\s+dir|behalt(?:e)?\s+(?:das|dies)|speicher(?:e)?\s+(?:dir\s+)?(?:als\s+)?erinnerung)\s*[:,]?\s+([\s\S]+)$/iu;
 const MEANINGLESS_MEMORY_PATTERN = /^(?:das|dies|dieses|daran|es)$/iu;
 const RESUME_SPEECH_PATTERN = /^[^\p{L}\p{N}]*(?:(?:ich\s+)?bin\s+)?wieder da[^\p{L}\p{N}]*$/u;
+const REMINDER_CANCEL_TIME_FOLLOWUP_PATTERN = /^(?:(?:die|der)(?:\s+erinnerung)?\s+)?(?:um\s+)?([01]?\d|2[0-3])(?:(?:[.:]\s*([0-5]\d))|(?:\s+uhr(?:\s+([0-5]?\d))?))(?:\s+uhr)?(?:\s+[\p{L}\p{N}][\p{L}\p{N}\s-]*)?[.!?]?$/iu;
+const REMINDER_CANCEL_INDEX_WORDS: Readonly<Record<string, number>> = {
+  eins: 1,
+  erste: 1,
+  erster: 1,
+  ersten: 1,
+  erstes: 1,
+  zwei: 2,
+  zweite: 2,
+  zweiter: 2,
+  zweiten: 2,
+  zweites: 2,
+  drei: 3,
+  dritte: 3,
+  dritter: 3,
+  dritten: 3,
+  drittes: 3,
+  vier: 4,
+  vierte: 4,
+  fünf: 5,
+  fünfte: 5,
+};
+
+function parseReminderCancelFollowupIndex(value: string): number | null {
+  const normalized = value.normalize('NFKC')
+    .trim()
+    .toLocaleLowerCase('de-DE')
+    .replace(/[.!?]+$/u, '')
+    .replace(/^(?:die|der|das|nummer)\s+/u, '')
+    .trim();
+  if (/^[1-9]\d*$/u.test(normalized)) return Number(normalized);
+  return REMINDER_CANCEL_INDEX_WORDS[normalized] ?? null;
+}
+
+function isExplicitReminderCreationIntent(value: string): boolean {
+  const normalized = value.normalize('NFKC').toLocaleLowerCase('de-DE');
+  if (/\btimers?\b/u.test(normalized)) return false;
+  return /\b(?:erinnerung|reminder)\b/u.test(normalized)
+    || /\berinner(?:e)?\s+mich\b/u.test(normalized);
+}
+
+function reminderFromMisroutedTimer(param: string, userText: string): string | null {
+  if (!isExplicitReminderCreationIntent(userText)) return null;
+  const timer = parseTimerRequest(param);
+  if (!timer?.label || timer.durationSeconds % 60 !== 0) return null;
+  return serializeSetReminderParam({
+    schedule: { kind: 'after', minutes: timer.durationSeconds / 60 },
+    text: timer.label,
+  });
+}
+
+function timerFromMisroutedReminder(param: string, userText: string): string | null {
+  const normalized = userText.normalize('NFKC').toLocaleLowerCase('de-DE');
+  if (!/\btimers?\b/u.test(normalized) || /\b(?:erinnerung|reminder)\b/u.test(normalized)) return null;
+  const reminder = parseSetReminderParam(param);
+  if (!reminder || reminder.schedule.kind !== 'after') return null;
+  return serializeTimerRequest({
+    durationSeconds: reminder.schedule.minutes * 60,
+    label: reminder.text,
+  });
+}
+
+function reminderCancelFromMisroutedSet(userText: string): string | null {
+  const match = /^\s*(?:lösche?|lösch|entferne?|brich|breche)\s+(?:bitte\s+)?(?:die\s+)?erinnerung\s+(.+?)(?:\s+ab)?[.!?]?\s*$/iu.exec(userText);
+  if (!match?.[1]) return null;
+  return serializeCancelReminderParam({ kind: 'text', text: match[1] });
+}
+
+function isActiveReminderListShortcut(userText: string): boolean {
+  const normalized = userText.normalize('NFKC')
+    .trim()
+    .toLocaleLowerCase('de-DE')
+    .replace(/[.!?]+$/u, '')
+    .trim();
+  return /^(?:zeige\s+(?:mir\s+)?)?(?:die\s+)?(?:aktiven?|alle)\s+erinnerung(?:en)?$/u.test(normalized);
+}
+
+type ReminderCancelFollowupContext = {
+  candidates: Array<{ id: number; dueLocal: string }>;
+  expiresAt: number;
+};
 
 export interface RouterServiceOptions {
   memoryPolicyWaitTimeoutMs?: number;
   actionResultTimeoutMs?: number;
   shutdownDrainTimeoutMs?: number;
+  reminderClock?: ReminderClock;
 }
 
 export class RouterService implements SarahService {
@@ -199,11 +294,13 @@ export class RouterService implements SarahService {
   private memoryPolicyBarrier: Promise<void> | null = null;
   private memoryMutationQueue: Promise<void> = Promise.resolve();
   private pendingDeleteAllMemories: { ids: number[]; expiresAt: number } | null = null;
+  private pendingReminderCancelFollowup: ReminderCancelFollowupContext | null = null;
   private readonly shutdownAbort = new AbortController();
   private shuttingDown = false;
   private readonly memoryPolicyWaitTimeoutMs: number;
   private readonly actionResultTimeoutMs: number;
   private readonly shutdownDrainTimeoutMs: number;
+  private readonly reminderClock: ReminderClock;
 
   constructor(
     private context: AppContext,
@@ -218,6 +315,7 @@ export class RouterService implements SarahService {
       ?? DEFAULT_ACTION_RESULT_TIMEOUT_MS;
     this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs
       ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    this.reminderClock = options.reminderClock ?? createSystemReminderClock();
     if ('generateWorkerText' in runtimeOrRouterProvider) {
       this.modelRuntime = runtimeOrRouterProvider;
       this.mediaContext = workerProviderOrMediaContext instanceof MediaContext
@@ -347,6 +445,7 @@ export class RouterService implements SarahService {
     this.incognitoActive = false;
     this.incognitoHistoryTurnIds.clear();
     this.pendingDeleteAllMemories = null;
+    this.pendingReminderCancelFollowup = null;
     this.mediaContext.clear();
     this.context.actionConfirmations.clear();
     try {
@@ -383,9 +482,14 @@ export class RouterService implements SarahService {
         return;
       }
       this.pendingActions.delete(requestId);
+      if (action === 'cancel_reminder') {
+        this.pendingReminderCancelFollowup = this.createReminderCancelFollowupContext(
+          msg.data.reminderCancelAmbiguity,
+        );
+      }
       pending.resolve(msg.data);
     } else if (msg.topic === 'action:notify') {
-      this.emitSystemNotification(msg.data.notificationId, msg.data.speak);
+      this.emitSystemNotification(msg.data.notificationId, msg.data.speak, msg.data.kind);
     }
   }
 
@@ -395,8 +499,12 @@ export class RouterService implements SarahService {
     }
   }
 
-  /** Publishes timer speech immediately while keeping its visible output serialized. */
-  private emitSystemNotification(turnId: TurnId, text: string): void {
+  /** Publishes deadline speech immediately while keeping its visible output serialized. */
+  private emitSystemNotification(
+    turnId: TurnId,
+    text: string,
+    _kind: BusEvents['action:notify']['kind'],
+  ): void {
     if (!this.isOperational()) return;
     if (!this.context.bus.isTurnKnown(turnId)) {
       const accepted = this.context.bus.emit(this.id, 'turn:accepted', {
@@ -598,6 +706,8 @@ export class RouterService implements SarahService {
         await this.confirmSpokenAction(envelope, signal);
       } else if (confirmationIntent === 'cancel') {
         await this.cancelPendingAction(envelope, signal);
+      } else if (await this.handleReminderCancelFollowup(envelope, signal)) {
+        // A structured ambiguity result authorizes exactly one time-only follow-up.
       } else {
         await this.runTurn(envelope, signal);
       }
@@ -999,6 +1109,15 @@ export class RouterService implements SarahService {
 
   private async routeAndRespond(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
     const { effectiveText: text, mode, turnId } = envelope;
+    if (isActiveReminderListShortcut(envelope.normalizedText)) {
+      await this.dispatchOrRequestConfirmation(
+        envelope,
+        'list_reminders',
+        'upcoming',
+        signal,
+      );
+      return;
+    }
     const result = await this.modelRuntime.route(text, signal);
     if (!this.isTurnOperational(turnId, signal)) return;
     this.context.bus.emit(this.id, 'perf:timing', { turnId, label: 'router', ms: result.tookMs });
@@ -1014,10 +1133,23 @@ export class RouterService implements SarahService {
         await this.emitAssistantResponse(turnId, 'Das kann ich noch nicht.', signal);
         return;
       }
+      const explicitCancelReminderParam = reminderCancelFromMisroutedSet(envelope.normalizedText);
+      const reminderParam = action === 'set_timer'
+        ? reminderFromMisroutedTimer(param, envelope.normalizedText)
+        : null;
+      const timerParam = action === 'set_reminder'
+        ? timerFromMisroutedReminder(param, envelope.normalizedText)
+        : null;
       await this.dispatchOrRequestConfirmation(
         envelope,
-        action,
-        param,
+        explicitCancelReminderParam
+          ? 'cancel_reminder'
+          : reminderParam
+            ? 'set_reminder'
+            : timerParam
+              ? 'set_timer'
+              : action,
+        explicitCancelReminderParam ?? reminderParam ?? timerParam ?? param,
         signal,
       );
       return;
@@ -1272,10 +1404,52 @@ export class RouterService implements SarahService {
     action: ActionName,
     param: string,
     signal: AbortSignal,
+    reminderCancelFollowupId?: number,
   ): Promise<void> {
-    const groundedParam = action === 'set_timer'
+    let groundedParam = action === 'set_timer'
       ? groundTimerLabel(param, envelope.normalizedText)
       : param;
+    if (action === 'set_reminder') {
+      const request = parseSetReminderParam(param);
+      const grounding = request
+        ? groundSetReminderRequest(request, envelope.normalizedText, this.reminderClock)
+        : null;
+      if (!grounding?.ok) {
+        const response = grounding?.reason === 'non_future_time'
+          ? 'Der genannte Zeitpunkt liegt bereits in der Vergangenheit. Bitte nenne einen zukünftigen Zeitpunkt.'
+          : grounding?.reason === 'ungrounded_text'
+            ? 'Ich konnte den Inhalt der Erinnerung nicht eindeutig aus deiner Anfrage übernehmen. Bitte nenne Zeitpunkt und Inhalt noch einmal zusammen.'
+            : grounding?.reason === 'ungrounded_time'
+              ? 'Ich konnte den genannten Zeitpunkt nicht sicher zuordnen. Bitte nenne Zeitpunkt und Inhalt noch einmal zusammen.'
+              : 'Bitte nenne den vollständigen Erinnerungswunsch mit eindeutigem Zeitpunkt und Inhalt.';
+        await this.emitAssistantResponse(
+          envelope.turnId,
+          response,
+          signal,
+        );
+        return;
+      }
+      groundedParam = grounding.canonicalParam;
+    } else if (action === 'cancel_reminder') {
+      const request = parseCancelReminderParam(param);
+      const groundedByFollowupContext = request?.kind === 'id'
+        && request.id === reminderCancelFollowupId;
+      const canonical = request && (
+        groundedByFollowupContext
+        || isCancelReminderRequestGrounded(request, envelope.normalizedText)
+      )
+        ? serializeCancelReminderParam(request)
+        : null;
+      if (!canonical) {
+        await this.emitAssistantResponse(
+          envelope.turnId,
+          'Diese Erinnerung kann ich aus deiner Angabe nicht eindeutig zuordnen.',
+          signal,
+        );
+        return;
+      }
+      groundedParam = canonical;
+    }
     const parsed = ACTION_SCHEMAS[action].safeParse(groundedParam);
     if (!parsed.success) {
       await this.emitAssistantResponse(envelope.turnId, 'Das kann ich noch nicht.', signal);
@@ -1316,6 +1490,97 @@ export class RouterService implements SarahService {
       return;
     }
     await this.dispatchAction(envelope, action, validatedParam, validatedAcknowledgement, signal);
+  }
+
+  private createReminderCancelFollowupContext(
+    ambiguity: BusEvents['action:result']['reminderCancelAmbiguity'],
+  ): ReminderCancelFollowupContext | null {
+    if (!ambiguity || ambiguity.candidates.length < 2) return null;
+    const candidates: Array<{ id: number; dueLocal: string }> = [];
+    const ids = new Set<number>();
+    for (const candidate of ambiguity.candidates) {
+      if (
+        !Number.isSafeInteger(candidate.id)
+        || candidate.id <= 0
+        || ids.has(candidate.id)
+        || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d$/u.test(candidate.dueLocal)
+      ) return null;
+      ids.add(candidate.id);
+      candidates.push({ id: candidate.id, dueLocal: candidate.dueLocal });
+    }
+    return {
+      candidates,
+      expiresAt: this.reminderClock.nowMs() + REMINDER_CANCEL_FOLLOWUP_TIMEOUT_MS,
+    };
+  }
+
+  private async handleReminderCancelFollowup(
+    envelope: TurnEnvelope,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const context = this.pendingReminderCancelFollowup;
+    if (!context) return false;
+    if (this.reminderClock.nowMs() > context.expiresAt) {
+      this.pendingReminderCancelFollowup = null;
+      return false;
+    }
+    const followupText = envelope.normalizedText.trim();
+    const selectedIndex = parseReminderCancelFollowupIndex(followupText);
+    const timeMatch = selectedIndex === null
+      ? REMINDER_CANCEL_TIME_FOLLOWUP_PATTERN.exec(followupText)
+      : null;
+    if (selectedIndex === null && !timeMatch) {
+      this.pendingReminderCancelFollowup = null;
+      return false;
+    }
+
+    if (selectedIndex !== null) {
+      const candidate = context.candidates[selectedIndex - 1];
+      if (!candidate) {
+        await this.emitAssistantResponse(
+          envelope.turnId,
+          `Es gibt keine Erinnerung mit der Nummer ${selectedIndex} in dieser Auswahl.`,
+          signal,
+        );
+        return true;
+      }
+      this.pendingReminderCancelFollowup = null;
+      await this.dispatchOrRequestConfirmation(
+        envelope,
+        'cancel_reminder',
+        `id=${candidate.id}`,
+        signal,
+        candidate.id,
+      );
+      return true;
+    }
+
+    if (!timeMatch) return true;
+    const hour = timeMatch[1].padStart(2, '0');
+    const minute = (timeMatch[2] ?? timeMatch[3] ?? '00').padStart(2, '0');
+    const matches = context.candidates.filter((candidate) => candidate.dueLocal.endsWith(`T${hour}:${minute}`));
+    if (matches.length !== 1) {
+      await this.emitAssistantResponse(
+        envelope.turnId,
+        matches.length === 0
+          ? 'Zu dieser Uhrzeit finde ich unter den genannten Erinnerungen keine passende.'
+          : 'Zu dieser Uhrzeit gibt es weiterhin mehrere passende Erinnerungen.',
+        signal,
+      );
+      return true;
+    }
+
+    const [candidate] = matches;
+    if (!candidate) return true;
+    this.pendingReminderCancelFollowup = null;
+    await this.dispatchOrRequestConfirmation(
+      envelope,
+      'cancel_reminder',
+      `id=${candidate.id}`,
+      signal,
+      candidate.id,
+    );
+    return true;
   }
 
   private markBrowserSearchIntentTransient(turnId: TurnId, action: ActionName): void {

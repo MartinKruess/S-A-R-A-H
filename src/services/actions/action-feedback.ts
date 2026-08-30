@@ -4,6 +4,11 @@ import {
   parseTimerRequest,
   parseTimerSelector,
 } from './timer-contract.js';
+import {
+  parseCancelReminderParam,
+  parseListReminderParam,
+  parseSetReminderParam,
+} from './reminder-contract.js';
 
 function safeTarget(param: string): string {
   const target = param.replace(/[\r\n\t]/g, ' ').trim().slice(0, 100);
@@ -67,6 +72,18 @@ export function getActionAcknowledgement(action: ActionName, param: string): str
         ? `Ich prüfe den ${selector.label}-Timer.`
         : `Ich prüfe die Timer mit ${formatTimerDuration(selector.durationSeconds)} Laufzeit.`;
     }
+    case 'set_reminder':
+      return parseSetReminderParam(param)
+        ? 'Ich speichere die Erinnerung.'
+        : 'Ich prüfe die Erinnerung.';
+    case 'list_reminders':
+      return parseListReminderParam(param) === 'today'
+        ? 'Ich schaue nach den heutigen Erinnerungen.'
+        : 'Ich schaue nach deinen offenen Erinnerungen.';
+    case 'cancel_reminder':
+      return parseCancelReminderParam(param)?.kind === 'all'
+        ? 'Ich prüfe alle offenen Erinnerungen.'
+        : 'Ich prüfe die passende Erinnerung.';
     case 'lock_screen':
       return 'Ich sperre den Bildschirm.';
   }
@@ -100,6 +117,19 @@ export function getActionConfirmationDescription(action: ActionName, param: stri
       return selector.kind === 'label'
         ? `den ${selector.label}-Timer abbrechen`
         : `den Timer mit ${formatTimerDuration(selector.durationSeconds)} Laufzeit abbrechen`;
+    }
+    case 'set_reminder': {
+      const reminder = parseSetReminderParam(param);
+      return reminder
+        ? `eine Erinnerung an „${safeTarget(reminder.text)}“ speichern`
+        : 'eine Erinnerung speichern';
+    }
+    case 'list_reminders':
+      return 'die offenen Erinnerungen anzeigen';
+    case 'cancel_reminder': {
+      const reminder = parseCancelReminderParam(param);
+      if (reminder?.kind === 'all') return 'alle offenen Erinnerungen abbrechen';
+      return 'die ausgewählte Erinnerung abbrechen';
     }
     case 'lock_screen':
       return 'den Bildschirm sperren';

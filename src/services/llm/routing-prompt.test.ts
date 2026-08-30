@@ -41,10 +41,23 @@ describe('buildRoutingPrompt output contract', () => {
     expect(prompt).toContain('[ACTION:cancel_timer:all]');
   });
 
-  it('routes absolute clock times and reminders away from relative timer actions', () => {
-    const prompt = buildRoutingPrompt();
+  it('defines persistent reminders separately from relative timers', () => {
+    const prompt = buildRoutingPrompt(new Date(2026, 7, 30, 15, 22));
 
     expect(prompt).toContain('Absolute clock times and reminders are not timers');
-    expect(prompt).toContain('User: Erinnere mich um 13:45 Uhr\n[ROUTE:9b]');
+    expect(prompt).toContain('The local system clock is 2026-08-30 15:22, weekday=sun');
+    expect(prompt).toContain('[ACTION:set_reminder:after=30m|text=Steuerberater anrufen]');
+    expect(prompt).toContain('[ACTION:set_reminder:at=tomorrow@11:00|text=Steuerberater anrufen]');
+    expect(prompt).toContain('[ACTION:set_reminder:at=today@17:04|text=Reminder-Test]');
+    expect(prompt).toContain('[ACTION:set_reminder:at=time@17:05|text=Remindertest]');
+    expect(prompt).toContain('[ACTION:set_reminder:at=date:2026-08-30@17:06|text=Remindertest]');
+    expect(prompt).toContain('[ACTION:set_reminder:after=10m|text=Haare schneiden]');
+    expect(prompt).toContain('[ACTION:cancel_reminder:text=Essen]');
+    expect(prompt).toContain('[ACTION:set_timer:3m|Eier kochen]');
+    expect(prompt).toContain('[ACTION:list_reminders:upcoming]');
+    expect(prompt).toContain('[ACTION:list_reminders:today]');
+    expect(prompt).toContain('[ACTION:cancel_reminder:all]');
+    expect(prompt).toContain('User: Erinnere mich morgen an den Steuerberater\n[ROUTE:9b]');
+    expect(prompt).toContain('User: Erinnere mich in 30 Sekunden an die Brötchen\n[ROUTE:9b]');
   });
 });

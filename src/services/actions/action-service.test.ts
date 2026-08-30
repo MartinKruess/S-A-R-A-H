@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ActionService } from './action-service.js';
-import type { SearchLike } from './action-service.js';
+import type { ActionDeps, SearchLike } from './action-service.js';
 import { SystemActions } from './system-actions.js';
 import type { SpotifyActions } from './spotify-actions.js';
 import type { MediaController, MediaResult } from './media-controller.js';
@@ -8,6 +8,7 @@ import { MessageBus } from '../../core/message-bus.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
 import { ActionConfirmationGate, type ConfirmationLevel } from '../../core/action-confirmation.js';
+import type { ReminderClock } from './reminder-contract.js';
 
 const TURN_ID = 'turn-1';
 
@@ -38,6 +39,18 @@ function makeMedia(): MediaController {
   };
 }
 
+function makeReminders(): ActionDeps['reminders'] {
+  return {
+    create: vi.fn().mockImplementation(async (input: { dueLocal: string; text: string }) => ({
+      kind: 'reminder' as const,
+      id: 1,
+      ...input,
+    })),
+    list: vi.fn().mockResolvedValue([]),
+    cancel: vi.fn().mockResolvedValue({ status: 'none', cancelled: [], candidates: [] }),
+  };
+}
+
 function makeService(over: {
   launcher?: Partial<ProgramLauncher>;
   search?: Parameters<typeof makeSearch>[0];
@@ -48,6 +61,8 @@ function makeService(over: {
   confirmationGate?: ActionConfirmationGate;
   confirmationLevel?: ConfirmationLevel;
   webAccessAllowed?: boolean;
+  reminders?: ActionDeps['reminders'];
+  reminderClock?: ReminderClock;
 } = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController; system: SystemActions } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
@@ -66,6 +81,8 @@ function makeService(over: {
       system,
       spotify,
       media,
+      reminders: over.reminders ?? makeReminders(),
+      reminderClock: over.reminderClock,
       confirmationGate: over.confirmationGate,
       getConfirmationLevel: () => over.confirmationLevel ?? 'standard',
       getWebAccessAllowed: () => over.webAccessAllowed ?? true,
@@ -188,13 +205,16 @@ describe('ActionService', () => {
     const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
-      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(),
+      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(), reminders: makeReminders(),
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();
     bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'r', action: 'set_timer', param: '1' });
     await vi.advanceTimersByTimeAsync(60_000 + 50);
-    expect(notifies).toEqual([expect.objectContaining({ speak: 'Dein 1-Minuten-Timer ist abgelaufen.' })]);
+    expect(notifies).toEqual([expect.objectContaining({
+      kind: 'timer',
+      speak: 'Dein 1-Minuten-Timer ist abgelaufen.',
+    })]);
     vi.useRealTimers();
   });
 
@@ -225,6 +245,78 @@ describe('ActionService', () => {
       { durationSeconds: 60 },
       expect.any(AbortSignal),
     );
+  });
+
+  it('resolves and persists a canonical relative reminder', async () => {
+    const reminders = makeReminders();
+    const nowMs = Date.parse('2026-08-30T10:15:00.000Z');
+    const reminderClock: ReminderClock = {
+      nowMs: () => nowMs,
+      toLocal: (epochMs) => new Date(epochMs).toISOString().slice(0, 16),
+    };
+    const { bus, results, service } = makeService({ reminders, reminderClock });
+    await service.init();
+
+    await request(bus, 'set_reminder', 'after=30m|text=Steuerberater anrufen');
+
+    expect(reminders.create).toHaveBeenCalledWith({
+      dueLocal: '2026-08-30T10:45',
+      text: 'Steuerberater anrufen',
+    });
+    expect(results[0]).toMatchObject({
+      action: 'set_reminder',
+      ok: true,
+      speak: expect.stringContaining('30.8.2026 um 10:45 Uhr'),
+    });
+  });
+
+  it('lists reminders chronologically through the reminder service', async () => {
+    const reminders = makeReminders();
+    vi.mocked(reminders.list).mockResolvedValue([
+      { kind: 'reminder', id: 1, dueLocal: '2026-08-30T11:00', text: 'Steuerberater anrufen' },
+      { kind: 'reminder', id: 2, dueLocal: '2026-08-30T12:30', text: 'Losfahren' },
+    ]);
+    const { bus, results, service } = makeService({ reminders });
+    await service.init();
+
+    await request(bus, 'list_reminders', 'today');
+
+    expect(reminders.list).toHaveBeenCalledWith('today');
+    expect(results[0]).toMatchObject({
+      action: 'list_reminders',
+      ok: true,
+      speak: expect.stringContaining('2 Erinnerungen'),
+    });
+  });
+
+  it('does not cancel any reminder when the domain reports ambiguity', async () => {
+    const reminders = makeReminders();
+    vi.mocked(reminders.cancel).mockResolvedValue({
+      status: 'ambiguous',
+      cancelled: [],
+      candidates: [
+        { kind: 'reminder', id: 1, dueLocal: '2026-08-30T11:00', text: 'Steuerberater' },
+        { kind: 'reminder', id: 2, dueLocal: '2026-08-30T12:00', text: 'Steuerberater' },
+      ],
+    });
+    const { bus, results, service } = makeService({ reminders });
+    await service.init();
+
+    await request(bus, 'cancel_reminder', 'text=Steuerberater');
+
+    expect(results[0]).toMatchObject({
+      action: 'cancel_reminder',
+      ok: false,
+      speak: expect.stringContaining('mehrere passende Erinnerungen'),
+      reminderCancelAmbiguity: {
+        candidates: [
+          { id: 1, dueLocal: '2026-08-30T11:00' },
+          { id: 2, dueLocal: '2026-08-30T12:00' },
+        ],
+      },
+    });
+    expect(results[0].speak).toContain('Die um 17:05 Uhr');
+    expect(results[0].reminderCancelAmbiguity?.candidates[0]).not.toHaveProperty('text');
   });
 
   it.each([
@@ -288,7 +380,7 @@ describe('ActionService', () => {
     const system = new SystemActions({ execFn: vi.fn((_c, _a, cb) => cb(null)), platform: 'win32' });
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
-      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(),
+      getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(), reminders: makeReminders(),
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     bus.on('turn:cancel', (msg) => service.onMessage(msg));

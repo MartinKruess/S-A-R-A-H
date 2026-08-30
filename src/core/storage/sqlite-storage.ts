@@ -19,7 +19,25 @@ import {
   MESSAGES_PAGE_MAX_LIMIT,
 } from './storage.interface.js';
 
-export const SQLITE_SCHEMA_VERSION = 1;
+export const SQLITE_SCHEMA_VERSION = 2;
+
+const REMINDERS_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS reminders (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    due_local    TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'pending'
+                 CHECK (state IN ('pending', 'firing', 'delivered', 'cancelled')),
+    source_kind  TEXT NOT NULL DEFAULT 'local' CHECK (source_kind IN ('local')),
+    external_id  TEXT,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    firing_at    TEXT,
+    delivered_at TEXT,
+    cancelled_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_reminders_state ON reminders(state);
+`;
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS kv_store (
@@ -159,6 +177,11 @@ export class SqliteStorage implements StorageProvider {
               this.migrateMemoryStaging(db);
               this.migrateStorageQuarantine(db);
               version = 1;
+              db.pragma(`user_version = ${version}`);
+              break;
+            case 1:
+              db.exec(REMINDERS_SCHEMA);
+              version = 2;
               db.pragma(`user_version = ${version}`);
               break;
             default:

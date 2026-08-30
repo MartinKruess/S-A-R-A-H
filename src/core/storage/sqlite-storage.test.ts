@@ -341,6 +341,12 @@ describe('SqliteStorage', () => {
       await storage.insert('conversations', { mode: 'ambient', summary: 'test' });
       await storage.insert('messages', { conversation_id: 1, role: 'user', content: 'hi' });
       await storage.insert('learned_facts', { category: 'test', fact: 'test', confidence: 0.9, source: 'user' });
+      await storage.insert('reminders', {
+        due_local: '2026-08-31T10:00',
+        text: 'test',
+        state: 'pending',
+        source_kind: 'local',
+      });
 
       expect(await storage.query('absolute_rules')).toHaveLength(1);
       expect(await storage.query('persistent_rules')).toHaveLength(1);
@@ -348,6 +354,59 @@ describe('SqliteStorage', () => {
       expect(await storage.query('conversations')).toHaveLength(1);
       expect(await storage.query('messages')).toHaveLength(1);
       expect(await storage.query('learned_facts')).toHaveLength(1);
+      expect(await storage.query('reminders')).toHaveLength(1);
+    });
+
+    it('migrates schema v1 to v2 without losing existing data', async () => {
+      const dbPath = path.join(tmpDir, 'v1-reminder-migration.db');
+      const raw = new Database(dbPath);
+      raw.exec(`
+        CREATE TABLE persistent_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          category TEXT NOT NULL DEFAULT '',
+          rule TEXT NOT NULL,
+          created_at TEXT,
+          updated_at TEXT
+        );
+        INSERT INTO persistent_rules (category, rule) VALUES ('keep', 'existing');
+      `);
+      raw.pragma('user_version = 1');
+      raw.close();
+
+      const migrated = new SqliteStorage(dbPath);
+      expect(await migrated.query<{ rule: string }>('persistent_rules')).toEqual([
+        expect.objectContaining({ rule: 'existing' }),
+      ]);
+      const reminderId = await migrated.insert('reminders', {
+        due_local: '2026-09-01T08:00',
+        text: 'Migration prüfen',
+        state: 'pending',
+        source_kind: 'local',
+      });
+      expect(reminderId).toBe(1);
+      await migrated.close();
+
+      const verified = new Database(dbPath, { readonly: true });
+      expect(verified.pragma('user_version', { simple: true })).toBe(2);
+      expect(verified.prepare('SELECT COUNT(*) FROM reminders').pluck().get()).toBe(1);
+      verified.close();
+    });
+
+    it('rolls back the v1 to v2 migration when the reminder schema conflicts', () => {
+      const dbPath = path.join(tmpDir, 'broken-reminder-migration.db');
+      const raw = new Database(dbPath);
+      raw.exec('CREATE TABLE reminders (id INTEGER PRIMARY KEY);');
+      raw.pragma('user_version = 1');
+      raw.close();
+
+      expect(() => new SqliteStorage(dbPath)).toThrow();
+
+      const unchanged = new Database(dbPath, { readonly: true });
+      expect(unchanged.pragma('user_version', { simple: true })).toBe(1);
+      expect(unchanged.pragma('table_info(reminders)')).toEqual([
+        expect.objectContaining({ name: 'id' }),
+      ]);
+      unchanged.close();
     });
 
     it('atomically completes a staging item without duplicating curated memory', async () => {

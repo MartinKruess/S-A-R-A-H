@@ -36,6 +36,27 @@ describe('action policy', () => {
     },
   );
 
+  it.each(['set_reminder', 'cancel_reminder'] as const)(
+    'treats %s as a reversible local reminder action without standard confirmation',
+    (action) => {
+      expect(evaluateActionPolicy(action, {
+        confirmationLevel: 'standard', fileAccess: 'none',
+      })).toMatchObject({
+        effect: 'allow',
+        metadata: { permission: 'system.reminder', risk: 'reversible' },
+      });
+    },
+  );
+
+  it('treats reminder listing as read-only', () => {
+    expect(evaluateActionPolicy('list_reminders', {
+      confirmationLevel: 'standard', fileAccess: 'none',
+    })).toMatchObject({
+      effect: 'allow',
+      metadata: { permission: 'system.reminder', risk: 'read' },
+    });
+  });
+
   it.each(['minimal', 'standard', 'maximal'] as const)(
     'uses the persistent browser grant instead of per-search confirmation at %s level',
     (confirmationLevel) => {
