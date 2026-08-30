@@ -14,11 +14,14 @@ export interface RoutingResult {
 }
 
 export class RoutingService {
-  constructor(private provider: LlmProvider) {}
+  constructor(
+    private provider: LlmProvider,
+    private now: () => Date = () => new Date(),
+  ) {}
 
   async route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
     const messages: ChatMessage[] = [
-      { role: 'system', content: buildRoutingPrompt() },
+      { role: 'system', content: buildRoutingPrompt(this.now()) },
       { role: 'user', content: text },
     ];
     const start = performance.now();

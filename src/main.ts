@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, powerMonitor } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import { bootstrap, repairInvalidConfig, AppContext } from './core/bootstrap.js';
 import { RouterService } from './services/llm/router-service.js';
 import { OllamaContainerManager } from './services/llm/ollama-container-manager.js';
@@ -11,6 +12,8 @@ import { ProgramLauncher } from './main/program-launcher.js';
 import { SystemActions } from './services/actions/system-actions.js';
 import { SpotifyActions } from './services/actions/spotify-actions.js';
 import { ActionService } from './services/actions/action-service.js';
+import { ReminderStore } from './services/reminders/reminder-store.js';
+import { ReminderService } from './services/reminders/reminder-service.js';
 import { WindowsMediaController } from './services/actions/media-controller.js';
 import { SearchService } from './services/search/search-service.js';
 import { EmbeddedBrowserSearchProvider } from './services/search/embedded-browser-search-provider.js';
@@ -267,6 +270,23 @@ function startPrimaryInstance(): void {
   const mediaController = new WindowsMediaController(
     path.join(resourcesPath, 'media-helper', 'media-helper.exe'),
   );
+  const reminderStore = new ReminderStore(appContext.db, {
+    persistent: appContext.databasePersistent,
+  });
+  const reminderService = new ReminderService({
+    store: reminderStore,
+    notify: (notification) => {
+      if (routerService.status !== 'running') return false;
+      return appContext!.bus.emit('reminders', 'action:notify', {
+        notificationId: randomUUID(),
+        kind: 'reminder',
+        speak: notification.speak,
+      });
+    },
+    onError: (error) => {
+      console.warn('[Reminders] Reconcile failed', { name: error.name });
+    },
+  });
 
   const actionService = new ActionService(appContext.bus, {
     launcher: programLauncher,
@@ -275,6 +295,7 @@ function startPrimaryInstance(): void {
     system: systemActions,
     spotify: spotifyActions,
     media: mediaController,
+    reminders: reminderService,
     confirmationGate: appContext.actionConfirmations,
     getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
     getFileAccess: () => appContext!.parsedConfig.trust.fileAccess,
@@ -309,6 +330,19 @@ function startPrimaryInstance(): void {
     hotkeyManager,
   );
   appContext.registry.register(voiceService);
+  appContext.registry.register(reminderService);
+  const reconcileRemindersAfterResume = (): void => {
+    if (reminderService.status !== 'running') return;
+    void reminderService.reconcile().catch((error: object) => {
+      console.warn('[Reminders] Resume reconcile failed', {
+        name: error instanceof Error ? error.name : 'NonError',
+      });
+    });
+  };
+  powerMonitor.on('resume', reconcileRemindersAfterResume);
+  appContext.lifecycle.registerCleanup('reminder-power-monitor', () => {
+    powerMonitor.removeListener('resume', reconcileRemindersAfterResume);
+  }, 'before_services');
   let stopVoiceRendererLifecycle: (() => void) | null = null;
   let stopPrimaryRendererRecovery: (() => void) | null = null;
   let replacementUsed = false;

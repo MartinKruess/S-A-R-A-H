@@ -71,6 +71,29 @@ describe('ACTION_SCHEMAS boundaries', () => {
     expect(ACTION_SCHEMAS.cancel_timer.safeParse('duration=25h').success).toBe(false);
   });
 
+  it('canonicalizes reminder set, list and cancel parameters', () => {
+    expect(ACTION_SCHEMAS.set_reminder.safeParse(
+      'after=90m|text=  Steuerberater anrufen  ',
+    )).toMatchObject({
+      success: true,
+      data: 'after=1h30m|text=Steuerberater anrufen',
+    });
+    expect(ACTION_SCHEMAS.set_reminder.safeParse(
+      'at=tomorrow@11:00|text=Steuerberater anrufen',
+    ).success).toBe(true);
+    expect(ACTION_SCHEMAS.list_reminders.safeParse(' TODAY ')).toMatchObject({
+      success: true,
+      data: 'today',
+    });
+    expect(ACTION_SCHEMAS.cancel_reminder.safeParse('text=  Steuerberater  ')).toMatchObject({
+      success: true,
+      data: 'text=Steuerberater',
+    });
+    expect(ACTION_SCHEMAS.set_reminder.safeParse('after=30s|text=Brötchen').success).toBe(false);
+    expect(ACTION_SCHEMAS.set_reminder.safeParse('after=30m').success).toBe(false);
+    expect(ACTION_SCHEMAS.cancel_reminder.safeParse('Steuerberater').success).toBe(false);
+  });
+
   it('query lengths: web_search 2..200, open_program 1..100, show_browser 1..100', () => {
     expect(ACTION_SCHEMAS.web_search.safeParse('a').success).toBe(false);
     expect(ACTION_SCHEMAS.web_search.safeParse('ab').success).toBe(true);
@@ -94,6 +117,7 @@ describe('ACTION_SCHEMAS boundaries', () => {
 
   it('isActionName is a strict allowlist', () => {
     expect(isActionName('open_program')).toBe(true);
+    expect(isActionName('set_reminder')).toBe(true);
     expect(isActionName('send_all_data')).toBe(false);
     expect(isActionName('')).toBe(false);
   });
@@ -120,6 +144,8 @@ describe('looksLikeActionCommand (Heuristik-Gate, §3)', () => {
     expect(looksLikeActionCommand('Zeig mir das zweite')).toBe(true);
     expect(looksLikeActionCommand('Mach die Musik leiser')).toBe(true);
     expect(looksLikeActionCommand('Spotify leiser')).toBe(true);
+    expect(looksLikeActionCommand('Erinnere mich morgen um 10 Uhr daran')).toBe(true);
+    expect(looksLikeActionCommand('Welche Termine stehen heute an?')).toBe(true);
   });
 
   it('matches infinitive and polite phrasings (the "kannst du … starten" bug)', () => {

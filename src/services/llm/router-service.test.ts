@@ -2265,7 +2265,11 @@ describe('RouterService (action layer)', () => {
 
     const turn = router.handleChatMessage('Erkläre etwas Langes');
     await vi.waitFor(() => expect(workerP.calls).toBe(1));
-    ctx.bus.emit('test', 'action:notify', { notificationId: 'notify-1', speak: 'Dein Timer ist abgelaufen.' });
+    ctx.bus.emit('test', 'action:notify', {
+      notificationId: 'notify-1',
+      kind: 'timer',
+      speak: 'Dein Timer ist abgelaufen.',
+    });
 
     expect(prioritySpeech).toEqual([{
       turnId: 'notify-1',
@@ -2295,6 +2299,27 @@ describe('RouterService (action layer)', () => {
     expect(ctx.bus.isTurnTerminal('notify-1')).toBe(true);
   });
 
+  it('publishes reminders through the same sentence-boundary priority path', async () => {
+    router = new RouterService(ctx, new ScriptedProvider('ok'), new ScriptedProvider());
+    await router.init();
+    const prioritySpeech: BusEvents['voice:priority-speech'][] = [];
+    ctx.bus.on('voice:priority-speech', (message) => prioritySpeech.push(message.data));
+
+    ctx.bus.emit('test', 'action:notify', {
+      notificationId: 'reminder-notify-1',
+      kind: 'reminder',
+      speak: 'Erinnerung: Steuerberater anrufen.',
+    });
+
+    expect(prioritySpeech).toEqual([{
+      turnId: 'reminder-notify-1',
+      outputId: expect.any(String),
+      text: 'Erinnerung: Steuerberater anrufen.',
+      priority: 'timer',
+      pauseAfter: true,
+    }]);
+  });
+
   it('keeps Timer V2 parameters as canonical strings through RouterService dispatch', async () => {
     const routerP = new ScriptedProvider(
       'ok',
@@ -2315,6 +2340,283 @@ describe('RouterService (action layer)', () => {
     expect(cancelRequest.param).not.toBe('[object Object]');
     expect(done).toContain('Ich stelle den Brötchen-Timer auf 5 Minuten 30 Sekunden.');
     expect(done).toContain('Ich prüfe die Timer mit 30 Sekunden Laufzeit.');
+  });
+
+  it('grounds reminder content and time before dispatching a canonical action', async () => {
+    const nowMs = Date.parse('2026-08-30T10:15:00.000Z');
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_reminder:after=30m|text=Steuerberater anrufen]',
+      '[ACTION:cancel_reminder:text=Steuerberater anrufen]',
+    );
+    router = new RouterService(
+      ctx,
+      routerP,
+      new ScriptedProvider(),
+      new MediaContext(),
+      {
+        reminderClock: {
+          nowMs: () => nowMs,
+          toLocal: (epochMs) => new Date(epochMs).toISOString().slice(0, 16),
+        },
+      },
+    );
+    await router.init();
+
+    const setRequest = await runActionTurn(
+      'Erinnere mich in 30 Minuten: Steuerberater anrufen',
+    );
+    const cancelRequest = await runActionTurn(
+      'Brich die Erinnerung Steuerberater anrufen ab',
+    );
+
+    expect(setRequest).toMatchObject({
+      action: 'set_reminder',
+      param: 'after=30m|text=Steuerberater anrufen',
+    });
+    expect(cancelRequest).toMatchObject({
+      action: 'cancel_reminder',
+      param: 'text=Steuerberater anrufen',
+    });
+  });
+
+  it.each([
+    ['Erstelle eine Erinnerung in 10 Minuten für Haare schneiden.', '10m|Haare schneiden', 'after=10m|text=Haare schneiden'],
+    ['Erstelle eine neue Erinnerung in 10 Minuten Essen.', '10m|Essen', 'after=10m|text=Essen'],
+    ['Setze eine Erinnerung in 10 Minuten Essen.', '10m|Essen', 'after=10m|text=Essen'],
+    ['Stelle eine Erinnerung in 10 Minuten Essen.', '10m|Essen', 'after=10m|text=Essen'],
+    ['Erinnerung, zehn Minuten, Haare schneiden.', '10m|Haare schneiden', 'after=10m|text=Haare schneiden'],
+  ])('corrects an explicit reminder creation misrouted as a timer: %s', async (userText, timerParam, reminderParam) => {
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', `[ACTION:set_timer:${timerParam}]`),
+      new ScriptedProvider(),
+    );
+    await router.init();
+
+    const request = await runActionTurn(userText);
+
+    expect(request).toMatchObject({
+      action: 'set_reminder',
+      param: reminderParam,
+    });
+  });
+
+  it('corrects explicit timer shorthand misrouted as a reminder', async () => {
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', '[ACTION:set_reminder:after=3m|text=Eier kochen]'),
+      new ScriptedProvider(),
+    );
+    await router.init();
+
+    const request = await runActionTurn('Timer, drei Minuten, Eier kochen.');
+
+    expect(request).toMatchObject({
+      action: 'set_timer',
+      param: '3m|Eier kochen',
+    });
+  });
+
+  it('corrects an explicit reminder deletion misrouted as reminder creation', async () => {
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', '[ACTION:set_reminder:after=10m|text=Essen]'),
+      new ScriptedProvider(),
+    );
+    await router.init();
+
+    const request = await runActionTurn('Lösche die Erinnerung Essen.');
+
+    expect(request).toMatchObject({
+      action: 'cancel_reminder',
+      param: 'text=Essen',
+    });
+  });
+
+  it.each(['Aktive Erinnerungen.', 'Aktive Erinnerung', 'Zeige mir die aktiven Erinnerungen.', 'Alle Erinnerungen'])(
+    'lists all upcoming reminders locally for shorthand %s',
+    async (userText) => {
+      const routerProvider = new ScriptedProvider('ok', '[ACTION:set_timer:5m]');
+      router = new RouterService(ctx, routerProvider, new ScriptedProvider());
+      await router.init();
+      const routerCallsAfterWarmup = routerProvider.calls;
+
+      const request = await runActionTurn(userText);
+
+      expect(request).toMatchObject({
+        action: 'list_reminders',
+        param: 'upcoming',
+      });
+      expect(routerProvider.calls).toBe(routerCallsAfterWarmup);
+    },
+  );
+
+  it.each([
+    'Die um 17.05 Uhr.',
+    '17 Uhr 05',
+    '17.05 Uhr Steuerberater',
+  ])('resolves cancel-reminder time follow-up %s from structured ambiguity data', async (followupText) => {
+    const routerProvider = new ScriptedProvider(
+      'ok',
+      '[ACTION:cancel_reminder:text=Steuerberater anrufen]',
+    );
+    router = new RouterService(ctx, routerProvider, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+
+    const first = await startAction(ctx, router, 'Brich die Erinnerung Steuerberater anrufen ab');
+    ctx.bus.emit('test', 'action:result', {
+      turnId: first.request.turnId,
+      requestId: first.request.requestId,
+      action: first.request.action,
+      ok: false,
+      speak: 'Es gibt mehrere passende Erinnerungen. Bitte nenne zusätzlich den Zeitpunkt.',
+      reminderCancelAmbiguity: {
+        candidates: [
+          { id: 41, dueLocal: '2026-08-30T16:30' },
+          { id: 42, dueLocal: '2026-08-30T17:05' },
+        ],
+      },
+    });
+    await first.actionTurn;
+    const routerCallsAfterInitialCancel = routerProvider.calls;
+
+    const followup = await startAction(ctx, router, followupText);
+    expect(followup.request).toMatchObject({
+      action: 'cancel_reminder',
+      param: 'id=42',
+    });
+    expect(routerProvider.calls).toBe(routerCallsAfterInitialCancel);
+    ctx.bus.emit('test', 'action:result', {
+      turnId: followup.request.turnId,
+      requestId: followup.request.requestId,
+      action: followup.request.action,
+      ok: true,
+      speak: 'Die Erinnerung wurde abgebrochen.',
+    });
+    await followup.actionTurn;
+  });
+
+  it.each(['Eins.', 'Die erste.', '1.'])(
+    'resolves cancel-reminder list selection %s before normal routing',
+    async (followupText) => {
+      const routerProvider = new ScriptedProvider(
+        'ok',
+        '[ACTION:cancel_reminder:text=Essen]',
+        '[ACTION:set_timer:1m30s]',
+      );
+      router = new RouterService(ctx, routerProvider, new ScriptedProvider());
+      await router.init();
+
+      const first = await startAction(ctx, router, 'Lösche die Erinnerung Essen');
+      ctx.bus.emit('test', 'action:result', {
+        turnId: first.request.turnId,
+        requestId: first.request.requestId,
+        action: first.request.action,
+        ok: false,
+        reminderCancelAmbiguity: {
+          candidates: [
+            { id: 61, dueLocal: '2026-08-30T17:15' },
+            { id: 62, dueLocal: '2026-08-30T17:16' },
+          ],
+        },
+      });
+      await first.actionTurn;
+      const routerCallsAfterInitialCancel = routerProvider.calls;
+
+      const followup = await startAction(ctx, router, followupText);
+      expect(followup.request).toMatchObject({
+        action: 'cancel_reminder',
+        param: 'id=61',
+      });
+      expect(routerProvider.calls).toBe(routerCallsAfterInitialCancel);
+      ctx.bus.emit('test', 'action:result', {
+        turnId: followup.request.turnId,
+        requestId: followup.request.requestId,
+        action: followup.request.action,
+        ok: true,
+        speak: 'Die Erinnerung wurde abgebrochen.',
+      });
+      await followup.actionTurn;
+    },
+  );
+
+  it('never guesses when a cancel-reminder time follow-up still matches multiple candidates', async () => {
+    const routerProvider = new ScriptedProvider(
+      'ok',
+      '[ACTION:cancel_reminder:text=Steuerberater anrufen]',
+      '[ACTION:set_timer:1m30s]',
+    );
+    router = new RouterService(
+      ctx,
+      routerProvider,
+      new ScriptedProvider(),
+    );
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const outputs: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data.fullText));
+
+    const first = await startAction(ctx, router, 'Brich die Erinnerung Steuerberater anrufen ab');
+    ctx.bus.emit('test', 'action:result', {
+      turnId: first.request.turnId,
+      requestId: first.request.requestId,
+      action: first.request.action,
+      ok: false,
+      reminderCancelAmbiguity: {
+        candidates: [
+          { id: 51, dueLocal: '2026-08-30T17:05' },
+          { id: 52, dueLocal: '2026-08-31T17:05' },
+        ],
+      },
+    });
+    await first.actionTurn;
+
+    await router.handleChatMessage('Die um 17:05 Uhr.');
+
+    expect(requests).toHaveLength(1);
+    expect(outputs.at(-1)).toBe(
+      'Zu dieser Uhrzeit gibt es weiterhin mehrere passende Erinnerungen.',
+    );
+
+    const routerCallsAfterInitialCancel = routerProvider.calls;
+    const retry = await startAction(ctx, router, 'Eins.');
+    expect(retry.request).toMatchObject({
+      action: 'cancel_reminder',
+      param: 'id=51',
+    });
+    expect(routerProvider.calls).toBe(routerCallsAfterInitialCancel);
+    ctx.bus.emit('test', 'action:result', {
+      turnId: retry.request.turnId,
+      requestId: retry.request.requestId,
+      action: retry.request.action,
+      ok: true,
+      speak: 'Die Erinnerung wurde abgebrochen.',
+    });
+    await retry.actionTurn;
+  });
+
+  it('rejects an invented reminder text before action dispatch', async () => {
+    const routerP = new ScriptedProvider(
+      'ok',
+      '[ACTION:set_reminder:after=30m|text=Brötchen aus dem Ofen holen]',
+    );
+    router = new RouterService(ctx, routerP, new ScriptedProvider());
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Erinnere mich in 30 Minuten: Steuerberater anrufen');
+
+    expect(requests).toEqual([]);
+    expect(done).toContain(
+      'Ich konnte den Inhalt der Erinnerung nicht eindeutig aus deiner Anfrage übernehmen. Bitte nenne Zeitpunkt und Inhalt noch einmal zusammen.',
+    );
   });
 
   it('removes invented and duration-shaped timer labels but keeps grounded purposes', async () => {
@@ -2753,7 +3055,11 @@ describe('RouterService (action layer)', () => {
     // action:result is blocked by the cleared pendingActions map above; action:notify has no such
     // correlation check, so this is what actually proves the status guard inside
     // emitAssistantResponse's queued job (`if (this.status !== 'running') return;`) blocks late output.
-    ctx.bus.emit('test', 'action:notify', { notificationId: 'notify-late', speak: 'Später Timer.' });
+    ctx.bus.emit('test', 'action:notify', {
+      notificationId: 'notify-late',
+      kind: 'timer',
+      speak: 'Später Timer.',
+    });
     await new Promise((r) => setTimeout(r, 20));
 
     expect(done).toHaveLength(0);

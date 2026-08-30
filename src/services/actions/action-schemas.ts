@@ -7,6 +7,14 @@ import {
   serializeTimerRequest,
   serializeTimerSelector,
 } from './timer-contract.js';
+import {
+  parseCancelReminderParam,
+  parseListReminderParam,
+  parseSetReminderParam,
+  serializeCancelReminderParam,
+  serializeListReminderParam,
+  serializeSetReminderParam,
+} from './reminder-contract.js';
 
 const integerString = z.string().trim().regex(/^-?\d+$/u).transform(Number);
 
@@ -26,6 +34,29 @@ const timerSelectorString = z.string().max(100).transform((param, context): stri
   return '';
 });
 
+const setReminderString = z.string().max(300).transform((param, context): string => {
+  const parsed = parseSetReminderParam(param);
+  const canonical = parsed ? serializeSetReminderParam(parsed) : null;
+  if (canonical) return canonical;
+  context.addIssue({ code: 'custom', message: 'Invalid reminder request' });
+  return '';
+});
+
+const listReminderString = z.string().max(20).transform((param, context): string => {
+  const parsed = parseListReminderParam(param);
+  if (parsed) return serializeListReminderParam(parsed);
+  context.addIssue({ code: 'custom', message: 'Invalid reminder list scope' });
+  return '';
+});
+
+const cancelReminderString = z.string().max(300).transform((param, context): string => {
+  const parsed = parseCancelReminderParam(param);
+  const canonical = parsed ? serializeCancelReminderParam(parsed) : null;
+  if (canonical) return canonical;
+  context.addIssue({ code: 'custom', message: 'Invalid reminder selector' });
+  return '';
+});
+
 /**
  * Single source of truth for V1 actions: names (allowlist) + param schemas.
  * RouterService imports the allowlist from here (llm → actions, no cycle) —
@@ -41,6 +72,9 @@ export const ACTION_SCHEMAS = {
   spotify_volume_adjust: integerString.pipe(z.number().int().min(-100).max(100)),
   set_timer: timerRequestString,
   cancel_timer: timerSelectorString,
+  set_reminder: setReminderString,
+  list_reminders: listReminderString,
+  cancel_reminder: cancelReminderString,
   // Parser delivers '' for a param-less tag; any non-empty param is invalid (R4-Mi3).
   lock_screen: z.literal(''),
   // Generic media transport (Schicht 1). Param = optional target: '' = active session,
@@ -96,7 +130,7 @@ export function isActionName(name: string): name is ActionName {
  */
 export const ACTION_HINT_STEMS: readonly string[] = [
   'öffn', 'start', 'such', 'google', 'zeig',
-  'timer', 'wecker',
+  'timer', 'wecker', 'erinner', 'termin',
   'lautstärke', 'lauter', 'leiser',
   'spotify', 'musik', 'lied', 'paus', 'nächst', 'skip',
   'sperr', 'bildschirm',

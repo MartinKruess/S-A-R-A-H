@@ -28,7 +28,7 @@ const PASSTHROUGH_COLUMNS = new Set([
   'ended_at', 'timestamp', 'turn_id', 'state', 'attempts', 'lease_started_at',
   'source_staging_id', 'kind', 'source_conversation_id', 'source_turn_id',
   'deleted_at', 'close_status', 'source_table', 'source_row_id', 'column_name', 'reason',
-  'quarantined_at',
+  'quarantined_at', 'source_kind', 'firing_at', 'delivered_at', 'cancelled_at',
 ]);
 
 const SAFE_EMPTY_LEGACY_COLUMNS = new Set([
