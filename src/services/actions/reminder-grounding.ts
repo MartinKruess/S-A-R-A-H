@@ -253,7 +253,9 @@ export function isCancelReminderRequestGrounded(
     return /\b(?:alle|sämtliche)\s+(?:meine\s+)?erinnerungen\b/u.test(normalized);
   }
   if (request.kind === 'id') {
-    return new RegExp(`(?:^|\\D)${request.id}(?=$|\\D)`, 'u').test(normalized);
+    // IDs are internal correlation data and are never visible to the user.
+    // RouterService grounds them only against its short-lived ambiguity context.
+    return false;
   }
   if (request.kind === 'text') return isReminderTextGrounded(request.text, userText);
   return isReminderScheduleGrounded(request.schedule, userText)

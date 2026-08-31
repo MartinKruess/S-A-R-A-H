@@ -20,7 +20,7 @@ describe('action policy', () => {
       confirmationLevel: 'maximal', fileAccess: 'none',
     }).effect).toBe('confirm');
     expect(evaluateActionPolicy('web_search', {
-      confirmationLevel: 'maximal', fileAccess: 'none',
+      confirmationLevel: 'maximal', fileAccess: 'none', webAccessAllowed: true,
     }).effect).toBe('allow');
   });
 
@@ -57,12 +57,17 @@ describe('action policy', () => {
     });
   });
 
-  it('requires standard confirmation before cancelling every reminder', () => {
+  it('requires confirmation at every level before cancelling every reminder', () => {
+    expect(evaluateActionPolicy('cancel_reminder', {
+      confirmationLevel: 'minimal',
+      fileAccess: 'none',
+      param: 'all',
+    })).toMatchObject({ effect: 'confirm', metadata: { risk: 'critical' } });
     expect(evaluateActionPolicy('cancel_reminder', {
       confirmationLevel: 'standard',
       fileAccess: 'none',
       param: 'all',
-    })).toMatchObject({ effect: 'confirm', metadata: { risk: 'sensitive' } });
+    })).toMatchObject({ effect: 'confirm', metadata: { risk: 'critical' } });
     expect(evaluateActionPolicy('cancel_reminder', {
       confirmationLevel: 'standard',
       fileAccess: 'none',
@@ -95,6 +100,16 @@ describe('action policy', () => {
         effect: 'deny',
         reason: 'web_access_disabled',
       });
+    },
+  );
+
+  it.each(['web_search', 'show_browser'] as const)(
+    'denies %s when the browser grant is missing',
+    (action) => {
+      expect(evaluateActionPolicy(action, {
+        confirmationLevel: 'minimal',
+        fileAccess: 'none',
+      })).toMatchObject({ effect: 'deny', reason: 'web_access_disabled' });
     },
   );
 

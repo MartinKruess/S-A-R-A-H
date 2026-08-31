@@ -71,7 +71,7 @@ export function resolveActionConfirmationIntent(value: string): ActionConfirmati
   if (/^(?:ja[,\s]+)?(?:ich\s+)?bestätig(?:e|en)(?:\s+(?:das|die aktion|den auftrag))?(?:\s+jetzt)?$/u.test(normalized)) {
     return 'confirm';
   }
-  if (/\b(?:diese\s+aktion|den\s+auftrag)\b.*\bbestätig(?:e|en)\b/u.test(normalized)) {
+  if (/^(?:ja[,\s]+)?(?:ich\s+)?bestätig(?:e|en)\s+(?:diese\s+aktion|den\s+auftrag)(?:\s+jetzt)?$/u.test(normalized)) {
     return 'confirm';
   }
   if (/^(?:ja[,\s]+)?(?:du\s+)?darfst\s+(?:das|diese\s+aktion|die aktion)(?:\s+ausführen)?$/u.test(normalized)) {

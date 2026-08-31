@@ -303,6 +303,8 @@ function startPrimaryInstance(): void {
           notificationId,
           kind: 'reminder',
           speak: notification.speak,
+          originMode: notification.originMode,
+          privateContext: notification.privateContext,
         });
         if (!published) finish(false);
       });
@@ -324,6 +326,10 @@ function startPrimaryInstance(): void {
     getConfirmationLevel: () => appContext!.parsedConfig.trust.confirmationLevel,
     getFileAccess: () => appContext!.parsedConfig.trust.fileAccess,
     getWebAccessAllowed: () => appContext!.parsedConfig.trust.webAccessAllowed,
+    getReminderPersistencePolicy: () => ({
+      allowed: appContext!.parsedConfig.trust.memoryAllowed,
+      exclusions: appContext!.parsedConfig.trust.memoryExclusions,
+    }),
   });
   // Registration order is dependency order; shutdown reverses it. Search uses
   // the worker runtime and ActionService uses Search, so both must stop before

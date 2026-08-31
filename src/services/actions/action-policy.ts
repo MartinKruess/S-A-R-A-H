@@ -63,9 +63,9 @@ export function evaluatePermissionMetadata(
   context: ActionPolicyContext,
 ): ActionPolicyDecision {
   if (metadata.persistentGrant === 'web-access') {
-    return context.webAccessAllowed === false
-      ? { effect: 'deny', metadata, reason: 'web_access_disabled' }
-      : { effect: 'allow', metadata, reason: 'persistent_web_access_grant' };
+    return context.webAccessAllowed === true
+      ? { effect: 'allow', metadata, reason: 'persistent_web_access_grant' }
+      : { effect: 'deny', metadata, reason: 'web_access_disabled' };
   }
   if (metadata.filePermission !== 'none') {
     if (context.fileAccess === 'none') {
@@ -99,7 +99,7 @@ export function evaluateActionPolicy(
 ): ActionPolicyDecision {
   const metadata = action === 'cancel_reminder'
     && context.param?.trim().toLocaleLowerCase('de-DE') === 'all'
-    ? { ...ACTION_PERMISSION_METADATA[action], risk: 'sensitive' as const }
+    ? { ...ACTION_PERMISSION_METADATA[action], risk: 'critical' as const }
     : ACTION_PERMISSION_METADATA[action];
   return evaluatePermissionMetadata(metadata, context);
 }

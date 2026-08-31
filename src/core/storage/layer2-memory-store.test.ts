@@ -271,7 +271,7 @@ describe('Layer2MemoryStore', () => {
 
     const result = await encryptedStore.applyPolicy({ allowed: true, exclusions: ['Finanzen'] });
 
-    expect(result).toEqual({ turns: 2, staging: 1, memories: 2 });
+    expect(result).toEqual({ turns: 2, staging: 1, memories: 2, reminders: 0 });
     expect(await db.query('storage_quarantine')).toEqual([]);
     expect(await db.query('messages', { turn_id: 'turn-corrupt-message' })).toEqual([]);
     expect(await db.query('memory_staging', { id: stagingId })).toEqual([]);
@@ -319,7 +319,7 @@ describe('Layer2MemoryStore', () => {
 
     const result = await encryptedStore.applyPolicy({ allowed: true, exclusions: ['Finanzen'] });
 
-    expect(result).toEqual({ turns: 0, staging: 0, memories: 4 });
+    expect(result).toEqual({ turns: 0, staging: 0, memories: 4, reminders: 0 });
     expect(await db.query('learned_facts', { id: financeFactId })).toEqual([]);
     expect(await db.query('persistent_rules', { id: financeRuleId })).toEqual([]);
     expect(await db.query('session_rules', { id: financeSessionRuleId })).toEqual([]);
@@ -328,6 +328,54 @@ describe('Layer2MemoryStore', () => {
     expect(await encryptedDb.query('persistent_rules', { id: safeRuleId })).toHaveLength(1);
     expect(await encryptedDb.query('absolute_rules', { id: absoluteRuleId })).toHaveLength(1);
     expect(await db.query('storage_quarantine')).toEqual([]);
+  });
+
+  it('retroactively purges excluded and unconditionally private reminders', async () => {
+    const encryptedDb = new EncryptedStorage(db, Buffer.alloc(32, 81));
+    const encryptedStore = new Layer2MemoryStore(encryptedDb);
+    const healthId = await encryptedDb.insert('reminders', {
+      due_local: '2026-09-01T08:00',
+      text: 'Blutdruck beim Hausarzt messen',
+      state: 'pending',
+      source_kind: 'local',
+      origin_mode: 'chat',
+      private_context: 0,
+    });
+    const secretId = await encryptedDb.insert('reminders', {
+      due_local: '2026-09-01T09:00',
+      text: 'Passwort ist Fuchs-17',
+      state: 'pending',
+      source_kind: 'local',
+      origin_mode: 'chat',
+      private_context: 0,
+    });
+    const safeId = await encryptedDb.insert('reminders', {
+      due_local: '2026-09-01T10:00',
+      text: 'Müll rausbringen',
+      state: 'pending',
+      source_kind: 'local',
+      origin_mode: 'chat',
+      private_context: 0,
+    });
+    const corruptId = await encryptedDb.insert('reminders', {
+      due_local: '2026-09-01T11:00',
+      text: 'Arztbericht abholen',
+      state: 'pending',
+      source_kind: 'local',
+      origin_mode: 'chat',
+      private_context: 0,
+    });
+    const [corrupt] = await db.query<{ text: string }>('reminders', { id: corruptId });
+    await db.update('reminders', { id: corruptId }, { text: mutateCiphertext(corrupt.text) });
+
+    const result = await encryptedStore.applyPolicy({ allowed: true, exclusions: ['Gesundheit'] });
+
+    expect(result).toEqual({ turns: 0, staging: 0, memories: 0, reminders: 3 });
+    expect(await encryptedDb.query('reminders', { id: healthId })).toEqual([]);
+    expect(await encryptedDb.query('reminders', { id: secretId })).toEqual([]);
+    expect(await db.query('reminders', { id: corruptId })).toEqual([]);
+    expect(await encryptedDb.query('reminders', { id: safeId })).toHaveLength(1);
+    expect(await db.query('storage_quarantine', { source_table: 'reminders' })).toEqual([]);
   });
 
   it('pauses memory without deleting existing readable or quarantined data', async () => {
@@ -343,7 +391,7 @@ describe('Layer2MemoryStore', () => {
 
     const result = await encryptedStore.applyPolicy({ allowed: false, exclusions: [] });
 
-    expect(result).toEqual({ turns: 0, staging: 0, memories: 0 });
+    expect(result).toEqual({ turns: 0, staging: 0, memories: 0, reminders: 0 });
     expect(await db.query('messages')).toHaveLength(1);
     expect(await db.query('memory_staging')).toHaveLength(1);
     expect(await db.query('curated_memories')).toEqual([]);

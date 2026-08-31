@@ -68,6 +68,28 @@ describe('ProgramLauncher.launch', () => {
     expect(result).toEqual({ ok: true });
   });
 
+  it('logs only structural launcher diagnostics without query, name, or path data', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const child = fakeChild();
+    const launcher = new ProgramLauncher(
+      vi.fn().mockReturnValue(child),
+      vi.fn(),
+      undefined,
+      2500,
+      () => true,
+    );
+
+    const resultP = launcher.launch('vs code', PROGRAMS);
+    setTimeout(() => child.emit('spawn'), 5);
+    await resultP;
+
+    const serialized = JSON.stringify(log.mock.calls);
+    expect(serialized).toContain('result=hit');
+    expect(serialized).not.toContain('vs code');
+    expect(serialized).not.toContain('Visual Studio Code');
+    expect(serialized).not.toContain('C:\\\\vscode\\\\Code.exe');
+  });
+
   it('reports spawn errors honestly (EACCES/ENOENT)', async () => {
     const child = fakeChild();
     const launcher = new ProgramLauncher(

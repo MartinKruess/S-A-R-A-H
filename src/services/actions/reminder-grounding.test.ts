@@ -186,5 +186,13 @@ describe('reminder grounding', () => {
       cancelRequest('all'),
       'Brich alle meine Erinnerungen ab.',
     )).toBe(true);
+    expect(isCancelReminderRequestGrounded(
+      cancelRequest('id=3'),
+      'Brich die Erinnerung um 3 Uhr ab.',
+    )).toBe(false);
+    expect(isCancelReminderRequestGrounded(
+      cancelRequest('id=3'),
+      'Brich Erinnerung 3 ab.',
+    )).toBe(false);
   });
 });

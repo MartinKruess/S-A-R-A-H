@@ -7,7 +7,7 @@
 - 🟡 Vorhanden, aber mit relevanten Lücken, unzuverlässig oder noch praktisch zu bestätigen
 - ⚪ Bewusst später / aktuell nicht im Scope
 
-**Aktueller Zählstand nach der vollständigen praktischen Layer-2-Windows-Abnahme sowie der praktischen Timer-V2- und Erinnerungs-MVP-Abnahme:** 704 Prüfpunkte — 209 🟢, 69 🟡, 409 🔴, 17 ⚪
+**Aktueller Zählstand nach der praktischen Layer-2-Windows-, Timer-V2- und Erinnerungs-MVP-Abnahme sowie dem technisch abgeschlossenen unabhängigen Layer-3→2-Audit:** 704 Prüfpunkte — 210 🟢, 68 🟡, 409 🔴, 17 ⚪
 
 ---
 
@@ -152,7 +152,7 @@
 
 ## 3.1 Grundprinzip
 
-- 🟡 Sicherheitsregeln werden technisch außerhalb des eigentlichen LLM-Prompts erzwungen.
+- 🟢 Sicherheitsregeln werden technisch außerhalb des eigentlichen LLM-Prompts erzwungen; Reminder-Persistenz, ActionPolicy, Bestätigung, Parameter-Grounding und externe Daten werden an deterministischen Grenzen geprüft.
 - 🟢 das LLM kann Sicherheitsregeln nicht durch eigene Tool-Aufrufe umgehen.
 - 🟢 externe Inhalte können Sicherheitsregeln nicht überschreiben.
 - 🟢 Aktionen werden anhand ihrer Risikoklasse bewertet.

@@ -65,6 +65,11 @@ interface SessionRuleRow {
   rule: string;
 }
 
+interface ReminderPolicyRow {
+  id: number;
+  text: string;
+}
+
 const STALE_LEASE_MS = 10 * 60 * 1000;
 const MAX_STAGING_SOURCE_CHARS = 12_000;
 const MAX_STAGING_ATTEMPTS = 3;
@@ -389,9 +394,11 @@ export class Layer2MemoryStore {
     return this.db.deleteAllCuratedMemories(expectedIds);
   }
 
-  async applyPolicy(policy: TurnPersistencePolicy): Promise<{ turns: number; staging: number; memories: number }> {
+  async applyPolicy(
+    policy: TurnPersistencePolicy,
+  ): Promise<{ turns: number; staging: number; memories: number; reminders: number }> {
     if (!policy.allowed) {
-      return { turns: 0, staging: 0, memories: 0 };
+      return { turns: 0, staging: 0, memories: 0, reminders: 0 };
     }
 
     const messages = await this.db.query<MessageRow>('messages');
@@ -405,6 +412,7 @@ export class Layer2MemoryStore {
 
     const stagingRows = await this.db.query<MemoryStagingRow>('memory_staging');
     const memories = await this.db.query<CuratedMemoryRow>('curated_memories');
+    const reminders = await this.db.query<ReminderPolicyRow>('reminders');
     const [learnedFacts, persistentRules, sessionRules] = await Promise.all([
       this.db.query<LearnedFactRow>('learned_facts'),
       this.db.query<PersistentRuleRow>('persistent_rules'),
@@ -413,6 +421,10 @@ export class Layer2MemoryStore {
     const purgedUnreadable = policy.exclusions.length > 0
       ? await this.db.purgeQuarantinedLayer2Memory()
       : { turns: 0, staging: 0, memories: 0, legacy: 0, quarantine: 0 };
+    const purgedUnreadableReminders = policy.exclusions.length > 0
+      && this.db.purgeQuarantinedReminders
+      ? await this.db.purgeQuarantinedReminders()
+      : 0;
     const purgedLegacy = policy.exclusions.length > 0
       ? await this.db.purgeLayer2LegacyMemory({
         learnedFactIds: learnedFacts
@@ -479,12 +491,23 @@ export class Layer2MemoryStore {
       if (!excludedStagingIds.has(row.id)) continue;
       deletedStaging += await this.db.delete('memory_staging', { id: row.id });
     }
+    let deletedReminders = purgedUnreadableReminders;
+    for (const reminder of reminders) {
+      if (!mustKeepTurnTransient([reminder.text], policy)) continue;
+      deletedReminders += await this.db.delete('reminders', { id: reminder.id });
+    }
     const privacyRowsRemoved = deletedTurns > 0
       || deletedStaging > 0
       || deletedMemories > 0
+      || deletedReminders > 0
       || purgedUnreadable.quarantine > 0
       || purgedLegacy > 0;
     if (privacyRowsRemoved) await this.db.finalizePrivacyDeletion?.();
-    return { turns: deletedTurns, staging: deletedStaging, memories: deletedMemories };
+    return {
+      turns: deletedTurns,
+      staging: deletedStaging,
+      memories: deletedMemories,
+      reminders: deletedReminders,
+    };
   }
 }

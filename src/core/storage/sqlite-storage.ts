@@ -19,7 +19,7 @@ import {
   MESSAGES_PAGE_MAX_LIMIT,
 } from './storage.interface.js';
 
-export const SQLITE_SCHEMA_VERSION = 2;
+export const SQLITE_SCHEMA_VERSION = 3;
 
 const REMINDERS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reminders (
@@ -29,6 +29,8 @@ const REMINDERS_SCHEMA = `
     state        TEXT NOT NULL DEFAULT 'pending'
                  CHECK (state IN ('pending', 'firing', 'delivered', 'cancelled')),
     source_kind  TEXT NOT NULL DEFAULT 'local' CHECK (source_kind IN ('local')),
+    origin_mode  TEXT NOT NULL DEFAULT 'chat' CHECK (origin_mode IN ('chat', 'voice')),
+    private_context INTEGER NOT NULL DEFAULT 1 CHECK (private_context IN (0, 1)),
     external_id  TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     firing_at    TEXT,
@@ -184,6 +186,19 @@ export class SqliteStorage implements StorageProvider {
               version = 2;
               db.pragma(`user_version = ${version}`);
               break;
+            case 2: {
+              const columns = new Set((db.pragma('table_info(reminders)') as Array<{ name: string }>)
+                .map(({ name }) => name));
+              if (!columns.has('origin_mode')) {
+                db.exec("ALTER TABLE reminders ADD COLUMN origin_mode TEXT NOT NULL DEFAULT 'chat' CHECK (origin_mode IN ('chat', 'voice'));");
+              }
+              if (!columns.has('private_context')) {
+                db.exec('ALTER TABLE reminders ADD COLUMN private_context INTEGER NOT NULL DEFAULT 1 CHECK (private_context IN (0, 1));');
+              }
+              version = 3;
+              db.pragma(`user_version = ${version}`);
+              break;
+            }
             default:
               throw new Error(`No SQLite migration path from version ${version} to ${SQLITE_SCHEMA_VERSION}`);
           }
@@ -697,6 +712,30 @@ export class SqliteStorage implements StorageProvider {
         legacy: 0,
         quarantine: messageQuarantineCount.count + quarantineCount.count,
       };
+    })();
+  }
+
+  async purgeQuarantinedReminders(): Promise<number> {
+    return this.db.transaction(() => {
+      const reminderIds = (this.db.prepare(`
+        SELECT DISTINCT source_row_id AS id
+        FROM storage_quarantine
+        WHERE source_table = 'reminders' AND source_row_id IS NOT NULL
+      `).all() as Array<{ id: number }>).map(({ id }) => id);
+      const removeReminder = this.db.prepare('DELETE FROM reminders WHERE id = ?');
+      for (const id of reminderIds) removeReminder.run(id);
+      this.db.prepare(`
+        WITH RECURSIVE related(id) AS (
+          SELECT id FROM storage_quarantine WHERE source_table = 'reminders'
+          UNION
+          SELECT quarantine.id
+          FROM storage_quarantine AS quarantine
+          JOIN related ON quarantine.source_table = 'storage_quarantine'
+            AND quarantine.source_row_id = related.id
+        )
+        DELETE FROM storage_quarantine WHERE id IN (SELECT id FROM related)
+      `).run();
+      return reminderIds.length;
     })();
   }
 

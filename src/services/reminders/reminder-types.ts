@@ -1,3 +1,5 @@
+import type { TurnMode } from '../../core/turn-contract.js';
+
 export type ReminderState = 'pending' | 'firing' | 'delivered' | 'cancelled';
 export type ReminderSourceKind = 'local';
 
@@ -7,6 +9,8 @@ export interface ReminderRecord {
   text: string;
   state: ReminderState;
   sourceKind: ReminderSourceKind;
+  originMode: TurnMode;
+  privateContext: boolean;
   externalId?: string;
   createdAt: string;
   firingAt: string | null;
@@ -18,6 +22,8 @@ export interface CreateReminderInput {
   dueLocal: string;
   text: string;
   sourceKind?: ReminderSourceKind;
+  originMode?: TurnMode;
+  privateContext?: boolean;
   externalId?: string | null;
   createdAt?: string;
 }
