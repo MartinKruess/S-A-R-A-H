@@ -1,6 +1,4 @@
 import { z } from 'zod';
-import type { ConfirmationLevel } from '../../core/action-confirmation.js';
-import { evaluateActionPolicy } from './action-policy.js';
 import {
   parseTimerRequest,
   parseTimerSelector,
@@ -87,26 +85,6 @@ export const ACTION_SCHEMAS = {
 } as const;
 
 export type ActionName = keyof typeof ACTION_SCHEMAS;
-
-/**
- * @param level - Aktuell konfigurierte Bestätigungsstufe.
- * @param action - Validierter Action-Name.
- *
- * - Nutzt für Websuche und Ergebnisanzeige die separate dauerhafte Browserfreigabe.
- * - Erzwingt sonstige Datenoffenlegung und kritische Actions auf jeder Stufe.
- * - Erzwingt bei `standard` sensible Actions.
- * - Erzwingt bei `maximal` jede nicht separat dauerhaft freigegebene Action.
- *
- * @returns Ob vor der Ausführung eine korrelierte Zustimmung erforderlich ist.
- *
- * @category Authorization Business Logic
- */
-export function requiresActionConfirmation(level: ConfirmationLevel, action: ActionName): boolean {
-  return evaluateActionPolicy(action, {
-    confirmationLevel: level,
-    fileAccess: 'specific-folders',
-  }).effect === 'confirm';
-}
 
 const ACTION_NAME_SET: ReadonlySet<string> = new Set(Object.keys(ACTION_SCHEMAS));
 

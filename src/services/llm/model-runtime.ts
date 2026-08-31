@@ -7,7 +7,7 @@ import {
 } from './ollama-container-manager.js';
 import { PERFORMANCE_PROFILE_MAP } from './llm-types.js';
 import { OllamaProvider } from './providers/ollama-provider.js';
-import { RoutingService, type RoutingResult } from './routing-service.js';
+import { ROUTER_NUM_CTX, RoutingService, type RoutingResult } from './routing-service.js';
 import { VramManager } from './vram-manager.js';
 import { WorkerService, type WorkerResult } from './worker-service.js';
 import { linkAbortSignals, runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
@@ -147,7 +147,7 @@ export class ModelRuntime implements ModelRuntimePort {
     this.routerProvider = deps.routerProvider ?? new OllamaProvider(
       this.config.baseUrl,
       this.config.routerModel,
-      { ...this.config.options, num_ctx: 2048, num_gpu: -1 },
+      { ...this.config.options, num_ctx: ROUTER_NUM_CTX, num_gpu: -1 },
     );
     this.workerProvider = deps.workerProvider ?? new OllamaProvider(
       this.config.baseUrl,

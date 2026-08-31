@@ -26,6 +26,10 @@ import {
 } from '../reminders/reminder-service.js';
 import type { ReminderAgendaItem } from '../reminders/reminder-types.js';
 import type { Trust } from '../../core/config-schema.js';
+import {
+  mustKeepTurnTransient,
+  type TurnPersistencePolicy,
+} from '../../core/memory-policy.js';
 import { throwIfAborted, waitForSettlement } from '../../core/abort-utils.js';
 import { randomUUID } from 'crypto';
 import {
@@ -57,9 +61,10 @@ export interface ActionDeps {
   reminders: Pick<ReminderService, 'create' | 'list' | 'cancel'>;
   reminderClock?: ReminderClock;
   confirmationGate?: ActionConfirmationGate;
-  getConfirmationLevel?: () => ConfirmationLevel;
-  getFileAccess?: () => Trust['fileAccess'];
-  getWebAccessAllowed?: () => boolean;
+  getConfirmationLevel: () => ConfirmationLevel;
+  getFileAccess: () => Trust['fileAccess'];
+  getWebAccessAllowed: () => boolean;
+  getReminderPersistencePolicy?: () => TurnPersistencePolicy;
 }
 
 export interface ActionServiceOptions {
@@ -173,6 +178,7 @@ export class ActionService implements SarahService {
   private readonly getConfirmationLevel: () => ConfirmationLevel;
   private readonly getFileAccess: () => Trust['fileAccess'];
   private readonly getWebAccessAllowed: () => boolean;
+  private readonly getReminderPersistencePolicy: () => TurnPersistencePolicy;
 
   constructor(
     private bus: MessageBus,
@@ -181,9 +187,11 @@ export class ActionService implements SarahService {
   ) {
     this.drainTimeoutMs = options.drainTimeoutMs ?? DEFAULT_ACTION_DRAIN_TIMEOUT_MS;
     this.confirmationGate = deps.confirmationGate ?? new ActionConfirmationGate();
-    this.getConfirmationLevel = deps.getConfirmationLevel ?? (() => 'standard');
-    this.getFileAccess = deps.getFileAccess ?? (() => 'specific-folders');
-    this.getWebAccessAllowed = deps.getWebAccessAllowed ?? (() => true);
+    this.getConfirmationLevel = deps.getConfirmationLevel;
+    this.getFileAccess = deps.getFileAccess;
+    this.getWebAccessAllowed = deps.getWebAccessAllowed;
+    this.getReminderPersistencePolicy = deps.getReminderPersistencePolicy
+      ?? (() => ({ allowed: false, exclusions: [] }));
   }
 
   async init(): Promise<void> {
@@ -428,8 +436,22 @@ export class ActionService implements SarahService {
         if (!reminder || !dueLocal) {
           return { ok: false, speak: 'Zeitpunkt und Inhalt der Erinnerung sind nicht eindeutig.' };
         }
+        if (privateContext || mustKeepTurnTransient(
+          [reminder.text],
+          this.getReminderPersistencePolicy(),
+        )) {
+          return {
+            ok: false,
+            speak: 'Diese Erinnerung kann ich aus Datenschutzgründen nicht dauerhaft speichern.',
+          };
+        }
         try {
-          const created = await this.deps.reminders.create({ dueLocal, text: reminder.text }, signal);
+          const created = await this.deps.reminders.create({
+            dueLocal,
+            text: reminder.text,
+            originMode,
+            privateContext,
+          }, signal);
           return {
             ok: true,
             speak: `Ich erinnere dich am ${formatReminderDueLocal(created.dueLocal)}: ${ensureSentence(created.text)}`,

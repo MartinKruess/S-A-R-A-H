@@ -104,6 +104,35 @@ describe('SqliteStorage', () => {
       expect(await storage.query('messages', { turn_id: 'turn-safe' })).toHaveLength(1);
     });
 
+    it('purges an unreadable reminder and its recursive quarantine copies', async () => {
+      const reminderId = await storage.insert('reminders', {
+        due_local: '2026-09-01T08:00',
+        text: 'Ciphertext',
+        state: 'pending',
+        source_kind: 'local',
+      });
+      const quarantineId = await storage.insert('storage_quarantine', {
+        source_table: 'reminders',
+        source_row_id: reminderId,
+        column_name: 'text',
+        ciphertext: 'isolated',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+      await storage.insert('storage_quarantine', {
+        source_table: 'storage_quarantine',
+        source_row_id: quarantineId,
+        column_name: 'row_data',
+        ciphertext: 'nested',
+        row_data: '{}',
+        reason: 'cipher_authentication_failed',
+      });
+
+      await expect(storage.purgeQuarantinedReminders()).resolves.toBe(1);
+      expect(await storage.query('reminders')).toEqual([]);
+      expect(await storage.query('storage_quarantine')).toEqual([]);
+    });
+
     it('purges legacy learned memory and its recursive quarantine but keeps absolute rules', async () => {
       const learnedId = await storage.insert('learned_facts', {
         category: 'person', fact: 'Alt', confidence: 0.7, source: 'legacy',
@@ -357,7 +386,7 @@ describe('SqliteStorage', () => {
       expect(await storage.query('reminders')).toHaveLength(1);
     });
 
-    it('migrates schema v1 to v2 without losing existing data', async () => {
+    it('migrates schema v1 to the current version without losing existing data', async () => {
       const dbPath = path.join(tmpDir, 'v1-reminder-migration.db');
       const raw = new Database(dbPath);
       raw.exec(`
@@ -387,12 +416,44 @@ describe('SqliteStorage', () => {
       await migrated.close();
 
       const verified = new Database(dbPath, { readonly: true });
-      expect(verified.pragma('user_version', { simple: true })).toBe(2);
+      expect(verified.pragma('user_version', { simple: true })).toBe(3);
       expect(verified.prepare('SELECT COUNT(*) FROM reminders').pluck().get()).toBe(1);
       verified.close();
     });
 
-    it('rolls back the v1 to v2 migration when the reminder schema conflicts', () => {
+    it('migrates v2 reminders with fail-closed legacy provenance', async () => {
+      const dbPath = path.join(tmpDir, 'v2-reminder-provenance.db');
+      const raw = new Database(dbPath);
+      raw.exec(`
+        CREATE TABLE reminders (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          due_local TEXT NOT NULL,
+          text TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending',
+          source_kind TEXT NOT NULL DEFAULT 'local',
+          external_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          firing_at TEXT,
+          delivered_at TEXT,
+          cancelled_at TEXT
+        );
+        INSERT INTO reminders (due_local, text) VALUES ('2026-09-01T08:00', 'Altbestand');
+      `);
+      raw.pragma('user_version = 2');
+      raw.close();
+
+      const migrated = new SqliteStorage(dbPath);
+      expect(await migrated.query('reminders')).toEqual([
+        expect.objectContaining({ origin_mode: 'chat', private_context: 1 }),
+      ]);
+      await migrated.close();
+
+      const verified = new Database(dbPath, { readonly: true });
+      expect(verified.pragma('user_version', { simple: true })).toBe(3);
+      verified.close();
+    });
+
+    it('rolls back the v1 migration when the reminder schema conflicts', () => {
       const dbPath = path.join(tmpDir, 'broken-reminder-migration.db');
       const raw = new Database(dbPath);
       raw.exec('CREATE TABLE reminders (id INTEGER PRIMARY KEY);');

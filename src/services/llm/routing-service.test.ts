@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OllamaProvider } from './providers/ollama-provider.js';
 import {
   ROUTER_DEADLINE_MS,
+  ROUTER_NUM_CTX,
   ROUTER_NUM_PREDICT,
   RoutingService,
 } from './routing-service.js';
@@ -22,7 +23,7 @@ describe('RoutingService productive request contract', () => {
     const routing = new RoutingService(new OllamaProvider(
       'http://localhost:11434',
       'phi4-mini:3.8b',
-      { num_predict: 12_000, temperature: 0.9, num_ctx: 2_048 },
+      { num_predict: 12_000, temperature: 0.9, num_ctx: ROUTER_NUM_CTX },
     ));
 
     const result = await routing.route('Erkläre mir, warum der Himmel blau ist.');
@@ -36,9 +37,31 @@ describe('RoutingService productive request contract', () => {
       options: {
         num_predict: ROUTER_NUM_PREDICT,
         temperature: 0,
-        num_ctx: 2_048,
+        num_ctx: ROUTER_NUM_CTX,
       },
     });
+  });
+
+  it('fits the complete routing prompt plus the maximum accepted user message', async () => {
+    let requestBody: { messages?: Array<{ role: string; content: string }>; options?: { num_ctx?: number } } = {};
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body)) as typeof requestBody;
+      const frame = `${JSON.stringify({ message: { content: '[ROUTE:9b]' }, done: true })}\n`;
+      return new Response(frame, { status: 200 });
+    }));
+    const routing = new RoutingService(new OllamaProvider(
+      'http://localhost:11434',
+      'phi4-mini:3.8b',
+      { num_ctx: ROUTER_NUM_CTX },
+    ));
+    const userText = 'x'.repeat(4_000);
+
+    await expect(routing.route(userText)).resolves.toMatchObject({
+      parsed: { kind: 'route', route: '9b' },
+    });
+
+    expect(requestBody.messages?.at(-1)).toEqual({ role: 'user', content: userText });
+    expect(requestBody.options?.num_ctx).toBe(ROUTER_NUM_CTX);
   });
 
   it('aborts a streaming router classification at its hard total deadline', async () => {

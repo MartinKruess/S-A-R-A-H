@@ -30,6 +30,8 @@ interface ReminderRow {
   text: string;
   state: ReminderState;
   source_kind: ReminderSourceKind;
+  origin_mode: 'chat' | 'voice';
+  private_context: number;
   external_id: string | null;
   created_at: string;
   firing_at: string | null;
@@ -46,6 +48,10 @@ const DUE_LOCAL_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u;
 
 function isReminderState(value: string): value is ReminderState {
   return value === 'pending' || value === 'firing' || value === 'delivered' || value === 'cancelled';
+}
+
+function isOriginMode(value: string): value is ReminderRow['origin_mode'] {
+  return value === 'chat' || value === 'voice';
 }
 
 function assertDueLocal(value: string): void {
@@ -77,6 +83,10 @@ function toRecord(row: ReminderRow): ReminderRecord {
   if (!row.text.trim()) throw new Error('Reminder text is empty');
   if (!isReminderState(row.state)) throw new Error('Reminder state is invalid');
   if (row.source_kind !== 'local') throw new Error('Reminder source is invalid');
+  if (!isOriginMode(row.origin_mode)) throw new Error('Reminder origin mode is invalid');
+  if (row.private_context !== 0 && row.private_context !== 1) {
+    throw new Error('Reminder private context is invalid');
+  }
   assertTechnicalTimestamp(row.created_at, 'createdAt');
   for (const [field, value] of [
     ['firingAt', row.firing_at],
@@ -91,6 +101,8 @@ function toRecord(row: ReminderRow): ReminderRecord {
     text: row.text,
     state: row.state,
     sourceKind: row.source_kind,
+    originMode: row.origin_mode,
+    privateContext: row.private_context === 1,
     ...(row.external_id ? { externalId: row.external_id } : {}),
     createdAt: row.created_at,
     firingAt: row.firing_at,
@@ -133,6 +145,8 @@ export class ReminderStore {
       text,
       state: 'pending',
       source_kind: input.sourceKind ?? 'local',
+      origin_mode: input.originMode ?? 'chat',
+      private_context: input.privateContext === false ? 0 : 1,
       external_id: input.externalId?.trim() || null,
       firing_at: null,
       delivered_at: null,

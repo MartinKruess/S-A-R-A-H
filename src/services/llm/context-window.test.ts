@@ -11,7 +11,11 @@ import {
 } from './context-window.js';
 import type { ChatMessage } from './llm-provider.interface.js';
 import { SarahConfigSchema } from '../../core/config-schema.js';
-import { buildSystemPrompt } from './prompt-builder.js';
+import {
+  appendRuntimeTrustInstructions,
+  buildSystemPrompt,
+  MIN_CURRENT_USER_PROMPT_TOKENS,
+} from './prompt-builder.js';
 import { NUM_PREDICT_MAP } from './llm-types.js';
 
 function msg(role: ChatMessage['role'], content: string): ChatMessage {
@@ -174,6 +178,93 @@ describe('buildContextWindow', () => {
     const tight = buildContextWindow({ ...input, numCtx: input.numCtx - 1 });
     expect(tight).toHaveLength(2); // system + current only
     expect(tight[1].content).toBe(chars(5));
+  });
+
+  it('reduces the requested answer cap before dropping relevant live history', () => {
+    const system = msg('system', 'SYS');
+    const current = msg('user', chars(2));
+    const older = [msg('user', chars(10)), msg('assistant', chars(10))];
+    const protectedTokens = RESPONSE_SAFETY_TOKENS
+      + CHAT_TEMPLATE_BASE_TOKENS
+      + estimateTokens(system.content) + CHAT_TEMPLATE_MESSAGE_TOKENS
+      + estimateTokens(current.content) + CHAT_TEMPLATE_MESSAGE_TOKENS;
+    const plan = buildContextWindow({
+      systemPrompt: system.content,
+      startContext: [],
+      history: [...older, current],
+      numCtx: protectedTokens + 1_000,
+      numPredict: 1_000,
+    }, { includeEffectiveNumPredict: true });
+
+    expect(plan.messages).toEqual([system, ...older, current]);
+    expect(plan.numPredict).toBeLessThan(1_000);
+    expect(plan.numPredict).toBeGreaterThanOrEqual(MIN_EFFECTIVE_NUM_PREDICT);
+  });
+
+  it('keeps smaller high-priority recall entries when one entry exceeds the remaining budget', () => {
+    const header = msg('system', START_CONTEXT_HEADER);
+    const oversized = msg('system', chars(400));
+    const compact = msg('system', chars(10));
+    const current = msg('user', chars(2));
+    const protectedTokens = RESPONSE_SAFETY_TOKENS
+      + CHAT_TEMPLATE_BASE_TOKENS
+      + estimateTokens('SYS') + CHAT_TEMPLATE_MESSAGE_TOKENS
+      + estimateTokens(current.content) + CHAT_TEMPLATE_MESSAGE_TOKENS;
+    const recallTokens = estimateTokens(header.content) + CHAT_TEMPLATE_MESSAGE_TOKENS
+      + estimateTokens(compact.content) + CHAT_TEMPLATE_MESSAGE_TOKENS;
+    const result = buildContextWindow({
+      systemPrompt: 'SYS',
+      startContext: [header, oversized, compact],
+      history: [current],
+      numCtx: protectedTokens + MIN_EFFECTIVE_NUM_PREDICT + recallTokens,
+      numPredict: 1_600,
+    });
+
+    expect(result).toEqual([msg('system', 'SYS'), header, compact, current]);
+  });
+
+  it('bounds configuration-derived system data while keeping essential instructions', () => {
+    const marker = 'OVERSIZED_PROFILE_MARKER';
+    const config = SarahConfigSchema.parse({
+      profile: {
+        displayName: marker,
+        usagePurposes: Array.from({ length: 20 }, () => 'x'.repeat(200)),
+        hobbies: Array.from({ length: 20 }, () => 'y'.repeat(200)),
+        linkPreferences: Array.from({ length: 20 }, (_, index) => ({
+          description: `z${index}`.repeat(100),
+          url: `https://example.test/${'u'.repeat(180)}${index}`,
+        })),
+      },
+      personalization: {
+        characterTraits: Array.from({ length: 20 }, () => 't'.repeat(200)),
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const prompt = buildSystemPrompt(config, 'chat');
+    const maximum = config.llm.workerOptions.num_ctx
+      - RESPONSE_SAFETY_TOKENS
+      - CHAT_TEMPLATE_BASE_TOKENS
+      - (2 * CHAT_TEMPLATE_MESSAGE_TOKENS)
+      - MIN_EFFECTIVE_NUM_PREDICT
+      - MIN_CURRENT_USER_PROMPT_TOKENS;
+
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(maximum);
+    expect(prompt).toContain('You are Sarah, a desktop assistant.');
+    expect(prompt).toContain('You MUST write your answer in German.');
+    expect(prompt).not.toContain(marker);
+    expect(warn).toHaveBeenCalled();
+
+    const protectedPrompt = appendRuntimeTrustInstructions(prompt, {
+      external: true,
+      local: true,
+    });
+    expect(() => buildContextWindow({
+      systemPrompt: protectedPrompt,
+      startContext: [],
+      history: [msg('user', chars(MIN_CURRENT_USER_PROMPT_TOKENS))],
+      numCtx: config.llm.workerOptions.num_ctx,
+      numPredict: MIN_EFFECTIVE_NUM_PREDICT,
+    })).not.toThrow();
   });
 
   it('drops start context before live history', () => {

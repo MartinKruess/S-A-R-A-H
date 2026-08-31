@@ -329,7 +329,9 @@ chatInput.addEventListener('keydown', (e) => {
       turnUserBubbles.delete(turnId);
       terminalTurns.add(turnId);
       removeChatProcessing(turnId, pendingTurnBubbles);
-      console.warn('[Dashboard] Chat submission failed:', error);
+      console.warn(
+        `[Dashboard] Chat submission failed error=${error instanceof Error ? error.name : 'UnknownError'}`,
+      );
       addBubble('error', 'Die Nachricht konnte nicht gesendet werden.');
     });
   }
@@ -348,7 +350,12 @@ sarah.onChatChunk((data) => {
   }
   if (data.sequence !== output.nextSequence) {
     if (data.sequence > output.nextSequence) {
-      console.warn('[Dashboard] Out-of-order assistant chunk discarded', data);
+      console.warn('[Dashboard] Out-of-order assistant chunk discarded', {
+        turnId: data.turnId,
+        outputId: data.outputId,
+        expectedSequence: output.nextSequence,
+        receivedSequence: data.sequence,
+      });
     }
     return;
   }
@@ -372,11 +379,20 @@ sarah.onChatDone((data) => {
     return;
   }
   if (output.turnId !== data.turnId) {
-    console.warn('[Dashboard] Assistant completion owner mismatch', data);
+    console.warn('[Dashboard] Assistant completion owner mismatch', {
+      outputId: data.outputId,
+      expectedTurnId: output.turnId,
+      receivedTurnId: data.turnId,
+    });
     return;
   }
   if (data.sequence !== output.nextSequence) {
-    console.warn('[Dashboard] Assistant completion sequence mismatch', data);
+    console.warn('[Dashboard] Assistant completion sequence mismatch', {
+      turnId: data.turnId,
+      outputId: data.outputId,
+      expectedSequence: output.nextSequence,
+      receivedSequence: data.sequence,
+    });
     output.bubble.textContent = data.fullText;
   }
   outputBubbles.delete(data.outputId);

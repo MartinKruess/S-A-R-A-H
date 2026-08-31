@@ -3,8 +3,10 @@ import { buildRoutingPrompt } from './routing-prompt.js';
 import { parseRouteTag, type ParsedRoute } from './route-parser.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
 import { runWithTimeout } from '../../core/abort-utils.js';
+import { buildContextWindow } from './context-window.js';
 
 export const ROUTER_NUM_PREDICT = 64;
+export const ROUTER_NUM_CTX = 16_384;
 export const ROUTER_DEADLINE_MS = 15_000;
 
 export interface RoutingResult {
@@ -20,10 +22,13 @@ export class RoutingService {
   ) {}
 
   async route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
-    const messages: ChatMessage[] = [
-      { role: 'system', content: buildRoutingPrompt(this.now()) },
-      { role: 'user', content: text },
-    ];
+    const messages: ChatMessage[] = buildContextWindow({
+      systemPrompt: buildRoutingPrompt(this.now()),
+      startContext: [],
+      history: [{ role: 'user', content: text }],
+      numCtx: ROUTER_NUM_CTX,
+      numPredict: ROUTER_NUM_PREDICT,
+    });
     const start = performance.now();
     const response = await runWithTimeout(
       (deadlineSignal) => chatWithTimeout(this.provider, messages, () => {}, {

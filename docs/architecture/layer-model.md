@@ -176,7 +176,7 @@ Verbindlicher Detailplan und erstes Audit:
 ## 7. Layer 3 – Intelligence, Decisions und Planning
 
 **Leitfrage:** Wie wird aus einem Nutzerziel ein sinnvoller, überprüfbarer Lösungsweg?
-**Aktueller Stand:** ⚪ – Zielbild vorhanden, noch kein vollständiges Architektur-Audit.
+**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet; der allgemeine Planner-/Evaluator-Kreislauf und mehrere gemeinsame Entscheidungsverträge fehlen noch.
 
 ### Gehört zu Layer 3
 
@@ -207,6 +207,23 @@ Ziel verstehen
 ```
 
 Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Sie können anfangs dasselbe Modell verwenden, müssen aber getrennte Verantwortungen und überprüfbare Verträge besitzen.
+
+### Bereits vorhandene Grundlage
+
+- deterministisches Routing zwischen Direktantwort, Action und Worker
+- zentrale, vor Ankündigung und Ausführung erneut geprüfte ActionPolicy
+- fachliches Grounding für Timer und Reminder sowie korrelierte Bestätigungen
+- begrenztes Worker- und Router-Kontextbudget mit ehrlicher Überlaufmeldung
+- datensicherer Recall und systemseitige Vertrauensgrenzen für externe beziehungsweise lokale Daten
+- abgesicherte Turn-, Privacy- und Provenienzgrenzen zu Layer 1 und 2
+
+### Nächste Architekturbausteine
+
+- kleiner `DecisionContext` und aktueller `CapabilitySnapshot`, ohne den vollständigen Memory-Prompt in den Router zu kopieren
+- gemeinsame fachliche Parameter-Provenienz für alle Actions
+- Multi-Intent-Vertrag für zusammengesetzte Nutzerziele
+- ausführbarer Planner-/Evaluator-Kreislauf mit Schritten, Erfolgskriterien und kontrollierter Re-Planung
+- echte Executor-Verträge oder fail-closed Ablehnung für Backend-, Extern- und Vision-Routen
 
 ## 8. Layer 4 – Fähigkeiten und Tools
 

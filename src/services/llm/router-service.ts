@@ -5,7 +5,10 @@ import type { BusEvents } from '../../core/bus-events.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import { MEMORY_RECOVERY_GUARD_KEY } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
-import { buildSystemPrompt } from './prompt-builder.js';
+import {
+  appendRuntimeTrustInstructions,
+  buildSystemPrompt,
+} from './prompt-builder.js';
 import { serializePromptData } from './prompt-data.js';
 import {
   createSensitiveTurnGuard,
@@ -19,6 +22,7 @@ import { Layer2MemoryStore, type CuratedMemoryRow } from '../../core/storage/lay
 import { MemoryCurator } from './memory-curator.js';
 import {
   buildContextWindow,
+  ContextWindowError,
   MIN_EFFECTIVE_NUM_PREDICT,
   START_CONTEXT_HEADER,
   type ContextWindowInput,
@@ -96,6 +100,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
   timeout: 'Sarah hat den Faden verloren... Versuch es nochmal.',
   connection: 'Sarah ist kurz weggedriftet. Einen Moment...',
+  context: 'Die aktuelle Anfrage und Sarahs Einstellungen sind zu umfangreich für das konfigurierte Kontextfenster.',
 };
 
 
@@ -238,6 +243,7 @@ export class RouterService implements SarahService {
     assistants: string[];
     persistence: TurnPersistencePolicy;
     inheritedTransient: boolean;
+    inheritedPrivateContext: boolean;
     externalData: boolean;
     localData: boolean;
     workerOutputStarted: boolean;
@@ -630,7 +636,11 @@ export class RouterService implements SarahService {
     const togglesIncognito = envelope.command.kind === 'anonymous'
       && envelope.command.arguments.length === 0;
     const managesMemory = envelope.command.kind === 'memory';
-    const privateTurn = this.incognitoActive || envelope.command.kind === 'anonymous';
+    const oneShotAnonymous = envelope.command.kind === 'anonymous'
+      && envelope.command.arguments.length > 0
+      && trust.anonymousEnabled;
+    const privateTurn = this.incognitoActive || oneShotAnonymous;
+    const inheritedPrivateContext = this.history.some((entry) => entry.privateContext);
     const sensitiveGuard = createSensitiveTurnGuard(envelope.effectiveText);
     this.turnDrafts.set(envelope.turnId, {
       historyUser: redactSensitiveLiveContext(envelope.effectiveText, sensitiveGuard),
@@ -644,14 +654,17 @@ export class RouterService implements SarahService {
           && !managesMemory,
         exclusions: [...trust.memoryExclusions],
       },
-      inheritedTransient: this.history.some((entry) => entry.privateContext),
+      inheritedTransient: inheritedPrivateContext,
+      inheritedPrivateContext,
       externalData: false,
       localData: false,
       workerOutputStarted: false,
       commitStarted: false,
-      suppressHistory: togglesIncognito || managesMemory,
+      suppressHistory: togglesIncognito
+        || managesMemory
+        || (envelope.command.kind === 'anonymous' && !trust.anonymousEnabled),
       privateTurn,
-      privateContext: privateTurn || this.history.some((entry) => entry.privateContext),
+      privateContext: privateTurn || inheritedPrivateContext,
       recalledContents: [],
       sensitiveGuard,
     });
@@ -718,9 +731,11 @@ export class RouterService implements SarahService {
       }
       this.context.actionConfirmations.invalidateTurn(envelope.turnId);
       this.turnDrafts.delete(envelope.turnId);
-      const message = error instanceof Error && error.name === 'TimeoutError'
-        ? ERROR_MESSAGES.timeout
-        : ERROR_MESSAGES.connection;
+      const message = error instanceof ContextWindowError
+        ? ERROR_MESSAGES.context
+        : error instanceof Error && error.name === 'TimeoutError'
+          ? ERROR_MESSAGES.timeout
+          : ERROR_MESSAGES.connection;
       this.emitError(envelope.turnId, message);
       this.emitTerminal(envelope.turnId, 'error', message);
     }
@@ -870,6 +885,14 @@ export class RouterService implements SarahService {
         sourceTurnId: envelope.turnId,
         confidence: 1,
       }, { allowed: true, exclusions: trust.memoryExclusions }), signal);
+      if (id != null) {
+        await this.persistExplicitMemorySource(
+          envelope.turnId,
+          envelope.originalText,
+          trust.memoryExclusions,
+          signal,
+        );
+      }
       await this.emitAssistantResponse(
         envelope.turnId,
         id == null
@@ -1016,7 +1039,11 @@ export class RouterService implements SarahService {
     const { effectiveText: text, mode, turnId } = envelope;
     throwIfAborted(signal);
 
-    const explicitMemory = text.match(EXPLICIT_REMEMBER_PATTERN)?.[1]?.trim();
+    const explicitMatch = text.match(EXPLICIT_REMEMBER_PATTERN)?.[1]?.trim();
+    const explicitMemory = explicitMatch && envelope.command.kind === 'custom'
+      && envelope.command.arguments.length > 0
+      ? envelope.command.arguments.trim()
+      : explicitMatch;
     if (explicitMemory && !MEANINGLESS_MEMORY_PATTERN.test(explicitMemory)) {
       const draft = this.turnDrafts.get(turnId);
       if (draft) draft.suppressHistory = true;
@@ -1048,6 +1075,14 @@ export class RouterService implements SarahService {
         sourceTurnId: turnId,
         confidence: 1,
       }, { allowed: true, exclusions: trust.memoryExclusions }), signal);
+      if (id != null) {
+        await this.persistExplicitMemorySource(
+          turnId,
+          envelope.originalText,
+          trust.memoryExclusions,
+          signal,
+        );
+      }
       await this.emitAssistantResponse(
         turnId,
         id == null ? 'Das kann ich nicht als Erinnerung speichern.' : `Erinnerung ${id} wurde gespeichert.`,
@@ -1254,10 +1289,7 @@ export class RouterService implements SarahService {
     return currentJob;
   }
 
-  /**
-   * The single exit for assistant text (Spec §3): llm:chunk + llm:done,
-   * history.push and persistence via persistMessage — never a raw insert.
-   */
+  /** The single exit for assistant text: output first, draft-owned recording only. */
   private emitAssistantResponse(
     turnId: TurnId,
     text: string,
@@ -1304,17 +1336,7 @@ export class RouterService implements SarahService {
     });
     this.recordAssistantOutput(turnId, protectedText, externalData, localData);
     if (!this.turnDrafts.has(turnId) && recordInHistory) {
-      this.history.push({
-        turnId,
-        role: 'assistant',
-        content: protectedText,
-        transient: externalData || localData,
-        privateContext: false,
-        externalData,
-        localData,
-      });
-      this.trimLiveHistory();
-      await this.persistMessage(turnId, 'assistant', protectedText);
+      console.warn('[Router] Refused to record assistant output without an active turn draft');
     }
   }
 
@@ -1744,6 +1766,10 @@ export class RouterService implements SarahService {
     const startContext: ChatMessage[] = trust.memoryAllowed
       ? this.retrieveStartContext(currentUser)
       : [];
+    const protectedSystemPrompt = appendRuntimeTrustInstructions(systemPrompt, {
+      external: this.history.some((entry) => entry.externalData),
+      local: this.history.some((entry) => entry.localData),
+    });
     const preparedHistory = this.history.map((entry): ChatMessage => ({
       role: entry.role,
       content: entry.externalData
@@ -1753,7 +1779,7 @@ export class RouterService implements SarahService {
           : entry.content,
     }));
     const contextInput: ContextWindowInput = {
-      systemPrompt,
+      systemPrompt: protectedSystemPrompt,
       startContext,
       history: [...preparedHistory, { role: 'user', content: currentUser }],
       numCtx: this.context.parsedConfig.llm.workerOptions.num_ctx,
@@ -1814,17 +1840,18 @@ export class RouterService implements SarahService {
       .slice(0, 5);
 
     if (ranked.length === 0) return [];
-    return [{
-      role: 'system',
-      content: [
-        START_CONTEXT_HEADER,
-        ...ranked.map(({ memory }) => serializePromptData('recalled_memory_data', {
+    return [
+      { role: 'system', content: START_CONTEXT_HEADER },
+      ...ranked.map(({ memory }): ChatMessage => ({
+        role: 'system',
+        content: serializePromptData('recalled_memory_data', {
           id: memory.id,
           kind: memory.kind,
+          createdAt: memory.created_at,
           content: memory.content,
-        })),
-      ].join('\n'),
-    }];
+        }),
+      })),
+    ];
   }
 
   private retrievalTokens(value: string): Set<string> {
@@ -1835,24 +1862,28 @@ export class RouterService implements SarahService {
     );
   }
 
-  /**
-   * Persist a turn message without ever disturbing the answer flow (Spec B, H4):
-   * failures are caught, inserts are skipped in in-memory mode, and the user
-   * sees exactly one visible warning per run.
-   */
-  private async persistMessage(
+  /** Persist the auditable source of an explicit memory without curator staging. */
+  private async persistExplicitMemorySource(
     turnId: TurnId,
-    role: 'user' | 'assistant',
     content: string,
+    exclusions: readonly string[],
+    signal: AbortSignal,
   ): Promise<void> {
+    throwIfAborted(signal);
+    const trust = this.context.parsedConfig.trust;
+    const policy: TurnPersistencePolicy = {
+      allowed: this.memoryPolicyReady && trust.memoryAllowed && !this.incognitoActive,
+      exclusions: [...new Set([...exclusions, ...trust.memoryExclusions])],
+    };
+    if (mustKeepTurnTransient([content], policy)) return;
     if (this.conversationId === FALLBACK_CONVERSATION_ID) {
       this.warnPersistenceOnce();
       return;
     }
     try {
-      await this.context.db.insertTurnMessages(this.conversationId, turnId, [{ role, content }]);
-    } catch (err) {
-      console.warn('[Router] Message persist failed (non-fatal):', err);
+      await this.context.db.insertTurnMessages(this.conversationId, turnId, [{ role: 'user', content }]);
+    } catch {
+      console.warn('[Router] Explicit memory source persist failed (non-fatal)');
       this.warnPersistenceOnce();
     }
   }
@@ -1911,6 +1942,12 @@ export class RouterService implements SarahService {
       this.history = this.history.filter((entry) => (
         !entry.transient && !entry.externalData && !entry.localData
       ));
+    }
+    if (draft.inheritedPrivateContext && !this.incognitoActive) {
+      // One one-shot Anonymous turn may inform one follow-up. Its derived
+      // response is not retained, preventing permanent transience propagation.
+      this.turnDrafts.delete(turnId);
+      return;
     }
     this.history.push({
       turnId,

@@ -9,6 +9,7 @@ import type { BusEvents } from '../../core/bus-events.js';
 import type { ProgramLauncher } from '../../main/program-launcher.js';
 import { ActionConfirmationGate, type ConfirmationLevel } from '../../core/action-confirmation.js';
 import type { ReminderClock } from './reminder-contract.js';
+import type { TurnPersistencePolicy } from '../../core/memory-policy.js';
 
 const TURN_ID = 'turn-1';
 
@@ -63,6 +64,7 @@ function makeService(over: {
   webAccessAllowed?: boolean;
   reminders?: ActionDeps['reminders'];
   reminderClock?: ReminderClock;
+  reminderPersistencePolicy?: TurnPersistencePolicy;
 } = {}): { bus: MessageBus; results: BusEvents['action:result'][]; service: ActionService; spotify: SpotifyActions; media: MediaController; system: SystemActions } {
   const bus = new MessageBus();
   const results: BusEvents['action:result'][] = [];
@@ -85,7 +87,10 @@ function makeService(over: {
       reminderClock: over.reminderClock,
       confirmationGate: over.confirmationGate,
       getConfirmationLevel: () => over.confirmationLevel ?? 'standard',
+      getFileAccess: () => 'specific-folders',
       getWebAccessAllowed: () => over.webAccessAllowed ?? true,
+      getReminderPersistencePolicy: () => over.reminderPersistencePolicy
+        ?? { allowed: true, exclusions: [] },
     },
     { drainTimeoutMs: over.drainTimeoutMs },
   );
@@ -104,6 +109,7 @@ async function request(
   action: string,
   param: string,
   confirmation?: BusEvents['action:request']['confirmation'],
+  context?: Pick<BusEvents['action:request'], 'originMode' | 'privateContext'>,
 ): Promise<void> {
   bus.emit('test', 'action:request', {
     turnId: TURN_ID,
@@ -111,6 +117,7 @@ async function request(
     action,
     param,
     ...(confirmation ? { confirmation } : {}),
+    ...context,
   });
   await new Promise((r) => setTimeout(r, 10));
 }
@@ -206,6 +213,7 @@ describe('ActionService', () => {
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
       getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(), reminders: makeReminders(),
+      getConfirmationLevel: () => 'standard', getFileAccess: () => 'specific-folders', getWebAccessAllowed: () => true,
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     await service.init();
@@ -268,16 +276,72 @@ describe('ActionService', () => {
     const { bus, results, service } = makeService({ reminders, reminderClock });
     await service.init();
 
-    await request(bus, 'set_reminder', 'after=30m|text=Steuerberater anrufen');
+    await request(bus, 'set_reminder', 'after=30m|text=Steuerberater anrufen', undefined, {
+      originMode: 'chat',
+      privateContext: false,
+    });
 
     expect(reminders.create).toHaveBeenCalledWith({
       dueLocal: '2026-08-30T10:45',
       text: 'Steuerberater anrufen',
+      originMode: 'chat',
+      privateContext: false,
     }, expect.any(AbortSignal));
     expect(results[0]).toMatchObject({
       action: 'set_reminder',
       ok: true,
       speak: expect.stringContaining('30.8.2026 um 10:45 Uhr'),
+    });
+  });
+
+  it.each([
+    {
+      name: 'deaktiviertem Memory',
+      param: 'after=30m|text=Steuerberater anrufen',
+      policy: { allowed: false, exclusions: [] },
+      privateContext: false,
+    },
+    {
+      name: 'passendem Ausschluss',
+      param: 'after=30m|text=Blutdruck beim Hausarzt messen',
+      policy: { allowed: true, exclusions: ['Gesundheit'] },
+      privateContext: false,
+    },
+    {
+      name: 'unbedingt privatem Inhalt',
+      param: 'after=30m|text=Passwort ist Fuchs-17',
+      policy: { allowed: true, exclusions: [] },
+      privateContext: false,
+    },
+    {
+      name: 'privatem Kontext',
+      param: 'after=30m|text=Steuerberater anrufen',
+      policy: { allowed: true, exclusions: [] },
+      privateContext: true,
+    },
+  ] satisfies Array<{
+    name: string;
+    param: string;
+    policy: TurnPersistencePolicy;
+    privateContext: boolean;
+  }>)('verweigert Reminder-Persistenz bei $name', async ({ param, policy, privateContext }) => {
+    const reminders = makeReminders();
+    const { bus, results, service } = makeService({
+      reminders,
+      reminderPersistencePolicy: policy,
+    });
+    await service.init();
+
+    await request(bus, 'set_reminder', param, undefined, {
+      originMode: 'chat',
+      privateContext,
+    });
+
+    expect(reminders.create).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      action: 'set_reminder',
+      ok: false,
+      speak: expect.stringContaining('Datenschutzgründen'),
     });
   });
 
@@ -392,6 +456,7 @@ describe('ActionService', () => {
     const service = new ActionService(bus, {
       launcher: { launch: vi.fn() } as unknown as ProgramLauncher,
       getPrograms: () => [], search: makeSearch(), system, spotify: makeSpotify(), media: makeMedia(), reminders: makeReminders(),
+      getConfirmationLevel: () => 'standard', getFileAccess: () => 'specific-folders', getWebAccessAllowed: () => true,
     });
     bus.on('action:request', (msg) => service.onMessage(msg));
     bus.on('turn:cancel', (msg) => service.onMessage(msg));
@@ -447,6 +512,21 @@ describe('ActionService', () => {
     await minimal.service.init();
     await request(minimal.bus, 'lock_screen', '');
     expect(minimal.results[0]).toMatchObject({ ok: true });
+  });
+
+  it('requires confirmation at minimal level before cancelling every reminder', async () => {
+    const reminders = makeReminders();
+    const current = makeService({ reminders, confirmationLevel: 'minimal' });
+    await current.service.init();
+
+    await request(current.bus, 'cancel_reminder', 'all');
+
+    expect(reminders.cancel).not.toHaveBeenCalled();
+    expect(current.results[0]).toMatchObject({
+      action: 'cancel_reminder',
+      ok: false,
+      speak: 'Diese Aktion wurde nicht bestätigt.',
+    });
   });
 
   it.each(['minimal', 'standard', 'maximal'] as const)(

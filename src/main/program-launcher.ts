@@ -120,10 +120,8 @@ export class ProgramLauncher {
     const safeQuery = sanitizeLauncherText(query);
     const match = matchProgram(safeQuery, programs);
     console.log(
-      `[ProgramLauncher] query=${JSON.stringify(safeQuery)} programs=${programs.length} → ${match.kind}` +
-        (match.kind === 'hit'
-          ? ` (${displayProgramName(match.program.name)}, type=${match.program.type}, path=${JSON.stringify(match.program.path)})`
-          : ''),
+      `[ProgramLauncher] match programs=${programs.length} result=${match.kind}` +
+        (match.kind === 'hit' ? ` type=${match.program.type}` : ''),
     );
     if (match.kind === 'ambiguous') {
       const candidates = match.candidates
@@ -172,8 +170,7 @@ export class ProgramLauncher {
     const aumid = program.path.replace(/^appx:/, '');
     const processName = program.processName ?? knownAppxProcess(aumid);
     console.log(
-      `[ProgramLauncher] launchAppx explorer.exe shell:AppsFolder\\${aumid}` +
-        ` (verify=${processName ?? 'none'})`,
+      `[ProgramLauncher] launchAppx delegated verifyConfigured=${processName !== undefined}`,
     );
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -195,7 +192,7 @@ export class ProgramLauncher {
 
       this.execFileFn('explorer.exe', [`shell:AppsFolder\\${aumid}`], (err) => {
         if (settled) return;
-        if (err) console.warn('[ProgramLauncher] launchAppx explorer exit non-zero (ignored):', aumid, err.message);
+        if (err) console.warn('[ProgramLauncher] launchAppx explorer exit non-zero (ignored)');
 
         if (!processName) {
           console.warn('[ProgramLauncher] launchAppx no processName → launch not verifiable');
@@ -213,7 +210,7 @@ export class ProgramLauncher {
               ? await this.verifyProcess(processName, signal)
               : await this.verifyProcess(processName);
             throwIfAborted(signal);
-            console.log(`[ProgramLauncher] launchAppx verify ${processName} → running=${running}`);
+            console.log(`[ProgramLauncher] launchAppx verify running=${running}`);
             finish(
               running
                 ? { ok: true }
@@ -234,7 +231,7 @@ export class ProgramLauncher {
       child.once('error', (err: Error) => {
         if (settled) return;
         settled = true;
-        console.warn('[ProgramLauncher] spawn error:', program.path, err);
+        console.warn(`[ProgramLauncher] spawn failed error=${err.name || 'Error'}`);
         resolve({ ok: false, speak: `${program.name} ließ sich nicht starten.` });
       });
       child.once('spawn', () => {

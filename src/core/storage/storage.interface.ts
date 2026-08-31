@@ -171,6 +171,9 @@ export interface StorageProvider {
   /** Atomically removes unreadable/quarantined Layer-2 originals and their recovery copies. */
   purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult>;
 
+  /** Atomically removes unreadable reminder originals and their recursive quarantine copies. */
+  purgeQuarantinedReminders?(): Promise<number>;
+
   /** Atomically removes policy-matching legacy memories plus every unreadable legacy original/copy. */
   purgeLayer2LegacyMemory(input: Layer2LegacyPolicyPurgeInput): Promise<number>;
 

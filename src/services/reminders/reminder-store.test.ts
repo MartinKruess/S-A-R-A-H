@@ -34,6 +34,8 @@ describe('ReminderStore', () => {
     const reminder = await store.create({
       dueLocal: '2026-08-31T10:15',
       text: '  Steuerberater   anrufen  ',
+      originMode: 'voice',
+      privateContext: false,
     });
 
     expect(reminder).toEqual(expect.objectContaining({
@@ -42,6 +44,8 @@ describe('ReminderStore', () => {
       text: 'Steuerberater anrufen',
       state: 'pending',
       sourceKind: 'local',
+      originMode: 'voice',
+      privateContext: false,
     }));
     expect(await store.listOpen()).toEqual([reminder]);
   });
@@ -81,6 +85,8 @@ describe('ReminderStore', () => {
       external_id: string;
       state: string;
       source_kind: string;
+      origin_mode: string;
+      private_context: number;
     }>('reminders', { id: created.id });
 
     expect(row.due_local).toMatch(/^sarah-enc:v2:/u);
@@ -90,6 +96,8 @@ describe('ReminderStore', () => {
     expect(row.text).not.toContain('Manuel');
     expect(row.state).toBe('pending');
     expect(row.source_kind).toBe('local');
+    expect(row.origin_mode).toBe('chat');
+    expect(row.private_context).toBe(1);
   });
 
   it('refuses creation when bootstrap reports volatile storage', async () => {

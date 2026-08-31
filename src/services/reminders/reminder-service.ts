@@ -7,6 +7,7 @@ import type {
   ReminderStateTransition,
 } from './reminder-types.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
+import type { TurnMode } from '../../core/turn-contract.js';
 
 export type {
   ReminderAgendaItem,
@@ -17,6 +18,8 @@ export type {
 
 export type ReminderCreateRecord = CreateReminderInput & {
   sourceKind: 'local';
+  originMode: TurnMode;
+  privateContext: boolean;
   createdAt: string;
 };
 export type ReminderStoreTransition = ReminderStateTransition;
@@ -50,6 +53,8 @@ export interface ReminderNotification {
   text: string;
   overdue: boolean;
   speak: string;
+  originMode: TurnMode;
+  privateContext: boolean;
 }
 
 export interface ReminderClock {
@@ -222,7 +227,10 @@ export class ReminderService implements SarahService {
   }
 
   /** Persists one already validated local reminder and immediately replans the scheduler. */
-  create(input: { dueLocal: string; text: string }, signal?: AbortSignal): Promise<ReminderAgendaItem> {
+  create(
+    input: { dueLocal: string; text: string; originMode: TurnMode; privateContext: boolean },
+    signal?: AbortSignal,
+  ): Promise<ReminderAgendaItem> {
     this.assertOperational();
     throwIfAborted(signal);
     if (!this.store.persistent) return Promise.reject(new ReminderServiceError('not_persistent'));
@@ -242,6 +250,8 @@ export class ReminderService implements SarahService {
         dueLocal: input.dueLocal,
         text: input.text,
         sourceKind: 'local',
+        originMode: input.originMode,
+        privateContext: input.privateContext,
         createdAt: this.clock.now().toISOString(),
       });
       try {
@@ -384,6 +394,8 @@ export class ReminderService implements SarahService {
           text: record.text,
           overdue,
           speak: notificationText(record.text, overdue),
+          originMode: record.originMode,
+          privateContext: record.privateContext,
         }, this.notificationAbort.signal);
       } catch (error) {
         this.onError(error instanceof Error ? error : new Error('Reminder notification failed'));

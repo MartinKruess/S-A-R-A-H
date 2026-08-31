@@ -104,6 +104,8 @@ function record(id: number, dueLocal: string, text: string, state: ReminderState
     text,
     state,
     sourceKind: 'local',
+    originMode: 'voice',
+    privateContext: false,
     createdAt: '2026-08-30T08:00:00.000Z',
     firingAt: null,
     deliveredAt: null,
@@ -137,6 +139,25 @@ describe('ReminderService', () => {
     expect(notifications.every((item) => item.overdue)).toBe(true);
     expect(notifications[0].speak).toBe('Überfällige Erinnerung: Erste Erinnerung.');
     expect(store.records.map((item) => item.state)).toEqual(['delivered', 'delivered']);
+    await service.destroy();
+  });
+
+  it('delivers the persisted input mode and private-context provenance', async () => {
+    const privateChatRecord = record(1, '2026-08-30T09:00', 'Diskrete Erinnerung');
+    privateChatRecord.originMode = 'chat';
+    privateChatRecord.privateContext = true;
+    const notifications: ReminderNotification[] = [];
+    const service = new ReminderService({
+      store: new MemoryReminderStore(true, [privateChatRecord]),
+      clock: new FakeClock(localDate(2026, 8, 30, 10, 0)),
+      notify: (notification) => { notifications.push(notification); return true; },
+    });
+
+    await service.init();
+
+    expect(notifications).toEqual([
+      expect.objectContaining({ originMode: 'chat', privateContext: true }),
+    ]);
     await service.destroy();
   });
 
@@ -267,15 +288,24 @@ describe('ReminderService', () => {
       notify: () => true,
     });
     await volatile.init();
-    await expect(volatile.create({ dueLocal: '2026-08-30T11:00', text: 'Nicht dauerhaft' }))
+    await expect(volatile.create({
+      dueLocal: '2026-08-30T11:00',
+      text: 'Nicht dauerhaft',
+      originMode: 'voice',
+      privateContext: false,
+    }))
       .rejects.toMatchObject({ code: 'not_persistent' } satisfies Partial<ReminderServiceError>);
     await volatile.destroy();
 
     const store = new MemoryReminderStore();
     const service = new ReminderService({ store, clock, notify: () => true });
     await service.init();
-    await service.create({ dueLocal: '2026-08-31T09:00', text: 'Morgen' });
-    await service.create({ dueLocal: '2026-08-30T12:00', text: 'Heute' });
+    await service.create({
+      dueLocal: '2026-08-31T09:00', text: 'Morgen', originMode: 'voice', privateContext: false,
+    });
+    await service.create({
+      dueLocal: '2026-08-30T12:00', text: 'Heute', originMode: 'voice', privateContext: false,
+    });
 
     expect((await service.list('today')).map((item) => item.text)).toEqual(['Heute']);
     expect((await service.list('upcoming')).map((item) => item.text)).toEqual(['Heute', 'Morgen']);
@@ -322,7 +352,12 @@ describe('ReminderService', () => {
     const service = new ReminderService({ store, clock, notify: () => true });
     await service.init();
 
-    await service.create({ dueLocal: '2026-10-25T02:30', text: 'Nach der Zeitumstellung' });
+    await service.create({
+      dueLocal: '2026-10-25T02:30',
+      text: 'Nach der Zeitumstellung',
+      originMode: 'voice',
+      privateContext: false,
+    });
 
     clock.set(secondOccurrence);
     await service.reconcile();
@@ -346,7 +381,12 @@ describe('ReminderService', () => {
       });
       await service.init();
 
-      await service.create({ dueLocal: '2026-04-05T01:45', text: 'Zweite lokale Minute' });
+      await service.create({
+        dueLocal: '2026-04-05T01:45',
+        text: 'Zweite lokale Minute',
+        originMode: 'voice',
+        privateContext: false,
+      });
 
       clock.set(secondOccurrence);
       await service.reconcile();
@@ -372,7 +412,12 @@ describe('ReminderService', () => {
       .mockResolvedValueOnce([])
       .mockRejectedValueOnce(new Error('scheduler read failed'));
 
-    await expect(service.create({ dueLocal: '2026-08-30T11:00', text: 'Bleibt angelegt' }))
+    await expect(service.create({
+      dueLocal: '2026-08-30T11:00',
+      text: 'Bleibt angelegt',
+      originMode: 'voice',
+      privateContext: false,
+    }))
       .resolves.toEqual(expect.objectContaining({ text: 'Bleibt angelegt' }));
     expect(store.records).toHaveLength(1);
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'scheduler read failed' }));
@@ -391,7 +436,12 @@ describe('ReminderService', () => {
     controller.abort();
 
     expect(() => service.create(
-      { dueLocal: '2026-08-30T11:00', text: 'Nicht anlegen' },
+      {
+        dueLocal: '2026-08-30T11:00',
+        text: 'Nicht anlegen',
+        originMode: 'voice',
+        privateContext: false,
+      },
       controller.signal,
     )).toThrow(expect.objectContaining({ name: 'AbortError' }));
     expect(() => service.list('upcoming', controller.signal))

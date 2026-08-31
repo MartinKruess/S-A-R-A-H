@@ -74,6 +74,16 @@ describe('ActionConfirmationGate', () => {
     expect(resolveActionConfirmationIntent('Erinnerung Steuerberater abbrechen')).toBe('none');
   });
 
+  it.each([
+    'Muss ich diese Aktion wirklich bestätigen?',
+    'Kann ich diese Aktion später bestätigen?',
+    'Ich weiß nicht, ob ich diese Aktion bestätigen soll',
+    'Warum soll ich den Auftrag bestätigen?',
+    'Was passiert, wenn ich diese Aktion nicht bestätige?',
+  ])('does not consume a question about confirmation as approval: %s', (phrase) => {
+    expect(resolveActionConfirmationIntent(phrase)).not.toBe('confirm');
+  });
+
   it('invalidates only proposals and approvals owned by a failed turn', () => {
     const gate = new ActionConfirmationGate();
     const failedProposalId = gate.request('failed-proposal', 'open_program', 'spotify');

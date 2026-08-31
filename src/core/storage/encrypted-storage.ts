@@ -29,6 +29,7 @@ const PASSTHROUGH_COLUMNS = new Set([
   'source_staging_id', 'kind', 'source_conversation_id', 'source_turn_id',
   'deleted_at', 'close_status', 'source_table', 'source_row_id', 'column_name', 'reason',
   'quarantined_at', 'source_kind', 'firing_at', 'delivered_at', 'cancelled_at',
+  'origin_mode', 'private_context',
 ]);
 
 const SAFE_EMPTY_LEGACY_COLUMNS = new Set([
@@ -256,6 +257,13 @@ export class EncryptedStorage implements StorageProvider {
 
   async purgeQuarantinedLayer2Memory(): Promise<Layer2MemoryPurgeResult> {
     return this.inner.purgeQuarantinedLayer2Memory();
+  }
+
+  async purgeQuarantinedReminders(): Promise<number> {
+    if (!this.inner.purgeQuarantinedReminders) {
+      throw new Error('Storage provider does not support quarantined reminder deletion');
+    }
+    return this.inner.purgeQuarantinedReminders();
   }
 
   async purgeLayer2LegacyMemory(input: Layer2LegacyPolicyPurgeInput): Promise<number> {
