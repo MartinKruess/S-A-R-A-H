@@ -20,6 +20,19 @@ class CuratorWorker implements WorkerTextGenerator {
   }
 }
 
+const astronomyCandidate = JSON.stringify({
+  decision: 'candidate', kind: 'preference', topic: 'Astronomie',
+  content: 'Martin interessiert sich für Astronomie.',
+  evidence: 'Ich interessiere mich für Astronomie.',
+  searchTerms: ['Astronomie'], durability: 'stable', confidence: 0.9,
+});
+const addDecision = JSON.stringify({ action: 'add', topic: null, targets: [] });
+
+function queuedWorker(outputs: readonly string[]): CuratorWorker {
+  let index = 0;
+  return new CuratorWorker(async () => outputs[index++] ?? outputs.at(-1) ?? '{invalid-json');
+}
+
 describe('MemoryCurator', () => {
   let tmpDir: string;
   let db: SqliteStorage;
@@ -51,12 +64,19 @@ describe('MemoryCurator', () => {
     });
   }
 
+  async function stageText(turnId: string, text: string): Promise<void> {
+    await db.insertTurnMessages(1, turnId, [{ role: 'user', content: text }]);
+    await store.stageTurn(1, turnId, [{ role: 'user', content: text }], {
+      allowed: true, exclusions: [],
+    });
+  }
+
   it('uses separate system/data messages and atomically completes one small job', async () => {
     await stage();
-    let received: ChatMessage[] = [];
+    const received: ChatMessage[][] = [];
     const worker = new CuratorWorker(async (messages) => {
-      received = messages;
-      return JSON.stringify({ relevant: true, kind: 'preference', content: 'Interesse an Astronomie.', confidence: 0.9 });
+      received.push(messages);
+      return received.length === 1 ? astronomyCandidate : addDecision;
     });
     let cacheRefreshes = 0;
     const curator = new MemoryCurator(store, worker, {
@@ -66,10 +86,11 @@ describe('MemoryCurator', () => {
 
     await curator.runOne();
 
-    expect(received[0].role).toBe('system');
-    expect(received[1].role).toBe('user');
-    expect(received[1].content).toContain('USER: Ich interessiere mich');
-    expect(received[1].content).toContain('ASSISTANT: Das ist ein spannendes Thema');
+    expect(received[0][0].role).toBe('system');
+    expect(received[0][1].role).toBe('user');
+    expect(received[0][1].content).toContain('USER: Ich interessiere mich');
+    expect(received[0][1].content).toContain('ASSISTANT: Das ist ein spannendes Thema');
+    expect(received).toHaveLength(2);
     expect(await store.list()).toHaveLength(1);
     expect(cacheRefreshes).toBe(1);
     expect(await db.query('messages')).toEqual([]);
@@ -100,7 +121,7 @@ describe('MemoryCurator', () => {
     const curator = new MemoryCurator(
       store,
       new CuratorWorker(async () => JSON.stringify({
-        relevant: false, kind: 'episode', content: '', confidence: 0,
+        decision: 'ignore', reason: 'no-user-fact',
       })),
       { idleDelayMs: 60_000 },
     );
@@ -114,6 +135,162 @@ describe('MemoryCurator', () => {
     await curator.destroy();
   });
 
+  it('does not ask for a delta or persist a temporary mood', async () => {
+    await stageText('turn-temporary', 'Heute nervt mich Schach.');
+    let calls = 0;
+    const curator = new MemoryCurator(store, new CuratorWorker(async () => {
+      calls += 1;
+      return JSON.stringify({
+        decision: 'candidate', kind: 'preference', topic: 'Schach',
+        content: 'Martin ist heute von Schach genervt.', evidence: 'Heute nervt mich Schach.',
+        searchTerms: ['Schach'], durability: 'stable', confidence: 0.9,
+      });
+    }), { idleDelayMs: 60_000 });
+
+    await curator.runOne();
+
+    expect(calls).toBe(1);
+    expect(await store.list()).toEqual([]);
+    expect(await db.query('memory_staging', { state: 'completed' })).toHaveLength(1);
+    await curator.destroy();
+  });
+
+  it('retries a candidate whose claimed evidence is not in the user text', async () => {
+    await stage();
+    const inventedEvidence = JSON.stringify({
+      decision: 'candidate', kind: 'preference', topic: 'Astronomie',
+      content: 'Martin besitzt ein Teleskop.', evidence: 'Ich besitze ein Teleskop.',
+      searchTerms: ['Astronomie', 'Teleskop'], durability: 'stable', confidence: 0.9,
+    });
+    const curator = new MemoryCurator(store, queuedWorker([inventedEvidence, addDecision]), {
+      idleDelayMs: 60_000,
+    });
+
+    await curator.runOne();
+
+    expect(await store.list()).toEqual([]);
+    expect(await store.hasPending()).toBe(true);
+    expect(await db.query('memory_staging')).toEqual([
+      expect.objectContaining({ state: 'pending', attempts: 1 }),
+    ]);
+    await curator.destroy();
+  });
+
+  it('keeps a duplicate in one existing topic without adding a second memory', async () => {
+    const topicId = await db.insert('memory_topics', { title: 'Astronomie', version: 1 });
+    const memoryId = await db.insert('curated_memories', {
+      topic_id: topicId, kind: 'preference', content: 'Martin interessiert sich für Astronomie.',
+      evidence: 'Ich interessiere mich für Astronomie.', source_turn_id: 'old-turn',
+      confidence: 0.9, status: 'active', revision: 1, created_by_action: 'add',
+    });
+    await stage('turn-duplicate');
+    const curator = new MemoryCurator(store, queuedWorker([
+      astronomyCandidate,
+      JSON.stringify({
+        action: 'ignore', topic: { id: topicId, version: 1 },
+        targets: [{ id: memoryId, revision: 1 }],
+      }),
+    ]), { idleDelayMs: 60_000 });
+
+    await curator.runOne();
+
+    expect(await store.list()).toHaveLength(1);
+    expect(await db.query('memory_staging', { turn_id: 'turn-duplicate' })).toEqual([
+      expect.objectContaining({ state: 'completed', decision: 'ignore' }),
+    ]);
+    await curator.destroy();
+  });
+
+  it('adds a distinct chess statement to the offered chess topic', async () => {
+    const topicId = await db.insert('memory_topics', { title: 'Schach', version: 1 });
+    await db.insert('curated_memories', {
+      topic_id: topicId, kind: 'preference', content: 'Martin spielt gern Schach.',
+      evidence: 'Ich spiele gern Schach.', source_turn_id: 'old-chess',
+      confidence: 0.9, status: 'active', revision: 1, created_by_action: 'add',
+    });
+    await stageText('turn-chess', 'Ich lerne gerade die Sizilianische Verteidigung.');
+    const chessCandidate = JSON.stringify({
+      decision: 'candidate', kind: 'fact', topic: 'Schach',
+      content: 'Martin lernt die Sizilianische Verteidigung.',
+      evidence: 'Ich lerne gerade die Sizilianische Verteidigung.',
+      searchTerms: ['Schach', 'Sizilianische Verteidigung'], durability: 'stable', confidence: 0.88,
+    });
+    const curator = new MemoryCurator(store, queuedWorker([
+      chessCandidate,
+      JSON.stringify({ action: 'add', topic: { id: topicId, version: 1 }, targets: [] }),
+    ]), { idleDelayMs: 60_000 });
+
+    await curator.runOne();
+
+    expect(await store.list()).toHaveLength(2);
+    expect(await db.query('memory_topics')).toHaveLength(1);
+    expect(await db.query('memory_topics', { id: topicId })).toEqual([
+      expect.objectContaining({ version: 2 }),
+    ]);
+    await curator.destroy();
+  });
+
+  it('supersedes a clearly revised active preference using the offered revisions', async () => {
+    const topicId = await db.insert('memory_topics', { title: 'Schach', version: 1 });
+    const oldId = await db.insert('curated_memories', {
+      topic_id: topicId, kind: 'preference', content: 'Martin mag kein Schach.',
+      evidence: 'Ich mag kein Schach.', source_turn_id: 'old-negative',
+      confidence: 0.9, status: 'active', revision: 1, created_by_action: 'add',
+    });
+    await stageText('turn-revision', 'Mittlerweile mag ich Schach wirklich gern.');
+    const revised = JSON.stringify({
+      decision: 'candidate', kind: 'preference', topic: 'Schach',
+      content: 'Martin mag Schach mittlerweile gern.',
+      evidence: 'Mittlerweile mag ich Schach wirklich gern.',
+      searchTerms: ['Schach'], durability: 'stable', confidence: 0.95,
+    });
+    const curator = new MemoryCurator(store, queuedWorker([
+      revised,
+      JSON.stringify({
+        action: 'supersede', topic: { id: topicId, version: 1 },
+        targets: [{ id: oldId, revision: 1 }],
+      }),
+    ]), { idleDelayMs: 60_000 });
+
+    await curator.runOne();
+
+    expect(await store.list()).toEqual([
+      expect.objectContaining({ content: 'Martin mag Schach mittlerweile gern.', status: 'active' }),
+    ]);
+    expect(await db.query('curated_memories', { id: oldId })).toEqual([
+      expect.objectContaining({ status: 'superseded', superseded_by_id: expect.any(Number) }),
+    ]);
+    await curator.destroy();
+  });
+
+  it('releases a stale topic decision without a partial write or consumed attempt', async () => {
+    const topicId = await db.insert('memory_topics', { title: 'Astronomie', version: 1 });
+    const memoryId = await db.insert('curated_memories', {
+      topic_id: topicId, kind: 'preference', content: 'Martin interessiert sich für Astronomie.',
+      evidence: 'Ich interessiere mich für Astronomie.', source_turn_id: 'old-turn',
+      confidence: 0.9, status: 'active', revision: 1, created_by_action: 'add',
+    });
+    await stage('turn-stale');
+    let calls = 0;
+    const curator = new MemoryCurator(store, new CuratorWorker(async () => {
+      calls += 1;
+      if (calls === 1) return astronomyCandidate;
+      await db.update('memory_topics', { id: topicId }, { version: 2 });
+      return JSON.stringify({
+        action: 'update', topic: { id: topicId, version: 1 },
+        targets: [{ id: memoryId, revision: 1 }],
+      });
+    }), { idleDelayMs: 60_000 });
+
+    await curator.runOne();
+
+    expect(await store.list()).toHaveLength(1);
+    expect(await db.query('memory_staging', { turn_id: 'turn-stale' })).toEqual([
+      expect.objectContaining({ state: 'pending', attempts: 0, decision: null }),
+    ]);
+    await curator.destroy();
+  });
+
   it('rechecks curator output against the current policy immediately before final write', async () => {
     await stage();
     const policy = { allowed: true, exclusions: [] as string[] };
@@ -122,17 +299,14 @@ describe('MemoryCurator', () => {
     const workerStarted = new Promise<void>((resolve) => { markWorkerStarted = resolve; });
     const workerRelease = new Promise<void>((resolve) => { releaseWorker = resolve; });
     let cacheRefreshes = 0;
+    let workerCalls = 0;
     const curator = new MemoryCurator(
       store,
       new CuratorWorker(async () => {
+        workerCalls += 1;
         markWorkerStarted();
         await workerRelease;
-        return JSON.stringify({
-          relevant: true,
-          kind: 'fact',
-          content: 'Peter interessiert sich für Astronomie.',
-          confidence: 0.8,
-        });
+        return workerCalls === 1 ? astronomyCandidate : addDecision;
       }),
       {
         idleDelayMs: 60_000,
@@ -143,7 +317,7 @@ describe('MemoryCurator', () => {
 
     const running = curator.runOne();
     await workerStarted;
-    policy.exclusions = ['Namen Dritter'];
+    policy.exclusions = ['Astronomie'];
     releaseWorker();
     await running;
 
@@ -178,9 +352,7 @@ describe('MemoryCurator', () => {
     await stage();
     const curator = new MemoryCurator(
       store,
-      new CuratorWorker(async () => JSON.stringify({
-        relevant: true, kind: 'preference', content: 'Interesse an Astronomie.', confidence: 0.9,
-      })),
+      queuedWorker([astronomyCandidate, addDecision]),
       { idleDelayMs: 60_000, onMemoryChanged: () => { throw new Error('cache unavailable'); } },
     );
 
@@ -201,9 +373,8 @@ describe('MemoryCurator', () => {
       store,
       new CuratorWorker(async () => {
         calls += 1;
-        return calls === 1
-          ? '{invalid-json'
-          : JSON.stringify({ relevant: true, kind: 'fact', content: 'Interesse an Astronomie.', confidence: 0.8 });
+        if (calls === 1) return '{invalid-json';
+        return calls === 2 ? astronomyCandidate : addDecision;
       }),
       { idleDelayMs: 60_000 },
     );

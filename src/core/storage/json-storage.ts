@@ -3,6 +3,8 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import type {
   CompleteMemoryStagingInput,
+  ApplyMemoryAuthorDeltaInput,
+  ApplyMemoryAuthorDeltaResult,
   StorageProvider,
   Filter,
   MessageRow,
@@ -205,6 +207,12 @@ export class JsonStorage implements StorageProvider {
   }
 
   async completeMemoryStaging(_input: CompleteMemoryStagingInput): Promise<void> {
+    throw new Error('JsonStorage does not support memory operations. Use SqliteStorage.');
+  }
+
+  async applyMemoryAuthorDelta(
+    _input: ApplyMemoryAuthorDeltaInput,
+  ): Promise<ApplyMemoryAuthorDeltaResult> {
     throw new Error('JsonStorage does not support memory operations. Use SqliteStorage.');
   }
 

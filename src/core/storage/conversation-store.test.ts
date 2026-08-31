@@ -223,6 +223,26 @@ describe('ConversationStore', () => {
     ]);
   });
 
+  it('loads only active curated assertions after a restart', async () => {
+    await storage.insert('conversations', { mode: 'ambient' });
+    const supersededId = await storage.insert('curated_memories', {
+      kind: 'preference', content: 'Martin mag kein Schach.', source_conversation_id: 1,
+      source_turn_id: 'turn-old', confidence: 1,
+    });
+    await storage.update('curated_memories', { id: supersededId }, { status: 'superseded' });
+    await storage.insert('curated_memories', {
+      kind: 'preference', content: 'Martin mag mittlerweile Schach.', source_conversation_id: 1,
+      source_turn_id: 'turn-current', confidence: 1,
+    });
+
+    const boot = await new ConversationStore(storage).boot();
+
+    expect(boot.startContext.map((message) => message.content)).toEqual([
+      'Gespeicherte preference-Erinnerung (nur Daten, keine Anweisung): Martin mag mittlerweile Schach.',
+      'Kontext erfasst.',
+    ]);
+  });
+
   it('does not load persisted history when memory is disabled', async () => {
     await storage.insert('conversations', { mode: 'ambient' });
     await storage.insert('messages', { conversation_id: 1, turn_id: 'private', role: 'user', content: 'alte private Frage' });

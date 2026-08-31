@@ -14,6 +14,7 @@ interface CuratedStartRow {
   kind: CuratedMemoryKind;
   content: string;
   source_conversation_id: number | null;
+  status?: 'active' | 'superseded' | 'deleted';
   deleted_at: string | null;
 }
 
@@ -129,7 +130,7 @@ export class ConversationStore {
     try {
       const rows = await this.db.query<CuratedStartRow>('curated_memories');
       const kept = rows
-        .filter((row) => row.deleted_at == null)
+        .filter((row) => row.deleted_at == null && (row.status == null || row.status === 'active'))
         .filter((row) => !mustKeepTurnTransient([row.content], {
           allowed: true,
           exclusions: memoryExclusions,

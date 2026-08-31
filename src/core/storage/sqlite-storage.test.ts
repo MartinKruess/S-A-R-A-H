@@ -104,6 +104,32 @@ describe('SqliteStorage', () => {
       expect(await storage.query('messages', { turn_id: 'turn-safe' })).toHaveLength(1);
     });
 
+    it('purges every statement of a quarantined topic and removes the topic graph', async () => {
+      const topicId = await storage.insert('memory_topics', { title: 'Ciphertext', version: 1 });
+      await storage.insert('curated_memories', {
+        topic_id: topicId, kind: 'fact', content: 'A', evidence: 'A',
+        source_turn_id: 'a', confidence: 0.8, status: 'active', revision: 1,
+        created_by_action: 'add',
+      });
+      await storage.insert('curated_memories', {
+        topic_id: topicId, kind: 'fact', content: 'B', evidence: 'B',
+        source_turn_id: 'b', confidence: 0.8, status: 'active', revision: 1,
+        created_by_action: 'add',
+      });
+      await storage.insert('storage_quarantine', {
+        source_table: 'memory_topics', source_row_id: topicId, column_name: 'title',
+        ciphertext: 'isolated', row_data: '{}', reason: 'cipher_authentication_failed',
+      });
+
+      await expect(storage.purgeQuarantinedLayer2Memory()).resolves.toEqual({
+        turns: 0, staging: 0, memories: 2, legacy: 0, quarantine: 1,
+      });
+      expect(await storage.query('curated_memories')).toEqual([]);
+      expect(await storage.query('memory_sources')).toEqual([]);
+      expect(await storage.query('memory_topics')).toEqual([]);
+      expect(await storage.query('storage_quarantine')).toEqual([]);
+    });
+
     it('purges an unreadable reminder and its recursive quarantine copies', async () => {
       const reminderId = await storage.insert('reminders', {
         due_local: '2026-09-01T08:00',
@@ -416,7 +442,7 @@ describe('SqliteStorage', () => {
       await migrated.close();
 
       const verified = new Database(dbPath, { readonly: true });
-      expect(verified.pragma('user_version', { simple: true })).toBe(3);
+      expect(verified.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION);
       expect(verified.prepare('SELECT COUNT(*) FROM reminders').pluck().get()).toBe(1);
       verified.close();
     });
@@ -449,8 +475,74 @@ describe('SqliteStorage', () => {
       await migrated.close();
 
       const verified = new Database(dbPath, { readonly: true });
-      expect(verified.pragma('user_version', { simple: true })).toBe(3);
+      expect(verified.pragma('user_version', { simple: true })).toBe(SQLITE_SCHEMA_VERSION);
       verified.close();
+    });
+
+    it('migrates v3 curated memories without changing their row-bound ciphertext', async () => {
+      const dbPath = path.join(tmpDir, 'v3-memory-author.db');
+      const raw = new Database(dbPath);
+      raw.exec(`
+        CREATE TABLE conversations (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          started_at TEXT, ended_at TEXT, mode TEXT NOT NULL DEFAULT 'ambient',
+          summary TEXT DEFAULT '', close_status TEXT NOT NULL DEFAULT 'open'
+        );
+        CREATE TABLE memory_staging (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id INTEGER NOT NULL,
+          turn_id TEXT NOT NULL UNIQUE,
+          source_content TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          lease_started_at TEXT,
+          policy_terms TEXT NOT NULL DEFAULT '',
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE curated_memories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_staging_id INTEGER UNIQUE,
+          kind TEXT NOT NULL,
+          content TEXT NOT NULL,
+          source_conversation_id INTEGER,
+          source_turn_id TEXT NOT NULL,
+          confidence REAL NOT NULL,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          deleted_at TEXT
+        );
+        INSERT INTO conversations (id) VALUES (1);
+        INSERT INTO memory_staging (
+          id, conversation_id, turn_id, source_content, state, policy_terms
+        ) VALUES (7, 1, 'legacy-turn', '', 'completed', 'fingerprint');
+        INSERT INTO curated_memories (
+          id, source_staging_id, kind, content, source_conversation_id,
+          source_turn_id, confidence
+        ) VALUES (11, 7, 'fact', 'sarah-enc:v2:unchanged-ciphertext', 1, 'legacy-turn', 0.8);
+      `);
+      raw.pragma('user_version = 3');
+      raw.close();
+
+      const migrated = new SqliteStorage(dbPath);
+      const [memory] = await migrated.query<{
+        id: number; content: string; topic_id: number; status: string; revision: number;
+      }>('curated_memories');
+      expect(memory).toEqual(expect.objectContaining({
+        id: 11,
+        content: 'sarah-enc:v2:unchanged-ciphertext',
+        topic_id: 11,
+        status: 'active',
+        revision: 1,
+      }));
+      expect(await migrated.query('memory_topics', { id: 11 })).toHaveLength(1);
+      expect(await migrated.query('memory_sources', { memory_id: 11 })).toEqual([
+        expect.objectContaining({ source_staging_id: 7, source_turn_id: 'legacy-turn' }),
+      ]);
+      expect(await migrated.query('memory_staging', { id: 7 })).toEqual([
+        expect.objectContaining({ decision: null, decision_topic_id: null, result_memory_id: null }),
+      ]);
+      await migrated.close();
     });
 
     it('rolls back the v1 migration when the reminder schema conflicts', () => {
@@ -498,6 +590,129 @@ describe('SqliteStorage', () => {
       expect(await storage.query('curated_memories')).toHaveLength(1);
       expect(await storage.query('memory_staging', { state: 'completed', source_content: '' })).toHaveLength(1);
       expect(await storage.query('messages', { turn_id: 'turn-memory' })).toHaveLength(0);
+    });
+
+    it('atomically applies an add delta and records its source and staging decision', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-author-add',
+        [{ role: 'user', content: 'Ich spiele gern Schach.' }],
+        'USER: Ich spiele gern Schach.',
+        'fingerprint',
+      );
+      await storage.update('memory_staging', { id: stagingId }, { state: 'processing' });
+
+      const result = await storage.applyMemoryAuthorDelta({
+        stagingId,
+        action: 'add',
+        newTopic: { title: 'Schach' },
+        targets: [],
+        statement: {
+          kind: 'preference',
+          content: 'Martin spielt gern Schach.',
+          evidence: 'Ich spiele gern Schach.',
+          confidence: 0.94,
+        },
+      });
+
+      expect(result).toEqual({ action: 'add', topicId: expect.any(Number), memoryId: expect.any(Number) });
+      expect(await storage.query('messages', { turn_id: 'turn-author-add' })).toEqual([]);
+      expect(await storage.query('memory_staging', { id: stagingId })).toEqual([
+        expect.objectContaining({
+          state: 'completed', decision: 'add',
+          decision_topic_id: result.topicId, result_memory_id: result.memoryId,
+        }),
+      ]);
+      expect(await storage.query('memory_sources', { memory_id: result.memoryId! })).toEqual([
+        expect.objectContaining({ source_staging_id: stagingId, source_turn_id: 'turn-author-add' }),
+      ]);
+    });
+
+    it('rejects a stale topic snapshot without partially consuming the staging turn', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const topicId = await storage.insert('memory_topics', { title: 'Schach', version: 2 });
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-author-stale',
+        [{ role: 'user', content: 'Noch ein Detail.' }],
+        'USER: Noch ein Detail.',
+        'fingerprint',
+      );
+      await storage.update('memory_staging', { id: stagingId }, { state: 'processing' });
+
+      await expect(storage.applyMemoryAuthorDelta({
+        stagingId,
+        action: 'add',
+        topic: { id: topicId, version: 1 },
+        targets: [],
+        statement: {
+          kind: 'fact', content: 'Ein Detail.', evidence: 'Noch ein Detail.', confidence: 0.8,
+        },
+      })).rejects.toThrow('topic');
+
+      expect(await storage.query('curated_memories')).toEqual([]);
+      expect(await storage.query('messages', { turn_id: 'turn-author-stale' })).toHaveLength(1);
+      expect(await storage.query('memory_staging', { id: stagingId })).toEqual([
+        expect.objectContaining({ state: 'processing', decision: null, result_memory_id: null }),
+      ]);
+    });
+
+    it('merges offered active targets while preserving every source', async () => {
+      await storage.insert('conversations', { id: 1 });
+      const topicId = await storage.insert('memory_topics', { title: 'Schach', version: 1 });
+      const firstId = await storage.insert('curated_memories', {
+        topic_id: topicId, kind: 'fact', content: 'Spielt Schach', evidence: 'A',
+        source_turn_id: 'old-a', confidence: 0.8, status: 'active', revision: 1,
+        created_by_action: 'add',
+      });
+      const secondId = await storage.insert('curated_memories', {
+        topic_id: topicId, kind: 'fact', content: 'Spielt oft Schach', evidence: 'B',
+        source_turn_id: 'old-b', confidence: 0.8, status: 'active', revision: 1,
+        created_by_action: 'add',
+      });
+      await storage.insert('memory_sources', {
+        memory_id: firstId, source_key: 'turn:1:old-a', source_type: 'turn',
+        source_conversation_id: 1, source_turn_id: 'old-a',
+      });
+      await storage.insert('memory_sources', {
+        memory_id: secondId, source_key: 'turn:1:old-b', source_type: 'turn',
+        source_conversation_id: 1, source_turn_id: 'old-b',
+      });
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-merge',
+        [{ role: 'user', content: 'Ich spiele häufig Schach.' }],
+        'USER: Ich spiele häufig Schach.',
+        'fingerprint',
+      );
+      await storage.update('memory_staging', { id: stagingId }, { state: 'processing' });
+
+      const result = await storage.applyMemoryAuthorDelta({
+        stagingId,
+        action: 'merge',
+        topic: { id: topicId, version: 1 },
+        targets: [{ id: firstId, revision: 1 }, { id: secondId, revision: 1 }],
+        statement: {
+          kind: 'fact', content: 'Martin spielt häufig Schach.',
+          evidence: 'Ich spiele häufig Schach.', confidence: 0.95,
+        },
+      });
+
+      expect(await storage.query('curated_memories', { status: 'superseded' })).toEqual([
+        expect.objectContaining({ id: firstId, superseded_by_id: result.memoryId }),
+        expect.objectContaining({ id: secondId, superseded_by_id: result.memoryId }),
+      ]);
+      expect(await storage.query('memory_sources', { memory_id: result.memoryId! })).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ source_key: 'turn:1:old-a' }),
+          expect.objectContaining({ source_key: 'turn:1:old-b' }),
+          expect.objectContaining({ source_staging_id: stagingId }),
+        ]),
+      );
+      expect(await storage.query('memory_topics', { id: topicId })).toEqual([
+        expect.objectContaining({ version: 2 }),
+      ]);
     });
 
     it('atomically discards an irrelevant staging item and its retained raw turn', async () => {
