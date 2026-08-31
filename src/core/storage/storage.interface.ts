@@ -46,6 +46,46 @@ export interface CompleteMemoryStagingInput {
   };
 }
 
+export type MemoryAuthorAction = 'add' | 'update' | 'merge' | 'supersede' | 'ignore';
+
+export interface MemoryAuthorTargetSnapshot {
+  id: number;
+  revision: number;
+}
+
+export interface MemoryAuthorStatementWrite {
+  /** Reserved storage identity used internally for authenticated row binding. */
+  id?: number;
+  kind: Exclude<CuratedMemoryKind, 'explicit'>;
+  content: string;
+  evidence: string;
+  confidence: number;
+}
+
+export interface ApplyMemoryAuthorDeltaInput {
+  stagingId: number;
+  action: MemoryAuthorAction;
+  /** Existing topic selected from the offered snapshot. */
+  topic?: { id: number; version: number };
+  /** New topic for an add decision. IDs are reserved before encryption. */
+  newTopic?: { id?: number; title: string };
+  targets: readonly MemoryAuthorTargetSnapshot[];
+  statement?: MemoryAuthorStatementWrite;
+}
+
+export interface ApplyMemoryAuthorDeltaResult {
+  action: MemoryAuthorAction;
+  topicId: number | null;
+  memoryId: number | null;
+}
+
+export class MemoryAuthorStaleWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MemoryAuthorStaleWriteError';
+  }
+}
+
 export interface Layer2MemoryPurgeResult {
   turns: number;
   staging: number;
@@ -153,6 +193,9 @@ export interface StorageProvider {
 
   /** Atomically writes a curated memory and marks its staging item complete. */
   completeMemoryStaging(input: CompleteMemoryStagingInput): Promise<void>;
+
+  /** Atomically applies one previously validated Memory-Author decision. */
+  applyMemoryAuthorDelta?(input: ApplyMemoryAuthorDeltaInput): Promise<ApplyMemoryAuthorDeltaResult>;
 
   /** Atomically discards an irrelevant staging item and its retained raw turn. */
   discardMemoryStaging(stagingId: number): Promise<void>;

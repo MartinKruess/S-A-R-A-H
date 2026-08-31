@@ -1,4 +1,6 @@
 import type {
+  ApplyMemoryAuthorDeltaInput,
+  ApplyMemoryAuthorDeltaResult,
   CuratedMemoryKind,
   MessageRow,
   StorageProvider,
@@ -37,6 +39,44 @@ export interface CuratedMemoryRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  topic_id: number;
+  status: 'active' | 'superseded' | 'deleted';
+  revision: number;
+  superseded_by_id: number | null;
+  created_by_action: 'legacy_import' | 'add' | 'update' | 'merge' | 'supersede' | 'explicit' | 'manual';
+  evidence: string;
+  confirmation_count: number;
+  last_confirmed_at: string | null;
+}
+
+export interface MemoryTopicRow {
+  id: number;
+  title: string | null;
+  version: number;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface MemoryAuthorSnapshot {
+  topic: { id: number; title: string; version: number };
+  memory: Pick<CuratedMemoryRow, 'id' | 'kind' | 'content' | 'confidence' | 'revision' | 'updated_at'>;
+}
+
+export interface MemorySourceRow {
+  id: number;
+  memory_id: number;
+  source_key: string;
+  source_type: 'turn' | 'explicit' | 'manual' | 'legacy';
+  source_staging_id: number | null;
+  source_conversation_id: number | null;
+  source_turn_id: string | null;
+  observed_at: string;
+}
+
+export interface CuratedMemoryView extends CuratedMemoryRow {
+  topic: Pick<MemoryTopicRow, 'id' | 'title' | 'version'>;
+  sources: MemorySourceRow[];
 }
 
 export interface CuratedMemoryWrite {
@@ -167,6 +207,23 @@ function fingerprintMatchesPolicy(
   });
 }
 
+function normalizeEvidence(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('de-DE');
+}
+
+function evidenceBelongsToUser(source: string, evidence: string): boolean {
+  const userStart = source.indexOf('USER:');
+  if (userStart < 0) return false;
+  const assistantStart = source.indexOf('\nASSISTANT:', userStart + 5);
+  const userSource = source.slice(
+    userStart + 5,
+    assistantStart < 0 ? source.length : assistantStart,
+  );
+  const normalizedEvidence = normalizeEvidence(evidence);
+  return normalizedEvidence.length > 0
+    && normalizeEvidence(userSource).includes(normalizedEvidence);
+}
+
 /**
  * Typed Layer-2 memory access over the provider-independent storage boundary.
  *
@@ -289,6 +346,32 @@ export class Layer2MemoryStore {
     };
   }
 
+  /** Claims one exact pending job so an explicit request cannot be overtaken by backlog. */
+  async claim(stagingId: number, now = Date.now()): Promise<MemoryStagingRow | null> {
+    if (!Number.isInteger(stagingId) || stagingId <= 0) return null;
+    const [row] = await this.db.query<MemoryStagingRow>('memory_staging', {
+      id: stagingId,
+      state: 'pending',
+    });
+    if (!row) return null;
+    const updatedAt = new Date(now).toISOString();
+    const updated = await this.db.update('memory_staging', { id: stagingId, state: 'pending' }, {
+      state: 'processing',
+      attempts: row.attempts + 1,
+      lease_started_at: updatedAt,
+      updated_at: updatedAt,
+    });
+    return updated === 1
+      ? {
+          ...row,
+          state: 'processing',
+          attempts: row.attempts + 1,
+          lease_started_at: updatedAt,
+          updated_at: updatedAt,
+        }
+      : null;
+  }
+
   async hasPending(): Promise<boolean> {
     return (await this.db.query<MemoryStagingRow>('memory_staging', { state: 'pending' })).length > 0;
   }
@@ -343,9 +426,97 @@ export class Layer2MemoryStore {
   async list(options: { includeDeleted?: boolean } = {}): Promise<CuratedMemoryRow[]> {
     const rows = await this.db.query<CuratedMemoryRow>('curated_memories');
     return rows
-      .filter((row) => (options.includeDeleted || row.deleted_at == null)
-        && !containsUnconditionallyPrivateData(row.content))
+      .filter((row) => (options.includeDeleted || (row.deleted_at == null && row.status === 'active'))
+        && !containsUnconditionallyPrivateData(row.content)
+        && !containsUnconditionallyPrivateData(row.evidence ?? ''))
       .sort((left, right) => right.id - left.id);
+  }
+
+  /** Joins decrypted topic and provenance metadata for recall and management output. */
+  async listWithTopics(options: { includeDeleted?: boolean } = {}): Promise<CuratedMemoryView[]> {
+    const [memories, topics, sources] = await Promise.all([
+      this.list(options),
+      this.db.query<MemoryTopicRow>('memory_topics'),
+      this.db.query<MemorySourceRow>('memory_sources'),
+    ]);
+    const topicsById = new Map(topics.map((topic) => [topic.id, topic]));
+    const sourcesByMemory = new Map<number, MemorySourceRow[]>();
+    for (const source of sources) {
+      const group = sourcesByMemory.get(source.memory_id) ?? [];
+      group.push(source);
+      sourcesByMemory.set(source.memory_id, group);
+    }
+    return memories.flatMap((memory) => {
+      const topic = topicsById.get(memory.topic_id);
+      if (!topic || topic.deleted_at !== null) return [];
+      const title = typeof topic.title === 'string' && topic.title.trim()
+        ? topic.title.trim()
+        : 'Unsortiert';
+      return [{
+        ...memory,
+        topic: { id: topic.id, title, version: topic.version },
+        sources: (sourcesByMemory.get(memory.id) ?? []).sort((left, right) => left.id - right.id),
+      }];
+    });
+  }
+
+  /** Returns only decrypted active topic/memory snapshots eligible for author reconciliation. */
+  async listAuthorSnapshots(): Promise<MemoryAuthorSnapshot[]> {
+    const [topics, memories] = await Promise.all([
+      this.db.query<MemoryTopicRow>('memory_topics'),
+      this.list(),
+    ]);
+    const activeTopics = new Map(topics
+      .filter((topic) => topic.deleted_at == null)
+      .map((topic) => [topic.id, {
+        ...topic,
+        title: typeof topic.title === 'string' && topic.title.trim()
+          ? topic.title.trim()
+          : 'Unsortiert',
+      }]));
+    return memories.flatMap((memory) => {
+      const topic = activeTopics.get(memory.topic_id);
+      return topic
+        ? [{
+            topic: { id: topic.id, title: topic.title!, version: topic.version },
+            memory: {
+              id: memory.id,
+              kind: memory.kind,
+              content: memory.content,
+              confidence: memory.confidence,
+              revision: memory.revision,
+              updated_at: memory.updated_at,
+            },
+          }]
+        : [];
+    });
+  }
+
+  /** Rechecks live policy and user evidence before delegating one atomic author delta. */
+  async applyAuthorDelta(
+    input: ApplyMemoryAuthorDeltaInput,
+    policy: TurnPersistencePolicy,
+  ): Promise<ApplyMemoryAuthorDeltaResult | null> {
+    const [staging] = await this.db.query<MemoryStagingRow>('memory_staging', { id: input.stagingId });
+    const protectedValues = [
+      staging?.source_content ?? '',
+      input.newTopic?.title ?? '',
+      input.statement?.content ?? '',
+      input.statement?.evidence ?? '',
+    ];
+    if (!staging || staging.state !== 'processing') return null;
+    if (mustKeepTurnTransient(protectedValues, policy)
+      || containsUnconditionallyPrivateData(protectedValues.join('\n'))) {
+      if (staging?.state === 'processing') await this.completeWithoutMemory(input.stagingId);
+      return null;
+    }
+    if (input.statement && !evidenceBelongsToUser(staging.source_content, input.statement.evidence)) {
+      throw new Error('Memory Author evidence is not grounded in the staged user text');
+    }
+    if (!this.db.applyMemoryAuthorDelta) {
+      throw new Error('Storage provider does not support atomic Memory Author deltas');
+    }
+    return this.db.applyMemoryAuthorDelta(input);
   }
 
   async rememberExplicit(
@@ -368,14 +539,29 @@ export class Layer2MemoryStore {
   async correct(id: number, content: string, policy: TurnPersistencePolicy): Promise<boolean> {
     const safe = content.trim();
     if (!safe || mustKeepTurnTransient([safe], policy)) return false;
-    return (await this.db.update('curated_memories', { id }, {
+    const [current] = await this.db.query<CuratedMemoryRow>('curated_memories', {
+      id,
+      status: 'active',
+    });
+    if (!current || current.deleted_at !== null) return false;
+    return (await this.db.update('curated_memories', {
+      id,
+      status: 'active',
+      revision: current.revision,
+    }, {
       content: safe,
+      revision: current.revision + 1,
+      created_by_action: 'manual',
+      evidence: safe.slice(0, 240),
+      confirmation_count: current.confirmation_count + 1,
+      last_confirmed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })) > 0;
   }
 
   async forget(id: number): Promise<boolean> {
     return (await this.db.update('curated_memories', { id }, {
+      status: 'deleted',
       deleted_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })) > 0;
@@ -412,6 +598,7 @@ export class Layer2MemoryStore {
 
     const stagingRows = await this.db.query<MemoryStagingRow>('memory_staging');
     const memories = await this.db.query<CuratedMemoryRow>('curated_memories');
+    const memorySources = await this.db.query<MemorySourceRow>('memory_sources');
     const reminders = await this.db.query<ReminderPolicyRow>('reminders');
     const [learnedFacts, persistentRules, sessionRules] = await Promise.all([
       this.db.query<LearnedFactRow>('learned_facts'),
@@ -472,12 +659,27 @@ export class Layer2MemoryStore {
     }
 
     let deletedMemories = purgedUnreadable.memories + purgedLegacy;
+    const affectedTopicIds = new Set<number>();
     for (const row of memories) {
+      const sources = memorySources.filter(({ memory_id: memoryId }) => memoryId === row.id);
       const excludedByProvenance = (row.source_staging_id != null && excludedStagingIds.has(row.source_staging_id))
         || (row.source_conversation_id != null
-          && excludedSources.has(`${row.source_conversation_id}:${row.source_turn_id}`));
-      if (!excludedByProvenance && !mustKeepTurnTransient([row.content], policy)) continue;
+          && excludedSources.has(`${row.source_conversation_id}:${row.source_turn_id}`))
+        || sources.some((source) => (
+          (source.source_staging_id != null && excludedStagingIds.has(source.source_staging_id))
+          || (source.source_conversation_id != null && source.source_turn_id != null
+            && excludedSources.has(`${source.source_conversation_id}:${source.source_turn_id}`))
+        ));
+      if (!excludedByProvenance && !mustKeepTurnTransient([row.content, row.evidence ?? ''], policy)) continue;
+      affectedTopicIds.add(row.topic_id);
       deletedMemories += await this.db.delete('curated_memories', { id: row.id });
+    }
+    if (affectedTopicIds.size > 0) {
+      const remainingMemories = await this.db.query<CuratedMemoryRow>('curated_memories');
+      const retainedTopicIds = new Set(remainingMemories.map(({ topic_id: topicId }) => topicId));
+      for (const topicId of affectedTopicIds) {
+        if (!retainedTopicIds.has(topicId)) await this.db.delete('memory_topics', { id: topicId });
+      }
     }
 
     let deletedTurns = purgedUnreadable.turns;

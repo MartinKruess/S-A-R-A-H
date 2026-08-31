@@ -11,6 +11,8 @@ import type {
   LegacyDbRecoveryReview,
   LegacyDbRecoveryWrite,
   Layer2LegacyPolicyPurgeInput,
+  ApplyMemoryAuthorDeltaInput,
+  ApplyMemoryAuthorDeltaResult,
 } from './storage.interface.js';
 import {
   LEGACY_DB_RECOVERY_CONFIRMATION,
@@ -30,12 +32,17 @@ const PASSTHROUGH_COLUMNS = new Set([
   'deleted_at', 'close_status', 'source_table', 'source_row_id', 'column_name', 'reason',
   'quarantined_at', 'source_kind', 'firing_at', 'delivered_at', 'cancelled_at',
   'origin_mode', 'private_context',
+  'topic_id', 'version', 'status', 'revision', 'superseded_by_id',
+  'created_by_action', 'confirmation_count', 'last_confirmed_at',
+  'memory_id', 'source_key', 'source_type', 'source_staging_id',
+  'observed_at', 'decision', 'decision_topic_id', 'result_memory_id',
 ]);
 
 const SAFE_EMPTY_LEGACY_COLUMNS = new Set([
   'conversations.summary',
   'memory_staging.source_content',
   'memory_staging.policy_terms',
+  'curated_memories.evidence',
 ]);
 
 export interface StorageIntegrityFailure {
@@ -229,6 +236,45 @@ export class EncryptedStorage implements StorageProvider {
         id,
         content: this.encryptValue(input.memory.content, this.rowAad('curated_memories', id, 'content')),
       },
+    });
+  }
+
+  async applyMemoryAuthorDelta(
+    input: ApplyMemoryAuthorDeltaInput,
+  ): Promise<ApplyMemoryAuthorDeltaResult> {
+    if (!this.inner.applyMemoryAuthorDelta) {
+      throw new Error('Storage provider does not support atomic Memory Author deltas');
+    }
+    if (input.action === 'ignore') return this.inner.applyMemoryAuthorDelta(input);
+    const memoryId = (await this.inner.reserveRowIds('curated_memories', 1))[0];
+    const topicId = input.newTopic
+      ? (await this.inner.reserveRowIds('memory_topics', 1))[0]
+      : undefined;
+    return this.inner.applyMemoryAuthorDelta({
+      ...input,
+      newTopic: input.newTopic && topicId != null
+        ? {
+            id: topicId,
+            title: this.encryptValue(
+              input.newTopic.title,
+              this.rowAad('memory_topics', topicId, 'title'),
+            ),
+          }
+        : undefined,
+      statement: input.statement
+        ? {
+            ...input.statement,
+            id: memoryId,
+            content: this.encryptValue(
+              input.statement.content,
+              this.rowAad('curated_memories', memoryId, 'content'),
+            ),
+            evidence: this.encryptValue(
+              input.statement.evidence,
+              this.rowAad('curated_memories', memoryId, 'evidence'),
+            ),
+          }
+        : undefined,
     });
   }
 

@@ -214,6 +214,57 @@ describe('EncryptedStorage', () => {
       expect(rows.every((row) => row.turn_id === 'turn-1')).toBe(true);
     });
 
+    it('binds Memory Author topic titles, statements and evidence to their final rows', async () => {
+      await rawStorage.insert('conversations', { id: 1 });
+      const stagingId = await storage.persistTurnWithMemoryStaging(
+        1,
+        'turn-author-encrypted',
+        [{ role: 'user', content: 'Ich mag Schach.' }],
+        'USER: Ich mag Schach.',
+        'fingerprint',
+      );
+      await rawStorage.update('memory_staging', { id: stagingId }, { state: 'processing' });
+
+      const result = await storage.applyMemoryAuthorDelta({
+        stagingId,
+        action: 'add',
+        newTopic: { title: 'Schach' },
+        targets: [],
+        statement: {
+          kind: 'preference',
+          content: 'Martin mag Schach.',
+          evidence: 'Ich mag Schach.',
+          confidence: 0.95,
+        },
+      });
+      const [rawTopic] = await rawStorage.query<{ title: string }>('memory_topics', { id: result.topicId! });
+      const [rawMemory] = await rawStorage.query<{ content: string; evidence: string }>(
+        'curated_memories',
+        { id: result.memoryId! },
+      );
+      expect(rawTopic.title).toMatch(/^sarah-enc:v2:/);
+      expect(rawMemory.content).toMatch(/^sarah-enc:v2:/);
+      expect(rawMemory.evidence).toMatch(/^sarah-enc:v2:/);
+      expect(rawTopic.title).not.toContain('Schach');
+      expect(rawMemory.evidence).not.toContain('Ich mag');
+
+      expect(await storage.query<{ title: string }>('memory_topics', { id: result.topicId! })).toEqual([
+        expect.objectContaining({ title: 'Schach' }),
+      ]);
+      expect(await storage.query<{ content: string; evidence: string }>(
+        'curated_memories',
+        { id: result.memoryId! },
+      )).toEqual([
+        expect.objectContaining({ content: 'Martin mag Schach.', evidence: 'Ich mag Schach.' }),
+      ]);
+
+      await rawStorage.update('curated_memories', { id: result.memoryId! }, { evidence: rawTopic.title });
+      expect(await storage.query('curated_memories', { id: result.memoryId! })).toEqual([]);
+      expect(await rawStorage.query('storage_quarantine', {
+        source_table: 'curated_memories', source_row_id: result.memoryId!, column_name: 'evidence',
+      })).toHaveLength(1);
+    });
+
     it('quarantines a corrupt generic row, skips it, and reports degraded integrity', async () => {
       const failures: string[] = [];
       const observed = new EncryptedStorage(rawStorage, keyManager.getOrCreateKey(), {

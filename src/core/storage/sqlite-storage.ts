@@ -12,14 +12,17 @@ import type {
   LegacyDbRecoveryWrite,
   ConversationSummaryClear,
   Layer2LegacyPolicyPurgeInput,
+  ApplyMemoryAuthorDeltaInput,
+  ApplyMemoryAuthorDeltaResult,
 } from './storage.interface.js';
 import {
   LEGACY_DB_RECOVERY_CONFIRMATION,
   LEGACY_DB_RECOVERY_LOCATIONS,
   MESSAGES_PAGE_MAX_LIMIT,
+  MemoryAuthorStaleWriteError,
 } from './storage.interface.js';
 
-export const SQLITE_SCHEMA_VERSION = 3;
+export const SQLITE_SCHEMA_VERSION = 4;
 
 const REMINDERS_SCHEMA = `
   CREATE TABLE IF NOT EXISTS reminders (
@@ -119,9 +122,21 @@ const SCHEMA = `
     attempts         INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     lease_started_at TEXT,
     policy_terms     TEXT NOT NULL DEFAULT '',
+    decision         TEXT CHECK (decision IN ('add', 'update', 'merge', 'supersede', 'ignore')),
+    decision_topic_id INTEGER,
+    result_memory_id INTEGER,
     created_at       TEXT DEFAULT (datetime('now')),
     updated_at       TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS memory_topics (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    title      TEXT,
+    version    INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS curated_memories (
@@ -132,12 +147,43 @@ const SCHEMA = `
     source_conversation_id INTEGER,
     source_turn_id         TEXT NOT NULL,
     confidence             REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    topic_id               INTEGER NOT NULL,
+    status                 TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'deleted')),
+    revision               INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+    superseded_by_id       INTEGER,
+    created_by_action      TEXT NOT NULL DEFAULT 'legacy_import' CHECK (created_by_action IN ('legacy_import', 'add', 'update', 'merge', 'supersede', 'explicit', 'manual')),
+    evidence               TEXT NOT NULL DEFAULT '',
+    confirmation_count     INTEGER NOT NULL DEFAULT 1 CHECK (confirmation_count > 0),
+    last_confirmed_at      TEXT,
     created_at             TEXT DEFAULT (datetime('now')),
     updated_at             TEXT DEFAULT (datetime('now')),
     deleted_at             TEXT,
     FOREIGN KEY (source_staging_id) REFERENCES memory_staging(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
+    FOREIGN KEY (topic_id) REFERENCES memory_topics(id) ON DELETE CASCADE,
+    FOREIGN KEY (superseded_by_id) REFERENCES curated_memories(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS memory_sources (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_id              INTEGER NOT NULL,
+    source_key             TEXT NOT NULL,
+    source_type            TEXT NOT NULL CHECK (source_type IN ('turn', 'explicit', 'manual', 'legacy')),
+    source_staging_id      INTEGER,
+    source_conversation_id INTEGER,
+    source_turn_id         TEXT,
+    observed_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (memory_id, source_key),
+    FOREIGN KEY (memory_id) REFERENCES curated_memories(id) ON DELETE CASCADE,
+    FOREIGN KEY (source_staging_id) REFERENCES memory_staging(id) ON DELETE SET NULL,
     FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
   );
+
+  CREATE INDEX IF NOT EXISTS idx_curated_memories_topic_status
+    ON curated_memories(topic_id, status, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_memory_sources_staging ON memory_sources(source_staging_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_sources_turn
+    ON memory_sources(source_conversation_id, source_turn_id);
 
   CREATE TABLE IF NOT EXISTS learned_facts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +245,11 @@ export class SqliteStorage implements StorageProvider {
               db.pragma(`user_version = ${version}`);
               break;
             }
+            case 3:
+              this.migrateMemoryAuthor(db);
+              version = 4;
+              db.pragma(`user_version = ${version}`);
+              break;
             default:
               throw new Error(`No SQLite migration path from version ${version} to ${SQLITE_SCHEMA_VERSION}`);
           }
@@ -255,6 +306,28 @@ export class SqliteStorage implements StorageProvider {
 
   async insert(table: string, data: Record<string, unknown>): Promise<number> {
     this.assertTableName(table);
+    if (table === 'curated_memories' && data.topic_id == null) {
+      return this.db.transaction(() => {
+        const topicId = this.db.prepare('INSERT INTO memory_topics (title) VALUES (NULL)').run().lastInsertRowid as number;
+        const memoryId = this.insertRow(table, {
+          ...data,
+          topic_id: topicId,
+          status: data.deleted_at == null ? 'active' : 'deleted',
+          created_by_action: data.kind === 'explicit' ? 'explicit' : 'legacy_import',
+        });
+        this.insertMemorySource(memoryId, {
+          source_staging_id: data.source_staging_id,
+          source_conversation_id: data.source_conversation_id,
+          source_turn_id: data.source_turn_id,
+          source_type: data.kind === 'explicit' ? 'explicit' : 'legacy',
+        });
+        return memoryId;
+      })();
+    }
+    return this.insertRow(table, data);
+  }
+
+  private insertRow(table: string, data: Record<string, unknown>): number {
     const keys = Object.keys(data);
     const cols = keys.map((k) => this.assertColumnName(k)).join(', ');
     const placeholders = keys.map(() => '?').join(', ');
@@ -383,11 +456,14 @@ export class SqliteStorage implements StorageProvider {
         throw new Error(`Curated memory source does not match staging item ${input.stagingId}`);
       }
 
+      const topicId = this.db.prepare(
+        'INSERT INTO memory_topics (title) VALUES (NULL)',
+      ).run().lastInsertRowid as number;
       this.db.prepare(`
         INSERT INTO curated_memories (
           id, source_staging_id, kind, content, source_conversation_id,
-          source_turn_id, confidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          source_turn_id, confidence, topic_id, created_by_action
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_staging_id) DO NOTHING
       `).run(
         input.memory.id ?? null,
@@ -397,7 +473,22 @@ export class SqliteStorage implements StorageProvider {
         input.memory.sourceConversationId,
         input.memory.sourceTurnId,
         input.memory.confidence,
+        topicId,
+        input.memory.kind === 'explicit' ? 'explicit' : 'legacy_import',
       );
+      const inserted = this.db.prepare(
+        'SELECT id FROM curated_memories WHERE source_staging_id = ?',
+      ).get(input.stagingId) as { id: number } | undefined;
+      if (inserted) {
+        this.insertMemorySource(inserted.id, {
+          source_staging_id: input.stagingId,
+          source_conversation_id: input.memory.sourceConversationId,
+          source_turn_id: input.memory.sourceTurnId,
+          source_type: 'turn',
+        });
+      } else {
+        this.db.prepare('DELETE FROM memory_topics WHERE id = ?').run(topicId);
+      }
       this.db.prepare(`
         UPDATE memory_staging
         SET state = 'completed', source_content = '', lease_started_at = NULL, updated_at = datetime('now')
@@ -408,6 +499,144 @@ export class SqliteStorage implements StorageProvider {
       ).run(staging.conversation_id, staging.turn_id);
     });
     complete();
+  }
+
+  async applyMemoryAuthorDelta(
+    input: ApplyMemoryAuthorDeltaInput,
+  ): Promise<ApplyMemoryAuthorDeltaResult> {
+    this.validateMemoryAuthorDelta(input);
+    return this.db.transaction(() => {
+      const staging = this.db.prepare(`
+        SELECT id, conversation_id, turn_id, state
+        FROM memory_staging WHERE id = ?
+      `).get(input.stagingId) as {
+        id: number;
+        conversation_id: number;
+        turn_id: string;
+        state: string;
+      } | undefined;
+      if (!staging || staging.state !== 'processing') {
+        throw new MemoryAuthorStaleWriteError(`Memory Author staging item ${input.stagingId} is stale`);
+      }
+
+      if (input.action === 'ignore') {
+        this.db.prepare(`
+          UPDATE memory_staging
+          SET state = 'completed', source_content = '', policy_terms = '', decision = 'ignore',
+            decision_topic_id = NULL, result_memory_id = NULL,
+            lease_started_at = NULL, updated_at = datetime('now')
+          WHERE id = ?
+        `).run(input.stagingId);
+        this.db.prepare(
+          'DELETE FROM messages WHERE conversation_id = ? AND turn_id = ?',
+        ).run(staging.conversation_id, staging.turn_id);
+        return { action: 'ignore' as const, topicId: null, memoryId: null };
+      }
+
+      let topicId: number;
+      if (input.newTopic) {
+        topicId = this.insertRow('memory_topics', {
+          id: input.newTopic.id,
+          title: input.newTopic.title,
+          version: 1,
+        });
+      } else {
+        const topic = this.db.prepare(`
+          SELECT id, version, deleted_at FROM memory_topics WHERE id = ?
+        `).get(input.topic!.id) as { id: number; version: number; deleted_at: string | null } | undefined;
+        if (!topic || topic.deleted_at !== null || topic.version !== input.topic!.version) {
+          throw new MemoryAuthorStaleWriteError(`Memory Author topic ${input.topic!.id} is stale`);
+        }
+        topicId = topic.id;
+      }
+
+      const targets = input.targets.map((target) => {
+        const row = this.db.prepare(`
+          SELECT id, topic_id, revision, status FROM curated_memories WHERE id = ?
+        `).get(target.id) as {
+          id: number;
+          topic_id: number;
+          revision: number;
+          status: string;
+        } | undefined;
+        if (!row || row.topic_id !== topicId || row.status !== 'active' || row.revision !== target.revision) {
+          throw new MemoryAuthorStaleWriteError(`Memory Author target ${target.id} is stale`);
+        }
+        return row;
+      });
+      const statement = input.statement!;
+      const revision = targets.length === 0
+        ? 1
+        : Math.max(...targets.map(({ revision: targetRevision }) => targetRevision)) + 1;
+      const memoryId = this.insertRow('curated_memories', {
+        id: statement.id,
+        source_staging_id: input.stagingId,
+        kind: statement.kind,
+        content: statement.content,
+        evidence: statement.evidence,
+        source_conversation_id: staging.conversation_id,
+        source_turn_id: staging.turn_id,
+        confidence: statement.confidence,
+        topic_id: topicId,
+        status: 'active',
+        revision,
+        superseded_by_id: null,
+        created_by_action: input.action,
+        confirmation_count: 1,
+        last_confirmed_at: new Date().toISOString(),
+        deleted_at: null,
+      });
+
+      if (targets.length > 0) {
+        const retire = this.db.prepare(`
+          UPDATE curated_memories
+          SET status = 'superseded', superseded_by_id = ?, updated_at = datetime('now')
+          WHERE id = ? AND status = 'active'
+        `);
+        for (const target of targets) {
+          if (retire.run(memoryId, target.id).changes !== 1) {
+            throw new MemoryAuthorStaleWriteError(`Memory Author target ${target.id} changed during commit`);
+          }
+          this.db.prepare(`
+            INSERT OR IGNORE INTO memory_sources (
+              memory_id, source_key, source_type, source_staging_id,
+              source_conversation_id, source_turn_id, observed_at
+            )
+            SELECT ?, source_key, source_type, source_staging_id,
+              source_conversation_id, source_turn_id, observed_at
+            FROM memory_sources WHERE memory_id = ?
+          `).run(memoryId, target.id);
+        }
+      }
+      this.insertMemorySource(memoryId, {
+        source_staging_id: input.stagingId,
+        source_conversation_id: staging.conversation_id,
+        source_turn_id: staging.turn_id,
+        source_type: 'turn',
+      });
+
+      if (!input.newTopic) {
+        const changed = this.db.prepare(`
+          UPDATE memory_topics
+          SET version = version + 1, updated_at = datetime('now')
+          WHERE id = ? AND version = ? AND deleted_at IS NULL
+        `).run(topicId, input.topic!.version).changes;
+        if (changed !== 1) {
+          throw new MemoryAuthorStaleWriteError(`Memory Author topic ${topicId} changed during commit`);
+        }
+      }
+      this.db.prepare(`
+        UPDATE memory_staging
+        SET state = 'completed', source_content = '', decision = ?,
+          decision_topic_id = ?, result_memory_id = ?, lease_started_at = NULL,
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(input.action, topicId, memoryId, input.stagingId);
+      this.db.prepare(
+        'DELETE FROM messages WHERE conversation_id = ? AND turn_id = ?',
+      ).run(staging.conversation_id, staging.turn_id);
+      return { action: input.action, topicId, memoryId };
+    })();
   }
 
   async discardMemoryStaging(stagingId: number): Promise<void> {
@@ -479,7 +708,7 @@ export class SqliteStorage implements StorageProvider {
         WITH RECURSIVE related(id) AS (
           SELECT id FROM storage_quarantine
           WHERE source_table IN (
-            'messages', 'memory_staging', 'curated_memories',
+            'messages', 'memory_staging', 'curated_memories', 'memory_topics', 'memory_sources',
             'learned_facts', 'persistent_rules', 'session_rules', 'message_quarantine'
           )
              OR (source_table = 'conversations' AND column_name = 'summary')
@@ -493,6 +722,8 @@ export class SqliteStorage implements StorageProvider {
       `).get() as { count: number };
 
       this.db.prepare('DELETE FROM curated_memories').run();
+      this.db.prepare('DELETE FROM memory_sources').run();
+      this.db.prepare('DELETE FROM memory_topics').run();
       this.db.prepare('DELETE FROM memory_staging').run();
       this.db.prepare('DELETE FROM messages').run();
       this.db.prepare('DELETE FROM message_quarantine').run();
@@ -505,7 +736,7 @@ export class SqliteStorage implements StorageProvider {
         WITH RECURSIVE related(id) AS (
           SELECT id FROM storage_quarantine
           WHERE source_table IN (
-            'messages', 'memory_staging', 'curated_memories',
+            'messages', 'memory_staging', 'curated_memories', 'memory_topics', 'memory_sources',
             'learned_facts', 'persistent_rules', 'session_rules', 'message_quarantine'
           )
              OR (source_table = 'conversations' AND column_name = 'summary')
@@ -555,10 +786,12 @@ export class SqliteStorage implements StorageProvider {
         throw new Error('Curated memories changed after deletion was requested');
       }
       const result = this.db.prepare('DELETE FROM curated_memories').run();
+      this.db.prepare('DELETE FROM memory_sources').run();
+      this.db.prepare('DELETE FROM memory_topics').run();
       this.db.prepare(`
         WITH RECURSIVE related(id) AS (
           SELECT id FROM storage_quarantine
-          WHERE source_table = 'curated_memories'
+          WHERE source_table IN ('curated_memories', 'memory_topics', 'memory_sources')
           UNION
           SELECT quarantine.id
           FROM storage_quarantine AS quarantine
@@ -641,6 +874,10 @@ export class SqliteStorage implements StorageProvider {
           SELECT source_row_id FROM storage_quarantine
           WHERE source_table = 'memory_staging' AND source_row_id IS NOT NULL
         ),
+        quarantined_topics(id) AS (
+          SELECT source_row_id FROM storage_quarantine
+          WHERE source_table = 'memory_topics' AND source_row_id IS NOT NULL
+        ),
         affected_memories(id) AS (
           SELECT memory.id
           FROM curated_memories AS memory
@@ -650,9 +887,25 @@ export class SqliteStorage implements StorageProvider {
                WHERE turn.conversation_id = memory.source_conversation_id
                  AND turn.turn_id = memory.source_turn_id
              )
+             OR EXISTS (
+               SELECT 1 FROM memory_sources AS source
+               WHERE source.memory_id = memory.id
+                 AND (source.source_staging_id IN (SELECT id FROM affected_staging)
+                   OR EXISTS (
+                     SELECT 1 FROM affected_turns AS turn
+                     WHERE turn.conversation_id = source.source_conversation_id
+                       AND turn.turn_id = source.source_turn_id
+                   ))
+             )
+             OR memory.topic_id IN (SELECT id FROM quarantined_topics)
           UNION
           SELECT source_row_id FROM storage_quarantine
           WHERE source_table = 'curated_memories' AND source_row_id IS NOT NULL
+        ),
+        affected_topics(id) AS (
+          SELECT id FROM quarantined_topics
+          UNION
+          SELECT topic_id FROM curated_memories WHERE id IN (SELECT id FROM affected_memories)
         )
       `;
       const turns = this.db.prepare(`
@@ -667,10 +920,14 @@ export class SqliteStorage implements StorageProvider {
         WITH ${affectedCtes}
         SELECT id FROM affected_memories
       `).all() as Array<{ id: number }>;
+      const topicIds = this.db.prepare(`
+        WITH ${affectedCtes}
+        SELECT id FROM affected_topics
+      `).all() as Array<{ id: number }>;
       const quarantineCount = this.db.prepare(`
         WITH RECURSIVE related(id) AS (
           SELECT id FROM storage_quarantine
-          WHERE source_table IN ('messages', 'memory_staging', 'curated_memories', 'message_quarantine')
+          WHERE source_table IN ('messages', 'memory_staging', 'curated_memories', 'memory_topics', 'memory_sources', 'message_quarantine')
           UNION
           SELECT quarantine.id
           FROM storage_quarantine AS quarantine
@@ -685,6 +942,11 @@ export class SqliteStorage implements StorageProvider {
 
       const deleteMemory = this.db.prepare('DELETE FROM curated_memories WHERE id = ?');
       for (const memory of memoryIds) deleteMemory.run(memory.id);
+      const deleteTopic = this.db.prepare(`
+        DELETE FROM memory_topics
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM curated_memories WHERE topic_id = memory_topics.id)
+      `);
+      for (const topic of topicIds) deleteTopic.run(topic.id);
       const deleteStaging = this.db.prepare('DELETE FROM memory_staging WHERE id = ?');
       for (const staging of stagingIds) deleteStaging.run(staging.id);
       const deleteTurn = this.db.prepare(
@@ -695,7 +957,7 @@ export class SqliteStorage implements StorageProvider {
       this.db.prepare(`
         WITH RECURSIVE related(id) AS (
           SELECT id FROM storage_quarantine
-          WHERE source_table IN ('messages', 'memory_staging', 'curated_memories', 'message_quarantine')
+          WHERE source_table IN ('messages', 'memory_staging', 'curated_memories', 'memory_topics', 'memory_sources', 'message_quarantine')
           UNION
           SELECT quarantine.id
           FROM storage_quarantine AS quarantine
@@ -865,6 +1127,181 @@ export class SqliteStorage implements StorageProvider {
 
   async close(): Promise<void> {
     this.db.close();
+  }
+
+  private validateMemoryAuthorDelta(input: ApplyMemoryAuthorDeltaInput): void {
+    if (!Number.isInteger(input.stagingId) || input.stagingId <= 0) {
+      throw new Error(`Invalid Memory Author staging ID: ${input.stagingId}`);
+    }
+    const targetIds = input.targets.map(({ id }) => id);
+    if (targetIds.some((id) => !Number.isInteger(id) || id <= 0)
+      || new Set(targetIds).size !== targetIds.length
+      || input.targets.some(({ revision }) => !Number.isInteger(revision) || revision <= 0)) {
+      throw new Error('Memory Author targets must be unique positive IDs with positive revisions');
+    }
+    if (input.action === 'ignore') {
+      if (input.topic || input.newTopic || input.statement || input.targets.length > 0) {
+        throw new Error('Memory Author ignore must not contain write targets');
+      }
+      return;
+    }
+    if ((input.topic == null) === (input.newTopic == null)) {
+      throw new Error('Memory Author write requires exactly one existing or new topic');
+    }
+    if (input.topic && (!Number.isInteger(input.topic.id) || input.topic.id <= 0
+      || !Number.isInteger(input.topic.version) || input.topic.version <= 0)) {
+      throw new Error('Memory Author topic snapshot is invalid');
+    }
+    if (input.newTopic && (typeof input.newTopic.title !== 'string' || input.newTopic.title.trim() === '')) {
+      throw new Error('Memory Author new topic title must not be empty');
+    }
+    if (!input.statement
+      || typeof input.statement.content !== 'string' || input.statement.content.trim() === ''
+      || typeof input.statement.evidence !== 'string' || input.statement.evidence.trim() === ''
+      || !Number.isFinite(input.statement.confidence)
+      || input.statement.confidence < 0 || input.statement.confidence > 1) {
+      throw new Error('Memory Author statement is invalid');
+    }
+    const expectedTargets = input.action === 'add'
+      ? input.targets.length === 0
+      : input.action === 'merge'
+        ? input.targets.length >= 2
+        : input.targets.length >= 1;
+    if (!expectedTargets) throw new Error(`Memory Author ${input.action} target count is invalid`);
+    if (input.action !== 'add' && input.newTopic) {
+      throw new Error(`Memory Author ${input.action} requires an existing topic`);
+    }
+  }
+
+  private insertMemorySource(
+    memoryId: number,
+    source: {
+      source_staging_id?: unknown;
+      source_conversation_id?: unknown;
+      source_turn_id?: unknown;
+      source_type: 'turn' | 'explicit' | 'manual' | 'legacy';
+    },
+  ): void {
+    const stagingId = typeof source.source_staging_id === 'number' ? source.source_staging_id : null;
+    const conversationId = typeof source.source_conversation_id === 'number'
+      ? source.source_conversation_id
+      : null;
+    const turnId = typeof source.source_turn_id === 'string' && source.source_turn_id.trim()
+      ? source.source_turn_id
+      : null;
+    const sourceKey = stagingId != null
+      ? `staging:${stagingId}`
+      : `turn:${conversationId ?? 'unknown'}:${turnId ?? 'unknown'}`;
+    this.db.prepare(`
+      INSERT OR IGNORE INTO memory_sources (
+        memory_id, source_key, source_type, source_staging_id,
+        source_conversation_id, source_turn_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(memoryId, sourceKey, source.source_type, stagingId, conversationId, turnId);
+  }
+
+  private migrateMemoryAuthor(db: Database.Database): void {
+    const memoryColumns = new Set((db.pragma('table_info(curated_memories)') as Array<{ name: string }>)
+      .map(({ name }) => name));
+    if (memoryColumns.size === 0) {
+      db.exec(SCHEMA);
+      return;
+    }
+    if (memoryColumns.has('topic_id')) return;
+
+    const stagingColumns = new Set((db.pragma('table_info(memory_staging)') as Array<{ name: string }>)
+      .map(({ name }) => name));
+    db.exec(`
+      CREATE TABLE memory_topics (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        title      TEXT,
+        version    INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        deleted_at TEXT
+      );
+      INSERT INTO memory_topics (id, title, created_at, updated_at, deleted_at)
+      SELECT id, NULL, COALESCE(created_at, datetime('now')),
+        COALESCE(updated_at, created_at, datetime('now')), deleted_at
+      FROM curated_memories;
+
+      CREATE TABLE curated_memories_v4 (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_staging_id      INTEGER UNIQUE,
+        kind                   TEXT NOT NULL CHECK (kind IN ('fact', 'preference', 'episode', 'explicit')),
+        content                TEXT NOT NULL,
+        source_conversation_id INTEGER,
+        source_turn_id         TEXT NOT NULL,
+        confidence             REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+        topic_id               INTEGER NOT NULL,
+        status                 TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'deleted')),
+        revision               INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+        superseded_by_id       INTEGER,
+        created_by_action      TEXT NOT NULL DEFAULT 'legacy_import' CHECK (created_by_action IN ('legacy_import', 'add', 'update', 'merge', 'supersede', 'explicit', 'manual')),
+        evidence               TEXT NOT NULL DEFAULT '',
+        confirmation_count     INTEGER NOT NULL DEFAULT 1 CHECK (confirmation_count > 0),
+        last_confirmed_at      TEXT,
+        created_at             TEXT DEFAULT (datetime('now')),
+        updated_at             TEXT DEFAULT (datetime('now')),
+        deleted_at             TEXT,
+        FOREIGN KEY (source_staging_id) REFERENCES memory_staging(id) ON DELETE SET NULL,
+        FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL,
+        FOREIGN KEY (topic_id) REFERENCES memory_topics(id) ON DELETE CASCADE,
+        FOREIGN KEY (superseded_by_id) REFERENCES curated_memories_v4(id) ON DELETE SET NULL
+      );
+      INSERT INTO curated_memories_v4 (
+        id, source_staging_id, kind, content, source_conversation_id, source_turn_id,
+        confidence, topic_id, status, revision, created_by_action, evidence,
+        confirmation_count, last_confirmed_at, created_at, updated_at, deleted_at
+      )
+      SELECT id, source_staging_id, kind, content, source_conversation_id, source_turn_id,
+        confidence, id, CASE WHEN deleted_at IS NULL THEN 'active' ELSE 'deleted' END,
+        1, 'legacy_import', '', 1, created_at, created_at, updated_at, deleted_at
+      FROM curated_memories;
+      DROP TABLE curated_memories;
+      ALTER TABLE curated_memories_v4 RENAME TO curated_memories;
+
+      CREATE TABLE memory_sources (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id              INTEGER NOT NULL,
+        source_key             TEXT NOT NULL,
+        source_type            TEXT NOT NULL CHECK (source_type IN ('turn', 'explicit', 'manual', 'legacy')),
+        source_staging_id      INTEGER,
+        source_conversation_id INTEGER,
+        source_turn_id         TEXT,
+        observed_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (memory_id, source_key),
+        FOREIGN KEY (memory_id) REFERENCES curated_memories(id) ON DELETE CASCADE,
+        FOREIGN KEY (source_staging_id) REFERENCES memory_staging(id) ON DELETE SET NULL,
+        FOREIGN KEY (source_conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+      );
+      INSERT INTO memory_sources (
+        memory_id, source_key, source_type, source_staging_id,
+        source_conversation_id, source_turn_id, observed_at
+      )
+      SELECT id,
+        CASE WHEN source_staging_id IS NOT NULL THEN 'staging:' || source_staging_id
+          ELSE 'turn:' || COALESCE(source_conversation_id, 'unknown') || ':' || source_turn_id END,
+        CASE WHEN kind = 'explicit' THEN 'explicit' ELSE 'legacy' END,
+        source_staging_id, source_conversation_id, source_turn_id,
+        COALESCE(created_at, datetime('now'))
+      FROM curated_memories;
+
+      CREATE INDEX idx_curated_memories_topic_status
+        ON curated_memories(topic_id, status, updated_at DESC);
+      CREATE INDEX idx_memory_sources_staging ON memory_sources(source_staging_id);
+      CREATE INDEX idx_memory_sources_turn
+        ON memory_sources(source_conversation_id, source_turn_id);
+    `);
+    if (!stagingColumns.has('decision')) {
+      db.exec("ALTER TABLE memory_staging ADD COLUMN decision TEXT CHECK (decision IN ('add', 'update', 'merge', 'supersede', 'ignore')); ");
+    }
+    if (!stagingColumns.has('decision_topic_id')) {
+      db.exec('ALTER TABLE memory_staging ADD COLUMN decision_topic_id INTEGER;');
+    }
+    if (!stagingColumns.has('result_memory_id')) {
+      db.exec('ALTER TABLE memory_staging ADD COLUMN result_memory_id INTEGER;');
+    }
   }
 
   /**

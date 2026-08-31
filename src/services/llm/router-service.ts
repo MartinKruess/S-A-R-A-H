@@ -4,6 +4,7 @@ import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import { MEMORY_RECOVERY_GUARD_KEY } from '../../core/bootstrap.js';
+import { DEFAULT_LLM_CONFIG } from '../../core/llm-defaults.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
 import {
   appendRuntimeTrustInstructions,
@@ -18,8 +19,8 @@ import {
 } from './sensitive-turn-guard.js';
 import { ModelRuntime, type ModelRuntimePort } from './model-runtime.js';
 import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
-import { Layer2MemoryStore, type CuratedMemoryRow } from '../../core/storage/layer2-memory-store.js';
-import { MemoryCurator } from './memory-curator.js';
+import { Layer2MemoryStore, type CuratedMemoryView } from '../../core/storage/layer2-memory-store.js';
+import { MemoryCurator, type MemoryCuratorRunResult } from './memory-curator.js';
 import {
   buildContextWindow,
   ContextWindowError,
@@ -230,7 +231,7 @@ export class RouterService implements SarahService {
   private readonly conversationStore: ConversationStore;
   private readonly memoryStore: Layer2MemoryStore;
   private readonly memoryCurator: MemoryCurator;
-  private curatedMemories: CuratedMemoryRow[] = [];
+  private curatedMemories: CuratedMemoryView[] = [];
   private persistenceWarned = false;
   private outputQueue: Promise<void> = Promise.resolve();
   private readonly coordinator = new TurnCoordinator();
@@ -311,7 +312,7 @@ export class RouterService implements SarahService {
     this.memoryStore = new Layer2MemoryStore(this.context.db);
     this.memoryCurator = new MemoryCurator(this.memoryStore, this.modelRuntime, {
       onMemoryChanged: async () => {
-        this.curatedMemories = await this.memoryStore.list();
+        await this.refreshMemoryCache();
       },
       onMaintenanceFailure: () => {
         this.context.bus.emit(this.id, 'storage:degraded', {
@@ -322,6 +323,8 @@ export class RouterService implements SarahService {
         allowed: this.memoryPolicyReady && this.context.parsedConfig.trust.memoryAllowed,
         exclusions: [...this.context.parsedConfig.trust.memoryExclusions],
       }),
+      numCtx: this.context.parsedConfig.llm.workerOptions?.num_ctx
+        ?? DEFAULT_LLM_CONFIG.workerOptions.num_ctx,
     });
   }
 
@@ -381,7 +384,7 @@ export class RouterService implements SarahService {
       try {
         await this.memoryStore.recoverInterruptedJobs(Date.now(), true);
         await this.memoryStore.recoverFailedJobs();
-        this.curatedMemories = await this.memoryStore.list();
+        await this.refreshMemoryCache();
         if (await this.memoryStore.hasPending()) this.memoryCurator.schedule();
       } catch {
         this.memoryPolicyReady = false;
@@ -775,9 +778,8 @@ export class RouterService implements SarahService {
           )) excluded.add(turnId);
         }
         this.history = this.history.filter((entry) => !excluded.has(entry.turnId));
-        this.curatedMemories = policy.allowed
-          ? await this.memoryStore.list()
-          : [];
+        if (policy.allowed) await this.refreshMemoryCache();
+        else this.curatedMemories = [];
         this.memoryPolicyReady = true;
         if (policy.allowed) await this.clearMemoryRecoveryGuard();
       });
@@ -845,13 +847,25 @@ export class RouterService implements SarahService {
         await this.emitAssistantResponse(envelope.turnId, '/showcontext ist in den Einstellungen deaktiviert.', signal);
         return;
       }
-      const memories = await this.memoryStore.list({ includeDeleted: true });
+      const memories = await this.memoryStore.listWithTopics({ includeDeleted: true });
+      const byTopic = new Map<string, typeof memories>();
+      for (const memory of memories) {
+        const key = `${memory.topic.id}:${memory.topic.title}`;
+        byTopic.set(key, [...(byTopic.get(key) ?? []), memory]);
+      }
       const text = memories.length === 0
         ? 'Ich habe derzeit keine kuratierten Erinnerungen gespeichert.'
-        : memories.map((memory) => (
-            `${memory.id} [${memory.kind}${memory.deleted_at == null ? '' : ', ausgeblendet'}] ${memory.content} `
-            + `(Quelle: Session ${memory.source_conversation_id ?? 'unbekannt'}, Turn ${memory.source_turn_id}, ${memory.created_at})`
-          )).join('\n');
+        : [...byTopic]
+          .map(([topicKey, topicMemories]) => {
+            const title = topicKey.slice(topicKey.indexOf(':') + 1);
+            return [`## ${title}`, ...topicMemories.map((memory) => {
+              const status = memory.deleted_at !== null || memory.status === 'deleted'
+                ? 'deleted'
+                : memory.status;
+              return `${memory.id} [${memory.kind}, ${status}, Revision ${memory.revision}] ${memory.content} `
+                + `(Quelle: Session ${memory.source_conversation_id ?? 'unbekannt'}, Turn ${memory.source_turn_id}, ${memory.created_at})`;
+            })].join('\n');
+          }).join('\n\n');
       await this.emitAssistantResponse(envelope.turnId, text, signal);
       return;
     }
@@ -860,14 +874,29 @@ export class RouterService implements SarahService {
         await this.emitAssistantResponse(envelope.turnId, '/exportmemory ist in den Einstellungen deaktiviert.', signal);
         return;
       }
-      const memories = await this.memoryStore.list({ includeDeleted: true });
+      const memories = await this.memoryStore.listWithTopics({ includeDeleted: true });
       await this.emitAssistantResponse(envelope.turnId, JSON.stringify({
         exportedAt: new Date().toISOString(),
         memories: memories.map((memory) => ({
           id: memory.id,
           kind: memory.kind,
           content: memory.content,
+          topic: memory.topic,
+          status: memory.deleted_at !== null ? 'deleted' : memory.status,
+          revision: memory.revision,
+          supersededBy: memory.superseded_by_id,
           deletedAt: memory.deleted_at,
+          evidence: {
+            excerpt: memory.evidence,
+            confirmationCount: memory.confirmation_count,
+            lastConfirmedAt: memory.last_confirmed_at,
+            sources: memory.sources.map((source) => ({
+              type: source.source_type,
+              conversationId: source.source_conversation_id,
+              turnId: source.source_turn_id,
+              observedAt: source.observed_at,
+            })),
+          },
           source: {
             conversationId: memory.source_conversation_id,
             turnId: memory.source_turn_id,
@@ -878,29 +907,12 @@ export class RouterService implements SarahService {
       return;
     }
     if (command === '/remember') {
-      const id = await this.runMemoryMutation(() => this.memoryStore.rememberExplicit({
-        kind: 'explicit',
-        content: args,
-        sourceConversationId: this.conversationId,
-        sourceTurnId: envelope.turnId,
-        confidence: 1,
-      }, { allowed: true, exclusions: trust.memoryExclusions }), signal);
-      if (id != null) {
-        await this.persistExplicitMemorySource(
-          envelope.turnId,
-          envelope.originalText,
-          trust.memoryExclusions,
-          signal,
-        );
-      }
+      const result = await this.authorExplicitMemory(envelope.turnId, args, signal);
       await this.emitAssistantResponse(
         envelope.turnId,
-        id == null
-          ? 'Das kann ich nicht als Erinnerung speichern. Prüfe den Inhalt oder verlasse den Anonymous-Modus.'
-          : `Erinnerung ${id} wurde gespeichert.`,
+        this.memoryAuthorResponse(result),
         signal,
       );
-      if (id != null) this.curatedMemories = await this.memoryStore.list();
       return;
     }
 
@@ -927,7 +939,7 @@ export class RouterService implements SarahService {
             () => this.memoryStore.deleteAll(pending.ids),
             signal,
           );
-          this.curatedMemories = await this.memoryStore.list();
+          await this.refreshMemoryCache();
           await this.emitAssistantResponse(
             envelope.turnId,
             `${deleted} kuratierte ${deleted === 1 ? 'Erinnerung wurde' : 'Erinnerungen wurden'} endgültig gelöscht.`,
@@ -989,7 +1001,7 @@ export class RouterService implements SarahService {
       : command === '/forget'
         ? this.memoryStore.forget(id)
         : this.memoryStore.delete(id), signal);
-    if (changed) this.curatedMemories = await this.memoryStore.list();
+    if (changed) await this.refreshMemoryCache();
     await this.emitAssistantResponse(
       envelope.turnId,
       changed ? `Erinnerung ${id} wurde aktualisiert.` : `Erinnerung ${id} wurde nicht gefunden oder konnte nicht geändert werden.`,
@@ -1067,28 +1079,12 @@ export class RouterService implements SarahService {
         );
         return;
       }
-      const trust = this.context.parsedConfig.trust;
-      const id = await this.runMemoryMutation(() => this.memoryStore.rememberExplicit({
-        kind: 'explicit',
-        content: explicitMemory,
-        sourceConversationId: this.conversationId,
-        sourceTurnId: turnId,
-        confidence: 1,
-      }, { allowed: true, exclusions: trust.memoryExclusions }), signal);
-      if (id != null) {
-        await this.persistExplicitMemorySource(
-          turnId,
-          envelope.originalText,
-          trust.memoryExclusions,
-          signal,
-        );
-      }
+      const result = await this.authorExplicitMemory(turnId, explicitMemory, signal);
       await this.emitAssistantResponse(
         turnId,
-        id == null ? 'Das kann ich nicht als Erinnerung speichern.' : `Erinnerung ${id} wurde gespeichert.`,
+        this.memoryAuthorResponse(result),
         signal,
       );
-      if (id != null) this.curatedMemories = await this.memoryStore.list();
       return;
     }
 
@@ -1828,12 +1824,15 @@ export class RouterService implements SarahService {
     if (queryTokens.size === 0) return [];
     const ranked = this.curatedMemories
       .map((memory) => {
+        const topicTokens = this.retrievalTokens(memory.topic.title ?? '');
         const memoryTokens = this.retrievalTokens(memory.content);
-        let score = 0;
+        let topicScore = 0;
+        let contentScore = 0;
         for (const token of queryTokens) {
-          if (memoryTokens.has(token)) score += token.length >= 7 ? 2 : 1;
+          if (topicTokens.has(token)) topicScore += token.length >= 7 ? 2 : 1;
+          if (memoryTokens.has(token)) contentScore += token.length >= 7 ? 2 : 1;
         }
-        return { memory, score };
+        return { memory, topicScore, contentScore, score: topicScore * 100 + contentScore };
       })
       .filter((entry) => entry.score > 0)
       .sort((left, right) => right.score - left.score || right.memory.id - left.memory.id)
@@ -1847,6 +1846,8 @@ export class RouterService implements SarahService {
         content: serializePromptData('recalled_memory_data', {
           id: memory.id,
           kind: memory.kind,
+          topic: memory.topic.title,
+          revision: memory.revision,
           createdAt: memory.created_at,
           content: memory.content,
         }),
@@ -1862,30 +1863,63 @@ export class RouterService implements SarahService {
     );
   }
 
-  /** Persist the auditable source of an explicit memory without curator staging. */
-  private async persistExplicitMemorySource(
+  /** Stages and reconciles an explicit memory through the same bounded Memory Author path. */
+  private async authorExplicitMemory(
     turnId: TurnId,
     content: string,
-    exclusions: readonly string[],
     signal: AbortSignal,
-  ): Promise<void> {
+  ): Promise<MemoryCuratorRunResult> {
     throwIfAborted(signal);
     const trust = this.context.parsedConfig.trust;
     const policy: TurnPersistencePolicy = {
       allowed: this.memoryPolicyReady && trust.memoryAllowed && !this.incognitoActive,
-      exclusions: [...new Set([...exclusions, ...trust.memoryExclusions])],
+      exclusions: [...trust.memoryExclusions],
     };
-    if (mustKeepTurnTransient([content], policy)) return;
+    if (mustKeepTurnTransient([content], policy)) return { status: 'blocked' };
     if (this.conversationId === FALLBACK_CONVERSATION_ID) {
       this.warnPersistenceOnce();
-      return;
+      return { status: 'failed' };
     }
     try {
-      await this.context.db.insertTurnMessages(this.conversationId, turnId, [{ role: 'user', content }]);
-    } catch {
-      console.warn('[Router] Explicit memory source persist failed (non-fatal)');
+      return await this.runMemoryMutation(async () => {
+        await this.memoryCurator.cancelAndWait();
+        throwIfAborted(signal);
+        const stagingId = await this.memoryStore.stageTurn(
+          this.conversationId,
+          turnId,
+          [{ role: 'user', content }],
+          policy,
+        );
+        if (stagingId == null) return { status: 'blocked' } as const;
+        return this.memoryCurator.runStaging(stagingId, signal);
+      }, signal);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      console.warn('[Router] Explicit Memory Author reconciliation failed');
       this.warnPersistenceOnce();
+      return { status: 'failed' };
     }
+  }
+
+  private memoryAuthorResponse(result: MemoryCuratorRunResult): string {
+    if (result.status === 'blocked') return 'Das kann ich aus Datenschutzgründen nicht als Erinnerung übernehmen.';
+    if (result.status !== 'applied') {
+      return 'Ich konnte das gerade nicht zuverlässig einordnen. Es wurde keine neue Erinnerung bestätigt.';
+    }
+    const { action, memoryId } = result.result;
+    if (action === 'ignore') return 'Das war bereits passend gespeichert; es wurde kein Duplikat angelegt.';
+    const id = memoryId == null ? '' : ` ${memoryId}`;
+    const descriptions = {
+      add: `Erinnerung${id} wurde thematisch eingeordnet.`,
+      update: `Erinnerung${id} wurde mit dem vorhandenen Wissen aktualisiert.`,
+      merge: `Erinnerung${id} wurde mit passenden Einträgen zusammengeführt.`,
+      supersede: `Erinnerung${id} ersetzt die veraltete Aussage.`,
+    } as const;
+    return descriptions[action];
+  }
+
+  private async refreshMemoryCache(): Promise<void> {
+    this.curatedMemories = await this.memoryStore.listWithTopics();
   }
 
   private warnPersistenceOnce(): void {

@@ -3,7 +3,7 @@ import { RouterService, type RouterServiceOptions } from './router-service.js';
 import { bootstrap } from '../../core/bootstrap.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import type { LlmProvider, ChatMessage } from './llm-provider.interface.js';
-import type { CompleteMemoryStagingInput, StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite, Layer2MemoryPurgeResult } from '../../core/storage/storage.interface.js';
+import type { ApplyMemoryAuthorDeltaInput, ApplyMemoryAuthorDeltaResult, CompleteMemoryStagingInput, StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite, Layer2MemoryPurgeResult } from '../../core/storage/storage.interface.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import { START_CONTEXT_HEADER } from './context-window.js';
 import * as fs from 'fs';
@@ -63,6 +63,7 @@ async function startAction(
 class FakeProvider implements LlmProvider {
   readonly id = 'fake';
   lastMessages: ChatMessage[] | null = null;
+  private memoryAuthorReplies: string[] = [];
   constructor(
     private reply = 'Antwort von Sarah',
     private readonly beforeReply?: () => Promise<void>,
@@ -70,11 +71,38 @@ class FakeProvider implements LlmProvider {
   async isAvailable(): Promise<boolean> {
     return true;
   }
+  queueMemoryAuthorReplies(...replies: string[]): void {
+    this.memoryAuthorReplies.push(...replies);
+  }
   async chat(messages: ChatMessage[], onChunk: (text: string) => void): Promise<string> {
     this.lastMessages = messages;
     await this.beforeReply?.();
-    onChunk(this.reply);
-    return this.reply;
+    const system = messages[0]?.content ?? '';
+    let response = this.reply;
+    if (system.includes('Du extrahierst genau null oder eine langfristig nützliche Nutzeraussage.')) {
+      const scripted = this.memoryAuthorReplies.shift();
+      const source = messages.find(({ role }) => role === 'user')?.content ?? '';
+      const explicit = source.match(/USER:\s*([\s\S]*?)\n\[\/GESPRÄCHSDATEN\]/u)?.[1]?.trim()
+        ?? 'Explizite Testaussage';
+      response = scripted ?? JSON.stringify({
+        decision: 'candidate',
+        kind: 'fact',
+        topic: 'Allgemein',
+        content: explicit.slice(0, 320),
+        evidence: explicit.slice(0, 240),
+        searchTerms: ['allgemein'],
+        durability: 'stable',
+        confidence: 1,
+      });
+    } else if (system.includes('Du wählst nur ein Memory-Delta für den angebotenen Kandidaten.')) {
+      response = this.memoryAuthorReplies.shift() ?? JSON.stringify({
+        action: 'add',
+        topic: null,
+        targets: [],
+      });
+    }
+    onChunk(response);
+    return response;
   }
 }
 
@@ -143,6 +171,10 @@ class FailingStorage implements StorageProvider {
   }
   async completeMemoryStaging(input: CompleteMemoryStagingInput): Promise<void> {
     return this.inner.completeMemoryStaging(input);
+  }
+  async applyMemoryAuthorDelta(input: ApplyMemoryAuthorDeltaInput): Promise<ApplyMemoryAuthorDeltaResult> {
+    if (!this.inner.applyMemoryAuthorDelta) throw new Error('unsupported');
+    return this.inner.applyMemoryAuthorDelta(input);
   }
   async discardMemoryStaging(stagingId: number): Promise<void> {
     return this.inner.discardMemoryStaging(stagingId);
@@ -590,7 +622,7 @@ describe('RouterService (history & sessions)', () => {
     expect(discarded).toEqual([searchRequest.requestId]);
   });
 
-  it('supports explicit memory commands and persists their auditable source turn', async () => {
+  it('supports explicit memory commands through the author and preserves auditable evidence', async () => {
     ctx.parsedConfig.trust.showContextEnabled = true;
     const r = makeRouter(ctx);
     const outputs: string[] = [];
@@ -598,29 +630,32 @@ describe('RouterService (history & sessions)', () => {
     await r.init();
 
     await chatTurn(r, 'Merk dir: Mein Lieblingsplanet ist Saturn.');
-    const [stored] = await ctx.db.query<{ id: number; content: string; source_turn_id: string }>('curated_memories');
+    const [stored] = await ctx.db.query<{
+      id: number; content: string; source_turn_id: string; revision: number; status: string;
+    }>('curated_memories');
     expect(stored.content).toBe('Mein Lieblingsplanet ist Saturn.');
-    expect(await ctx.db.query<{ turn_id: string; content: string }>('messages')).toEqual([
-      expect.objectContaining({
-        turn_id: stored.source_turn_id,
-        content: 'Merk dir: Mein Lieblingsplanet ist Saturn.',
-      }),
+    expect(stored).toMatchObject({ revision: 1, status: 'active' });
+    expect(await ctx.db.query('memory_sources', { memory_id: stored.id })).toEqual([
+      expect.objectContaining({ source_turn_id: stored.source_turn_id, source_type: 'turn' }),
     ]);
 
     await chatTurn(r, '/showcontext');
-    expect(outputs.at(-1)).toContain(`${stored.id} [explicit]`);
+    expect(outputs.at(-1)).toContain('## Allgemein');
+    expect(outputs.at(-1)).toContain(`${stored.id} [fact, active, Revision 1]`);
     expect(outputs.at(-1)).toContain('Quelle: Session');
 
     await chatTurn(r, `/correctmemory ${stored.id} Mein Lieblingsplanet ist Jupiter.`);
     await chatTurn(r, '/exportmemory');
     expect(outputs.at(-1)).toContain('Jupiter');
     expect(outputs.at(-1)).toContain('source');
+    expect(outputs.at(-1)).toContain('"revision": 2');
+    expect(outputs.at(-1)).toContain('"evidence"');
 
     await chatTurn(r, `/forget ${stored.id}`);
     const forgotten = await ctx.db.query<{ deleted_at: string | null }>('curated_memories', { id: stored.id });
     expect(forgotten[0].deleted_at).not.toBeNull();
     await chatTurn(r, '/showcontext');
-    expect(outputs.at(-1)).toContain(`${stored.id} [explicit, ausgeblendet]`);
+    expect(outputs.at(-1)).toContain(`${stored.id} [fact, deleted, Revision 2]`);
     await chatTurn(r, `/deletememory ${stored.id}`);
     expect(await ctx.db.query('curated_memories')).toEqual([]);
   });
@@ -639,6 +674,98 @@ describe('RouterService (history & sessions)', () => {
       'Kunde Meyer zahlt erst im Oktober',
     ]);
     expect(memories[0].content).not.toContain('Zusätzliche Argumente des Nutzers');
+  });
+
+  it('reconciles explicit duplicates and clear revisions without claiming success on model failure', async () => {
+    const r = makeRouter(ctx);
+    const outputs: string[] = [];
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data.fullText));
+    await r.init();
+    const candidate = (content: string, evidence = content): string => JSON.stringify({
+      decision: 'candidate',
+      kind: 'preference',
+      topic: 'Schach',
+      content,
+      evidence,
+      searchTerms: ['Schach'],
+      durability: 'stable',
+      confidence: 0.95,
+    });
+
+    workerProvider.queueMemoryAuthorReplies(
+      candidate('Martin spielt gern Schach.', 'Ich spiele gern Schach.'),
+      JSON.stringify({ action: 'add', topic: null, targets: [] }),
+    );
+    await chatTurn(r, '/remember Ich spiele gern Schach.');
+    const [first] = await ctx.db.query<{ id: number; revision: number }>('curated_memories');
+    expect(outputs.at(-1)).toContain('thematisch eingeordnet');
+
+    workerProvider.queueMemoryAuthorReplies(
+      candidate('Martin spielt gern Schach.', 'Schach spiele ich wirklich gern.'),
+      JSON.stringify({
+        action: 'ignore',
+        topic: { id: 1, version: 1 },
+        targets: [{ id: first.id, revision: first.revision }],
+      }),
+    );
+    await chatTurn(r, '/remember Schach spiele ich wirklich gern.');
+    expect(await ctx.db.query('curated_memories')).toHaveLength(1);
+    expect(outputs.at(-1)).toContain('kein Duplikat');
+
+    workerProvider.queueMemoryAuthorReplies(
+      candidate('Martin spielt nicht mehr gern Schach.', 'Mittlerweile spiele ich nicht mehr gern Schach.'),
+      JSON.stringify({
+        action: 'supersede',
+        topic: { id: 1, version: 1 },
+        targets: [{ id: first.id, revision: first.revision }],
+      }),
+    );
+    await chatTurn(r, '/remember Mittlerweile spiele ich nicht mehr gern Schach.');
+    expect(await ctx.db.query('curated_memories', { status: 'active' })).toEqual([
+      expect.objectContaining({ content: 'Martin spielt nicht mehr gern Schach.', revision: 2 }),
+    ]);
+    expect(await ctx.db.query('curated_memories', { status: 'superseded' })).toEqual([
+      expect.objectContaining({ id: first.id, superseded_by_id: expect.any(Number) }),
+    ]);
+    expect(outputs.at(-1)).toContain('ersetzt die veraltete Aussage');
+
+    workerProvider.queueMemoryAuthorReplies('kein-json');
+    await chatTurn(r, '/remember Ich sammle Schachbretter.');
+    expect(await ctx.db.query('curated_memories')).toHaveLength(2);
+    expect(outputs.at(-1)).toContain('keine neue Erinnerung bestätigt');
+    expect(outputs.at(-1)).not.toContain('wurde gespeichert');
+  });
+
+  it('recalls active memories only and prioritizes a topic-title match over content-only overlap', async () => {
+    await ctx.db.insert('conversations', { mode: 'ambient' });
+    const chessTopic = await ctx.db.insert('memory_topics', { title: 'Schach', version: 1 });
+    const otherTopic = await ctx.db.insert('memory_topics', { title: 'Freizeit', version: 1 });
+    await ctx.db.insert('curated_memories', {
+      topic_id: chessTopic, kind: 'preference', content: 'Martin bevorzugt die Sizilianische Verteidigung.',
+      evidence: 'Ich bevorzuge die Sizilianische Verteidigung.', source_conversation_id: 1,
+      source_turn_id: 'active-chess', confidence: 1, status: 'active', revision: 1,
+      created_by_action: 'add',
+    });
+    await ctx.db.insert('curated_memories', {
+      topic_id: chessTopic, kind: 'preference', content: 'Diese alte Schach-Aussage darf nicht erscheinen.',
+      evidence: 'alte Aussage', source_conversation_id: 1, source_turn_id: 'old-chess', confidence: 1,
+      status: 'superseded', revision: 1, created_by_action: 'add',
+    });
+    await ctx.db.insert('curated_memories', {
+      topic_id: otherTopic, kind: 'episode', content: 'Ein langer Bericht über Schach und Schachturniere.',
+      evidence: 'Bericht über Schach', source_conversation_id: 1, source_turn_id: 'content-only',
+      confidence: 1, status: 'active', revision: 1, created_by_action: 'add',
+    });
+    const r = makeRouter(ctx);
+    await r.init();
+
+    await chatTurn(r, 'Was weißt du über Schach?');
+
+    const recalled = (workerProvider.lastMessages ?? [])
+      .filter(({ content }) => content.startsWith('SARAH_DATA recalled_memory_data'));
+    expect(recalled).toHaveLength(2);
+    expect(recalled[0].content).toContain('"topic":"Schach"');
+    expect(recalled.some(({ content }) => content.includes('alte Schach-Aussage'))).toBe(false);
   });
 
   it('refuses to persist an assistant output without an active turn draft', async () => {
@@ -1174,7 +1301,7 @@ describe('RouterService (history & sessions)', () => {
     expect(sent![1].role).toBe('system');
     expect(sent![1].content).toBe(START_CONTEXT_HEADER);
     expect(sent![2].content).toMatch(
-      /^SARAH_DATA recalled_memory_data \{"id":\d+,"kind":"episode","createdAt":"[^"]+","content":"alte kuratierte Erinnerung"\}$/,
+      /^SARAH_DATA recalled_memory_data \{"id":\d+,"kind":"episode","topic":"Unsortiert","revision":1,"createdAt":"[^"]+","content":"alte kuratierte Erinnerung"\}$/,
     );
     expect(sent![3]).toEqual({ role: 'user', content: 'Was weißt du über die alte Erinnerung?' });
     expect(sent!.some((message) => message.content === 'Kontext erfasst.')).toBe(false);
@@ -3171,7 +3298,7 @@ describe('RouterService (action layer)', () => {
       ...ctx,
       db: new FailingStorage(ctx.db, {
         beforeInsert: async (table) => {
-          if (table !== 'curated_memories') return;
+          if (table !== 'memory_staging') return;
           notifyInsertStarted();
           await insertGate;
         },
@@ -3208,7 +3335,7 @@ describe('RouterService (action layer)', () => {
       ...ctx,
       db: new FailingStorage(ctx.db, {
         beforeInsert: async (table) => {
-          if (table !== 'curated_memories') return;
+          if (table !== 'memory_staging') return;
           notifyInsertStarted();
           await never;
         },

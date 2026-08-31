@@ -63,6 +63,62 @@ describe('Layer2MemoryStore', () => {
     expect(new Set(rows.map((row) => row.turn_id))).toEqual(new Set(['turn-music']));
   });
 
+  it('purges a merged memory when any retained source becomes policy-excluded', async () => {
+    await db.insertTurnMessages(1, 'turn-safe-source', [
+      { role: 'user', content: 'Martin mag strukturierte Übersichten.' },
+    ]);
+    await db.insertTurnMessages(1, 'turn-finance-source', [
+      { role: 'user', content: 'Die Bankverbindung gehört zu den Finanzen.' },
+    ]);
+    const topicId = await db.insert('memory_topics', { title: 'Arbeitsweise', version: 1 });
+    const memoryId = await db.insert('curated_memories', {
+      topic_id: topicId,
+      kind: 'preference',
+      content: 'Martin mag strukturierte Übersichten.',
+      evidence: 'Martin mag strukturierte Übersichten.',
+      source_conversation_id: 1,
+      source_turn_id: 'turn-safe-source',
+      confidence: 0.9,
+      status: 'active',
+      revision: 2,
+      created_by_action: 'merge',
+    });
+    await db.insert('memory_sources', {
+      memory_id: memoryId,
+      source_key: 'turn:1:turn-finance-source',
+      source_type: 'turn',
+      source_conversation_id: 1,
+      source_turn_id: 'turn-finance-source',
+    });
+
+    const result = await store.applyPolicy({ allowed: true, exclusions: ['Finanzen'] });
+
+    expect(result.memories).toBe(1);
+    expect(await db.query('curated_memories', { id: memoryId })).toEqual([]);
+  });
+
+  it('applies changed exclusions to encrypted Memory Author evidence as well as summaries', async () => {
+    const topicId = await db.insert('memory_topics', { title: 'Arbeitsweise', version: 1 });
+    const memoryId = await db.insert('curated_memories', {
+      topic_id: topicId,
+      kind: 'fact',
+      content: 'Martin bevorzugt eine klare Darstellung.',
+      evidence: 'Meine Bankdaten sollen klar dargestellt werden.',
+      source_conversation_id: 1,
+      source_turn_id: 'turn-evidence',
+      confidence: 0.9,
+      status: 'active',
+      revision: 1,
+      created_by_action: 'add',
+    });
+
+    const result = await store.applyPolicy({ allowed: true, exclusions: ['Finanzen'] });
+
+    expect(result.memories).toBe(1);
+    expect(await db.query('curated_memories', { id: memoryId })).toEqual([]);
+    expect(await db.query('memory_topics', { id: topicId })).toEqual([]);
+  });
+
   it('supports explicit show, correct, forget and hard-delete lifecycle', async () => {
     const finalizePrivacyDeletion = vi.spyOn(db, 'finalizePrivacyDeletion').mockResolvedValue();
     const policy = { allowed: true, exclusions: [] } as const;
