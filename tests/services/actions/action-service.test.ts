@@ -290,8 +290,28 @@ describe('ActionService', () => {
     expect(results[0]).toMatchObject({
       action: 'set_reminder',
       ok: true,
-      speak: expect.stringContaining('30.8.2026 um 10:45 Uhr'),
+      speak: 'Ich erinnere dich um 10:45 Uhr: Steuerberater anrufen.',
     });
+  });
+
+  it.each([
+    ['at=tomorrow@10:45|text=Steuerberater anrufen', 'Ich erinnere dich morgen um 10:45 Uhr: Steuerberater anrufen.'],
+    ['at=date:2026-09-03@10:45|text=Steuerberater anrufen', 'Ich erinnere dich am 3.9.2026 um 10:45 Uhr: Steuerberater anrufen.'],
+  ])('uses a natural day label in reminder confirmations for %s', async (param, expectedSpeech) => {
+    const nowMs = Date.parse('2026-08-30T10:15:00.000Z');
+    const reminderClock: ReminderClock = {
+      nowMs: () => nowMs,
+      toLocal: (epochMs) => new Date(epochMs).toISOString().slice(0, 16),
+    };
+    const { bus, results, service } = makeService({ reminderClock });
+    await service.init();
+
+    await request(bus, 'set_reminder', param, undefined, {
+      originMode: 'chat',
+      privateContext: false,
+    });
+
+    expect(results[0]).toMatchObject({ ok: true, speak: expectedSpeech });
   });
 
   it.each([

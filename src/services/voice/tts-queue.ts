@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { OutputId, PlaybackId, TurnId } from '../../core/turn-contract.js';
 import type { TtsProvider } from './tts-provider.interface.js';
+import { prepareSpeechText } from './speech-text.js';
 
 const TTS_SAMPLE_RATE = 22_050;
 const PLAYBACK_ACK_GRACE_MS = 5_000;
@@ -253,7 +254,7 @@ export class TtsQueue {
     this.state = 'synthesizing';
     try {
       const startedAt = performance.now();
-      const audio = await this.tts.speak(entry.item.text, this.synthesisAbort.signal);
+      const audio = await this.tts.speak(prepareSpeechText(entry.item.text), this.synthesisAbort.signal);
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
       this.onTiming?.(Math.round(performance.now() - startedAt), entry.item.turnId);
@@ -276,7 +277,7 @@ export class TtsQueue {
     this.activeSynthesis = entry;
     this.state = 'prebuffering';
 
-    void this.tts.speak(entry.item.text, this.synthesisAbort.signal).then((audio) => {
+    void this.tts.speak(prepareSpeechText(entry.item.text), this.synthesisAbort.signal).then((audio) => {
       if (generation !== this.generation) return;
       this.activeSynthesis = null;
       this.preBuffer = { entry, audio };

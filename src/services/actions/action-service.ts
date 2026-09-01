@@ -77,10 +77,23 @@ type ActionExecutionResult = LaunchResult & {
   reminderCancelAmbiguity?: BusEvents['action:result']['reminderCancelAmbiguity'];
 };
 
-function formatReminderDueLocal(dueLocal: string): string {
+function nextLocalDate(date: string): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(date);
+  if (!match) return null;
+  const next = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + 1));
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
+}
+
+function formatReminderDueLocal(dueLocal: string, nowLocal?: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u.exec(dueLocal);
   if (!match) return dueLocal;
-  return `${Number(match[3])}.${Number(match[2])}.${match[1]} um ${match[4]}:${match[5]} Uhr`;
+  const dueDate = `${match[1]}-${match[2]}-${match[3]}`;
+  const currentDate = nowLocal?.slice(0, 10);
+  if (currentDate === dueDate) return `um ${match[4]}:${match[5]} Uhr`;
+  if (currentDate && nextLocalDate(currentDate) === dueDate) {
+    return `morgen um ${match[4]}:${match[5]} Uhr`;
+  }
+  return `am ${Number(match[3])}.${Number(match[2])}.${match[1]} um ${match[4]}:${match[5]} Uhr`;
 }
 
 function ensureSentence(value: string): string {
@@ -454,7 +467,10 @@ export class ActionService implements SarahService {
           }, signal);
           return {
             ok: true,
-            speak: `Ich erinnere dich am ${formatReminderDueLocal(created.dueLocal)}: ${ensureSentence(created.text)}`,
+            speak: `Ich erinnere dich ${formatReminderDueLocal(
+              created.dueLocal,
+              clock.toLocal(clock.nowMs()),
+            )}: ${ensureSentence(created.text)}`,
           };
         } catch (error) {
           return reminderErrorResult(error instanceof Error ? error : new Error('Reminder creation failed'));

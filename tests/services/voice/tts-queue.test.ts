@@ -92,6 +92,24 @@ describe('TtsQueue', () => {
     expect(queue.hasTurn(TURN_ID)).toBe(false);
   });
 
+  it('normalizes display clock notation only for the TTS provider', async () => {
+    const original = item('Ich erinnere dich um 14:30 Uhr: Erinnerungstest.');
+    queue.enqueue(original);
+
+    await vi.waitUntil(() => onAudioReady.mock.calls.length > 0);
+
+    expect(mockTts.speak).toHaveBeenCalledWith(
+      'Ich erinnere dich um 14 Uhr 30: Erinnerungstest.',
+      expect.any(AbortSignal),
+    );
+    expect(onAudioReady).toHaveBeenCalledWith(
+      original,
+      expect.any(String),
+      SAMPLE_AUDIO,
+      22_050,
+    );
+  });
+
   // ── Multiple sentences in order ──────────────────────────────────────────────
 
   it('multiple sentences: onAudioReady called in enqueue order', async () => {
