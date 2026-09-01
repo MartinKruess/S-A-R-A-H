@@ -110,7 +110,7 @@ describe('reminder grounding', () => {
     )).toBe(false);
   });
 
-  it('rejects model-invented content and time independently', () => {
+  it('rejects invented content but replaces a model-altered time with the explicit user time', () => {
     const inventedText = request('at=tomorrow@11:00|text=Bank anrufen');
     expect(groundSetReminderRequest(
       inventedText,
@@ -123,7 +123,28 @@ describe('reminder grounding', () => {
       inventedTime,
       'Erinnere mich morgen um 11 Uhr an den Steuerberater.',
       clock,
-    )).toEqual({ ok: false, reason: 'ungrounded_time' });
+    )).toEqual({
+      ok: true,
+      canonicalParam: 'at=date:2026-08-31@11:00|text=den Steuerberater',
+      dueLocal: '2026-08-31T11:00',
+    });
+  });
+
+  it.each([
+    'Erstelle eine Erinnerung, Essen gehen, für 1630.',
+    'Erstelle eine Erinnerung, Essen gehen, für 16:30.',
+    'Erstelle eine Erinnerung, Essen gehen, für 16.30 Uhr.',
+    'Erstelle eine Erinnerung, Essen gehen, für 16 Uhr 30.',
+  ])('uses the explicit user time for common spoken and transcribed formats: %s', (userText) => {
+    expect(groundSetReminderRequest(
+      request('at=today@16:00|text=Essen gehen'),
+      userText,
+      clock,
+    )).toEqual({
+      ok: true,
+      canonicalParam: 'at=date:2026-08-30@16:30|text=Essen gehen',
+      dueLocal: '2026-08-30T16:30',
+    });
   });
 
   it('returns a canonical grounded request and concrete future due minute', () => {

@@ -165,6 +165,8 @@ function isTimeGrounded(time: string, userText: string): boolean {
   const minute = String(Number(minuteText));
   if (new RegExp(`(?:^|\\D)${hourText}:${minuteText}(?=$|\\D)`, 'u').test(normalized)) return true;
   if (new RegExp(`(?:^|\\D)${hour}[.:]${minuteText}(?=$|\\D)`, 'u').test(normalized)) return true;
+  if (new RegExp(`\\b(?:um|für)\\s+0?${hour}${minuteText}\\b`, 'u').test(normalized)) return true;
+  if (new RegExp(`\\b0?${hour}${minuteText}\\s+uhr\\b`, 'u').test(normalized)) return true;
   if (minuteText === '00' && new RegExp(`(?:^|\\D)${hour}\\s+uhr(?=$|\\D)`, 'u').test(normalized)) return true;
   return new RegExp(`(?:^|\\D)${hour}\\s+uhr\\s+${minute}(?=$|\\D)`, 'u').test(normalized);
 }
@@ -180,6 +182,12 @@ function groundedClockTimes(userText: string): ReadonlySet<string> {
   }
   for (const match of normalized.matchAll(/\b([01]?\d|2[0-3])\s+uhr(?:\s+([0-5]?\d))?\b/gu)) {
     add(match[1], match[2] ?? '00');
+  }
+  for (const match of normalized.matchAll(/\b(?:um|für)\s+([01]\d|2[0-3])([0-5]\d)\b/gu)) {
+    add(match[1], match[2]);
+  }
+  for (const match of normalized.matchAll(/\b([01]\d|2[0-3])([0-5]\d)\s+uhr\b/gu)) {
+    add(match[1], match[2]);
   }
   return times;
 }
@@ -269,10 +277,17 @@ export function groundSetReminderRequest(
   clock: ReminderClock,
 ): ReminderGroundingResult {
   const normalizedUser = normalizeUserText(userText);
-  const schedule = (request.schedule.kind === 'today' || request.schedule.kind === 'tomorrow')
+  let schedule = (request.schedule.kind === 'today' || request.schedule.kind === 'tomorrow')
     && !hasExplicitDaySelector(normalizedUser)
     ? { kind: 'time' as const, time: request.schedule.time }
     : request.schedule;
+  const groundedTimes = groundedClockTimes(userText);
+  if (schedule.kind !== 'after' && groundedTimes.size === 1) {
+    // The user's explicit clock time is authoritative. Small router models
+    // occasionally collapse 16:30 to 16:00; never execute that model-altered
+    // value when the source utterance contains one unambiguous time.
+    schedule = { ...schedule, time: [...groundedTimes][0] };
+  }
   if (!isReminderTextGrounded(request.text, userText)) {
     return { ok: false, reason: 'ungrounded_text' };
   }
