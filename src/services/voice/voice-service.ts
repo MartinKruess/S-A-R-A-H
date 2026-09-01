@@ -2,7 +2,6 @@
 import type { SarahService } from '../../core/service.interface.js';
 import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { AppContext } from '../../core/bootstrap.js';
-import { traceBootPerformance } from '../../core/boot-performance-trace.js';
 import type { SttAvailability, SttProvider } from './stt-provider.interface.js';
 import type { TtsAvailability, TtsProvider } from './tts-provider.interface.js';
 import type { WakeWordProvider } from './wake-word-provider.interface.js';
@@ -13,7 +12,6 @@ import {
   STT_UNAVAILABLE_MESSAGE,
   isChatAvailable,
 } from '../../core/chat-availability.js';
-import { SentenceBuffer } from './sentence-buffer.js';
 import {
   TTS_PRIORITY,
   TtsQueue,
@@ -34,6 +32,12 @@ import {
   isAbortPhrase,
   normalizeVoiceMode,
 } from './voice-types.js';
+import { VoiceCaptureFlush } from './voice-capture-flush.js';
+import {
+  VoiceOutputStore,
+  type VoiceOutputLifecycle,
+} from './voice-output-store.js';
+import { initializeVoiceProvider } from './voice-provider-startup.js';
 
 /** RMS threshold below which audio is considered silence */
 const SILENCE_RMS_THRESHOLD = 0.01;
@@ -41,7 +45,6 @@ const SILENCE_RMS_THRESHOLD = 0.01;
 /** Default sample rate for STT */
 const SAMPLE_RATE = 16_000;
 const STT_TIMEOUT_MS = 60_000;
-const CAPTURE_FLUSH_TIMEOUT_MS = 2_000;
 
 const PRIORITY_SPEECH_QUEUE_PRIORITY: Record<PrioritySpeechCategory, TtsPriority> = {
   background: TTS_PRIORITY.BACKGROUND,
@@ -52,18 +55,6 @@ const PRIORITY_SPEECH_QUEUE_PRIORITY: Record<PrioritySpeechCategory, TtsPriority
 };
 
 type VoiceTurnMode = 'voice' | 'chatspeak';
-
-interface OutputLifecycle {
-  turnId: TurnId;
-  outputId: OutputId;
-  sequence: number;
-  text: string;
-  complete: boolean;
-  failed: boolean;
-  shouldSpeak: boolean;
-  startedSpeaking: boolean;
-  buffer: SentenceBuffer;
-}
 
 export class VoiceService implements SarahService {
   readonly id = 'voice';
@@ -106,16 +97,11 @@ export class VoiceService implements SarahService {
   private readonly voiceRelevantTurns = new Map<TurnId, VoiceTurnMode>();
   private readonly turnSpeechDecisions = new Map<TurnId, boolean>();
   private readonly unavailableNoticeTurns = new Set<TurnId>();
-  private readonly outputs = new Map<OutputId, OutputLifecycle>();
-  private currentOutputId: OutputId | null = null;
+  private readonly outputStore: VoiceOutputStore;
   private activePlaybackTurnId: TurnId | null = null;
   private activePlaybackId: PlaybackId | null = null;
   private activeCaptureId: VoiceCaptureId | null = null;
-  private readonly captureFlushWaiters = new Map<VoiceCaptureId, {
-    resolve: () => void;
-    reject: (error: Error) => void;
-    timeout: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly captureFlush: VoiceCaptureFlush;
   private sttAbort: AbortController | null = null;
   private readonly spokenTurns = new Set<TurnId>();
   private readonly prioritySpeechTurns = new Set<TurnId>();
@@ -132,7 +118,19 @@ export class VoiceService implements SarahService {
     private wakeWord: WakeWordProvider,
     private audio: AudioManager,
     private hotkey: HotkeyManager,
-  ) {}
+  ) {
+    this.captureFlush = new VoiceCaptureFlush((captureId) => {
+      this.context.bus.emit(this.id, 'voice:capture-flush-request', { captureId });
+    });
+    this.outputStore = new VoiceOutputStore((turnId, forceSpeak) => (
+      forceSpeak
+        ?? this.turnSpeechDecisions.get(turnId)
+        ?? (
+          this.voiceMode !== 'off'
+          && (this.voiceRelevantTurns.has(turnId) || this.interactionMode !== 'chat')
+        )
+    ));
+  }
 
   get voiceState(): VoiceState {
     return this._voiceState;
@@ -152,8 +150,12 @@ export class VoiceService implements SarahService {
     return this.lastSetValue(this.processingTurnIds);
   }
 
-  private get activeOutput(): OutputLifecycle | null {
-    return this.currentOutputId ? this.outputs.get(this.currentOutputId) ?? null : null;
+  private get outputs(): Map<OutputId, VoiceOutputLifecycle> {
+    return this.outputStore.outputs;
+  }
+
+  private get activeOutput(): VoiceOutputLifecycle | null {
+    return this.outputStore.active;
   }
 
   private get activeOutputTurnId(): TurnId | null {
@@ -165,9 +167,7 @@ export class VoiceService implements SarahService {
   }
 
   private get llmStreaming(): boolean {
-    return [...this.outputs.values()].some((output) => (
-      output.startedSpeaking && !output.complete && !output.failed
-    ));
+    return this.outputStore.llmStreaming;
   }
 
   /** Ends only the listening turn that owns a failed renderer capture. */
@@ -178,7 +178,7 @@ export class VoiceService implements SarahService {
     }
     if (captureId !== this.activeCaptureId || this._voiceState !== 'listening') return;
 
-    this.rejectCaptureFlush(captureId, new Error(message));
+    this.captureFlush.reject(captureId, new Error(message));
 
     const turnId = this.activeInputTurnId;
     this.voiceGeneration += 1;
@@ -231,34 +231,7 @@ export class VoiceService implements SarahService {
 
   /** Completes the exact renderer capture whose worklet and IPC tail were flushed. */
   handleCaptureFlushed(captureId: VoiceCaptureId): void {
-    const waiter = this.captureFlushWaiters.get(captureId);
-    if (!waiter) return;
-    clearTimeout(waiter.timeout);
-    this.captureFlushWaiters.delete(captureId);
-    waiter.resolve();
-  }
-
-  private rejectCaptureFlush(captureId: VoiceCaptureId, error: Error): void {
-    const waiter = this.captureFlushWaiters.get(captureId);
-    if (!waiter) return;
-    clearTimeout(waiter.timeout);
-    this.captureFlushWaiters.delete(captureId);
-    waiter.reject(error);
-  }
-
-  private requestCaptureFlush(captureId: VoiceCaptureId): Promise<void> {
-    const existing = this.captureFlushWaiters.get(captureId);
-    if (existing) {
-      return Promise.reject(new Error(`Capture ${captureId} is already being flushed`));
-    }
-    return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.captureFlushWaiters.delete(captureId);
-        reject(new Error('Renderer capture flush timed out'));
-      }, CAPTURE_FLUSH_TIMEOUT_MS);
-      this.captureFlushWaiters.set(captureId, { resolve, reject, timeout });
-      this.context.bus.emit(this.id, 'voice:capture-flush-request', { captureId });
-    });
+    this.captureFlush.resolve(captureId);
   }
 
   setInteractionMode(mode: InteractionMode): void {
@@ -413,51 +386,24 @@ export class VoiceService implements SarahService {
 
     // STT and TTS are independent capabilities (A5): one failing must not
     // silently kill the other — degrade instead of dying.
-    const whisperStartedAt = performance.now();
-    traceBootPerformance('whisper', 'start');
-    try {
-      await this.stt.init(signal);
-      this.applySttAvailability({ available: true });
-      traceBootPerformance('whisper', 'ready', {
-        durationMs: performance.now() - whisperStartedAt,
-      });
-    } catch (err) {
-      traceBootPerformance('whisper', 'failed', {
-        durationMs: performance.now() - whisperStartedAt,
-      });
-      if (!this.stt.recoversAfterInitFailure) {
-        await this.cleanupFailedProvider('STT', () => this.stt.destroy());
-      }
-      throwIfAborted(signal);
-      console.error('[VoiceService] STT init failed:', err);
-      this.context.lifecycle?.setCapability(
-        'stt',
-        'unavailable',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-
-    const piperStartedAt = performance.now();
-    traceBootPerformance('piper', 'start');
-    try {
-      await this.tts.init(signal);
-      this.applyTtsAvailability({ available: true });
-      traceBootPerformance('piper', 'ready', {
-        durationMs: performance.now() - piperStartedAt,
-      });
-    } catch (err) {
-      traceBootPerformance('piper', 'failed', {
-        durationMs: performance.now() - piperStartedAt,
-      });
-      await this.cleanupFailedProvider('TTS', () => this.tts.destroy());
-      throwIfAborted(signal);
-      console.error('[VoiceService] TTS init failed:', err);
-      this.context.lifecycle?.setCapability(
-        'tts',
-        'unavailable',
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+    await initializeVoiceProvider({
+      provider: this.stt,
+      signal,
+      providerLabel: 'STT',
+      traceLabel: 'whisper',
+      cleanupAfterFailure: !this.stt.recoversAfterInitFailure,
+      onAvailable: () => this.applySttAvailability({ available: true }),
+      onUnavailable: (message) => this.context.lifecycle?.setCapability('stt', 'unavailable', message),
+    });
+    await initializeVoiceProvider({
+      provider: this.tts,
+      signal,
+      providerLabel: 'TTS',
+      traceLabel: 'piper',
+      cleanupAfterFailure: true,
+      onAvailable: () => this.applyTtsAvailability({ available: true }),
+      onUnavailable: (message) => this.context.lifecycle?.setCapability('tts', 'unavailable', message),
+    });
 
     throwIfAborted(signal);
     this.setupMode();
@@ -552,14 +498,11 @@ export class VoiceService implements SarahService {
     this.voiceRelevantTurns.clear();
     this.turnSpeechDecisions.clear();
     this.unavailableNoticeTurns.clear();
-    this.outputs.clear();
-    this.currentOutputId = null;
+    this.outputStore.clear();
     this.activePlaybackTurnId = null;
     this.activePlaybackId = null;
     this.activeCaptureId = null;
-    for (const [captureId] of this.captureFlushWaiters) {
-      this.rejectCaptureFlush(captureId, new Error('Voice service stopped'));
-    }
+    this.captureFlush.rejectAll(new Error('Voice service stopped'));
     this.spokenTurns.clear();
     this.prioritySpeechTurns.clear();
     this.voiceDoneTurns.clear();
@@ -594,14 +537,6 @@ export class VoiceService implements SarahService {
         [...syncFailures, ...failures.map((failure) => failure.reason)],
         'Voice provider cleanup failed',
       );
-    }
-  }
-
-  private async cleanupFailedProvider(label: string, cleanup: () => Promise<void>): Promise<void> {
-    try {
-      await cleanup();
-    } catch (error) {
-      console.warn(`[VoiceService] ${label} partial-init cleanup failed:`, error);
     }
   }
 
@@ -758,7 +693,7 @@ export class VoiceService implements SarahService {
         this.deferredSentences = this.deferredSentences.filter((item) => item.turnId !== turnId);
         this.ttsQueue?.cancelTurn(turnId);
         if (ownsInput) this.activeInputTurnId = null;
-        this.removeTurnOutputs(turnId);
+        this.outputStore.removeTurn(turnId);
         this.voiceRelevantTurns.delete(turnId);
         this.turnSpeechDecisions.delete(turnId);
         this.unavailableNoticeTurns.delete(turnId);
@@ -786,7 +721,7 @@ export class VoiceService implements SarahService {
       const outputId = msg.data.outputId;
       const { text } = msg.data;
       if (!text) return;
-      const output = this.getOrCreateOutput(turnId, outputId);
+      const output = this.outputStore.getOrCreate(turnId, outputId);
       if (msg.data.sequence !== output.sequence || output.complete || output.failed) return;
       output.sequence += 1;
       output.text += text;
@@ -796,7 +731,7 @@ export class VoiceService implements SarahService {
       if (!this.context.bus.isTurnOpen(msg.data.turnId)) return;
       const turnId = msg.data.turnId;
       const outputId = msg.data.outputId;
-      const output = this.getOrCreateOutput(turnId, outputId);
+      const output = this.outputStore.getOrCreate(turnId, outputId);
       if (output.complete || output.failed) return;
       if (!output.shouldSpeak) {
         output.sequence = msg.data.sequence;
@@ -848,7 +783,7 @@ export class VoiceService implements SarahService {
           && (this.voiceRelevantTurns.has(turnId) || turnOutputs.some((output) => output.shouldSpeak))
         );
       if (shouldSpeakError && this.capabilities.tts) {
-        const output = this.getOrCreateOutput(turnId, randomUUID(), true);
+        const output = this.outputStore.getOrCreate(turnId, randomUUID(), true);
         output.complete = true;
         output.failed = true;
         this.enqueueSentences(output, [msg.data.message || 'Die Anfrage ist fehlgeschlagen.']);
@@ -885,41 +820,7 @@ export class VoiceService implements SarahService {
     this.restoreOwnedVoiceState();
   }
 
-  private getOrCreateOutput(
-    turnId: TurnId,
-    outputId: OutputId,
-    forceSpeak?: boolean,
-  ): OutputLifecycle {
-    const existing = this.outputs.get(outputId);
-    if (existing) {
-      if (existing.turnId !== turnId) {
-        throw new Error(`Output ${outputId} cannot change its owning turn`);
-      }
-      this.currentOutputId = outputId;
-      return existing;
-    }
-    const output: OutputLifecycle = {
-      turnId,
-      outputId,
-      sequence: 0,
-      text: '',
-      complete: false,
-      failed: false,
-      shouldSpeak: forceSpeak
-        ?? this.turnSpeechDecisions.get(turnId)
-        ?? (
-          this.voiceMode !== 'off'
-          && (this.voiceRelevantTurns.has(turnId) || this.interactionMode !== 'chat')
-        ),
-      startedSpeaking: false,
-      buffer: new SentenceBuffer(),
-    };
-    this.outputs.set(outputId, output);
-    this.currentOutputId = outputId;
-    return output;
-  }
-
-  private enqueueSentences(output: OutputLifecycle, sentences: string[]): void {
+  private enqueueSentences(output: VoiceOutputLifecycle, sentences: string[]): void {
     for (const sentence of sentences) {
       if (!sentence) continue;
       output.startedSpeaking = true;
@@ -957,23 +858,10 @@ export class VoiceService implements SarahService {
   }
 
   private cleanupFinishedOutputs(): void {
-    for (const [outputId, output] of this.outputs) {
-      const isDeferred = this.deferredSentences.some((item) => item.turnId === output.turnId);
-      if ((!output.complete && !output.failed) || this.ttsQueue?.hasTurn(output.turnId) || isDeferred) continue;
-      this.outputs.delete(outputId);
-    }
-    if (this.currentOutputId && !this.outputs.has(this.currentOutputId)) {
-      this.currentOutputId = this.lastSetValue(new Set(this.outputs.keys()));
-    }
-  }
-
-  private removeTurnOutputs(turnId: TurnId): void {
-    for (const [outputId, output] of this.outputs) {
-      if (output.turnId === turnId) this.outputs.delete(outputId);
-    }
-    if (this.currentOutputId && !this.outputs.has(this.currentOutputId)) {
-      this.currentOutputId = this.lastSetValue(new Set(this.outputs.keys()));
-    }
+    this.outputStore.cleanupFinished(
+      (turnId) => this.ttsQueue?.hasTurn(turnId) === true,
+      (turnId) => this.deferredSentences.some((item) => item.turnId === turnId),
+    );
   }
 
   private lastSetValue<T>(values: Set<T>): T | null {
@@ -1211,7 +1099,7 @@ export class VoiceService implements SarahService {
     }
     this.processingTurnIds.add(turnId);
     try {
-      await this.requestCaptureFlush(captureId);
+      await this.captureFlush.request(captureId);
     } catch (error) {
       if (this.activeCaptureId === captureId) {
         this.audio.stopRecording(captureId);
@@ -1320,7 +1208,7 @@ export class VoiceService implements SarahService {
     }
 
     if (this.capabilities.tts && this.ttsQueue) {
-      const output = this.getOrCreateOutput(turnId, randomUUID(), true);
+      const output = this.outputStore.getOrCreate(turnId, randomUUID(), true);
       output.text = message;
       output.complete = true;
       output.failed = true;
@@ -1378,7 +1266,7 @@ export class VoiceService implements SarahService {
     this.activePlaybackId = null;
     this.activeInputTurnId = null;
     if (this.activeCaptureId) {
-      this.rejectCaptureFlush(this.activeCaptureId, new Error(reason));
+      this.captureFlush.reject(this.activeCaptureId, new Error(reason));
     }
     this.activeCaptureId = null;
     this.deferredSentences = this.deferredSentences.filter(
@@ -1388,7 +1276,7 @@ export class VoiceService implements SarahService {
       this.processingTurnIds.delete(turnId);
       this.voiceRelevantTurns.delete(turnId);
       this.turnSpeechDecisions.delete(turnId);
-      this.removeTurnOutputs(turnId);
+      this.outputStore.removeTurn(turnId);
       this.spokenTurns.delete(turnId);
       this.prioritySpeechTurns.delete(turnId);
       this.routerErrorTurns.delete(turnId);
@@ -1435,7 +1323,7 @@ export class VoiceService implements SarahService {
       this.processingTurnIds.delete(turnId);
       this.voiceRelevantTurns.delete(turnId);
       this.turnSpeechDecisions.delete(turnId);
-      this.removeTurnOutputs(turnId);
+      this.outputStore.removeTurn(turnId);
       this.spokenTurns.delete(turnId);
       this.prioritySpeechTurns.delete(turnId);
       this.routerErrorTurns.delete(turnId);
