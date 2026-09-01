@@ -38,10 +38,26 @@ const CSS = `
     color: var(--sarah-text-muted);
   }
 
+  input[type="date"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    filter: invert(1);
+    opacity: 0.75;
+    transition: opacity var(--sarah-transition-fast);
+  }
+
+  input[type="date"]:hover::-webkit-calendar-picker-indicator,
+  input[type="date"]:focus::-webkit-calendar-picker-indicator {
+    opacity: 1;
+  }
+
   .error-msg {
     font-size: var(--sarah-font-size-sm);
     color: var(--sarah-accent-orange);
-    min-height: 1.2em;
+    min-height: var(--sarah-input-error-space, 1.2em);
+  }
+
+  .error-msg:empty {
+    display: var(--sarah-input-empty-error-display, block);
   }
 `;
 
@@ -75,6 +91,16 @@ export class SarahInput extends SarahElement {
         composed: true,
       }));
     });
+
+    if (this.input.type === 'date') {
+      this.input.addEventListener('focus', () => {
+        try {
+          this.input.showPicker();
+        } catch {
+          // Programmatic focus may not carry the user activation required by Chromium.
+        }
+      });
+    }
 
     this.errorEl = document.createElement('div');
     this.errorEl.className = 'error-msg';

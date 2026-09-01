@@ -80,6 +80,20 @@
   max-width: 800px;
 }
 
+.dialog-standalone.view-settings {
+  padding-inline: 2rem;
+}
+
+.dialog-standalone.view-settings sarah-input {
+  --sarah-input-error-space: 0;
+  --sarah-input-empty-error-display: none;
+}
+
+.dialog-standalone.view-settings > * {
+  width: 100%;
+  max-width: none;
+}
+
 /* ── Settings sections ── */
 .settings-section {
   margin-bottom: var(--sarah-space-xl);
@@ -104,6 +118,115 @@
   gap: var(--sarah-space-md);
 }
 
+.settings-control-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-md);
+}
+
+.settings-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-xs);
+}
+
+.settings-field-group .settings-hint {
+  padding: 0;
+}
+
+.settings-feedback-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sarah-space-md);
+}
+
+.settings-split-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sarah-space-xl);
+  align-items: start;
+}
+
+.settings-column {
+  min-width: 0;
+}
+
+.settings-subtabs {
+  min-width: 0;
+}
+
+.settings-subtabs-strip {
+  display: block;
+  margin-bottom: var(--sarah-space-lg);
+}
+
+.settings-subtab-panel[hidden] {
+  display: none;
+}
+
+.settings-subtab-grid {
+  margin-top: var(--sarah-space-lg);
+}
+
+.settings-secondary-heading {
+  margin-top: var(--sarah-space-lg);
+  margin-bottom: var(--sarah-space-xs);
+  color: var(--sarah-text-primary);
+  font-size: var(--sarah-font-size-lg);
+  font-weight: 400;
+}
+
+.important-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sarah-space-md);
+  margin-top: var(--sarah-space-md);
+}
+
+.important-folder-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--sarah-space-md);
+  align-items: end;
+}
+
+.important-folder-add {
+  margin-top: var(--sarah-space-md);
+}
+
+.settings-subtab-empty {
+  min-height: 180px;
+  padding: var(--sarah-space-lg);
+  border: 1px dashed var(--sarah-border);
+  border-radius: var(--sarah-radius-md);
+  background: var(--sarah-bg-surface);
+}
+
+.settings-subtab-empty-title {
+  margin-bottom: var(--sarah-space-xs);
+  color: var(--sarah-text-primary);
+  font-size: var(--sarah-font-size-md);
+}
+
+.settings-security-intro {
+  margin-bottom: var(--sarah-space-lg);
+  max-width: 80ch;
+  color: var(--sarah-text-secondary);
+  font-size: var(--sarah-font-size-md);
+  line-height: 1.6;
+}
+
+.settings-recovery-block {
+  margin-top: var(--sarah-space-sm);
+  padding-top: var(--sarah-space-lg);
+  border-top: 1px solid var(--sarah-border);
+}
+
+.settings-recovery-block .settings-secondary-heading {
+  margin-top: 0;
+}
+
 .settings-page-title {
   margin-bottom: var(--sarah-space-xl);
 }
@@ -112,7 +235,12 @@
   margin-bottom: var(--sarah-space-lg);
 }
 
+.settings-personal-details {
+  margin-top: var(--sarah-space-md);
+}
+
 @media (max-width: 900px) {
+  .settings-split-layout,
   .settings-grid {
     grid-template-columns: 1fr;
   }
@@ -145,10 +273,6 @@
   line-height: 1.4;
   padding: var(--sarah-space-xs) 0;
 }
-
-.settings-spacer-sm { height: var(--sarah-space-sm); }
-.settings-spacer-md { height: var(--sarah-space-md); }
-.settings-spacer-lg { height: var(--sarah-space-lg); }
 
 /* ── Slash commands (controls section) ── */
 .cmd-row {
@@ -417,15 +541,7 @@ body:not(.boot-mode) #genesis-overlay {
 }
 
 .settings-links-block {
-  margin-top: var(--sarah-space-lg);
-}
-
-.settings-links-header {
-  font-size: var(--sarah-font-size-sm);
-  color: var(--sarah-accent);
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  margin-bottom: var(--sarah-space-xs);
+  margin-top: 0;
 }
 
 .settings-links-desc {
@@ -437,7 +553,7 @@ body:not(.boot-mode) #genesis-overlay {
 .settings-links-list {
   display: flex;
   flex-direction: column;
-  gap: var(--sarah-space-sm);
+  gap: var(--sarah-space-md);
   margin-bottom: var(--sarah-space-md);
 }
 
@@ -446,6 +562,20 @@ body:not(.boot-mode) #genesis-overlay {
   grid-template-columns: 1fr 1fr auto;
   gap: var(--sarah-space-md);
   align-items: end;
+}
+
+.settings-profile-layout .settings-links-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.settings-profile-layout .settings-links-row sarah-input {
+  grid-column: 1;
+}
+
+.settings-profile-layout .settings-links-remove {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: end;
 }
 
 .settings-links-remove {

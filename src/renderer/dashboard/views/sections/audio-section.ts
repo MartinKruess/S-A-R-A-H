@@ -1,4 +1,4 @@
-import { createSectionHeader, createSpacer, saveAudio, showSaved } from '../../../shared/settings-utils.js';
+import { createSectionHeader, saveAudio, showSaved } from '../../../shared/settings-utils.js';
 import type { AudioConfig, SarahConfig } from '../../../../core/config-schema.js';
 
 type HudSelectElement = HTMLElement & { value: string };
@@ -17,6 +17,9 @@ export function createAudioSection(config: SarahConfig): HTMLElement {
   const { header, feedback } = createSectionHeader('Audio');
   section.appendChild(header);
 
+  const controls = document.createElement('div');
+  controls.className = 'settings-control-stack';
+
   const inputEl = document.createElement('hud-select') as HudSelectElement;
   inputEl.setAttribute('kind', 'audioinput');
   inputEl.value = config.audio.inputDeviceId ?? '';
@@ -25,9 +28,7 @@ export function createAudioSection(config: SarahConfig): HTMLElement {
     saveAudio(createAudioDevicePatch('inputDeviceId', value));
     showSaved(feedback);
   });
-  section.appendChild(inputEl);
-
-  section.appendChild(createSpacer());
+  controls.appendChild(inputEl);
 
   const outputEl = document.createElement('hud-select') as HudSelectElement;
   outputEl.setAttribute('kind', 'audiooutput');
@@ -37,7 +38,8 @@ export function createAudioSection(config: SarahConfig): HTMLElement {
     saveAudio(createAudioDevicePatch('outputDeviceId', value));
     showSaved(feedback);
   });
-  section.appendChild(outputEl);
+  controls.appendChild(outputEl);
+  section.appendChild(controls);
 
   return section;
 }
