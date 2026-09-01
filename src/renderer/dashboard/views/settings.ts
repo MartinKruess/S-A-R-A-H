@@ -4,7 +4,7 @@ import { resolveInitialTabId } from '../../components/sarah-tabs-logic.js';
 import { createProfileSection } from './sections/profile-section.js';
 import { createFilesSection } from './sections/files-section.js';
 import { createTrustSection } from './sections/trust-section.js';
-import { createPersonalizationSection } from './sections/personalization-section.js';
+import { createPerformanceSection, createPersonalizationSection } from './sections/personalization-section.js';
 import { createControlsSection } from './sections/controls-section.js';
 import { createAudioSection } from './sections/audio-section.js';
 import { createConnectionsSection } from './sections/connections-section.js';
@@ -26,12 +26,30 @@ const VALID_IDS = TABS.map(t => t.id);
 function buildPanelContent(id: TabId, config: SarahConfig): HTMLElement[] {
   switch (id) {
     case 'profile':    return [createProfileSection(config)];
-    case 'personal':   return [createPersonalizationSection(config), createAudioSection(config)];
+    case 'personal':   return [createPersonalSettingsLayout(config)];
     case 'management':   return [createFilesSection(config)];
     case 'integrations': return [createConnectionsSection(config)];
     case 'control':      return [createControlsSection(config)];
     case 'security':     return [createTrustSection(config)];
   }
+}
+
+function createPersonalSettingsLayout(config: SarahConfig): HTMLElement {
+  const layout = document.createElement('div');
+  layout.className = 'settings-split-layout settings-personal-layout';
+
+  const left = document.createElement('div');
+  left.className = 'settings-column';
+  left.appendChild(createPersonalizationSection(config));
+  left.appendChild(createPerformanceSection(config));
+
+  const right = document.createElement('div');
+  right.className = 'settings-column';
+  right.appendChild(createAudioSection(config));
+
+  layout.appendChild(left);
+  layout.appendChild(right);
+  return layout;
 }
 
 export async function createSettingsView(): Promise<HTMLElement> {

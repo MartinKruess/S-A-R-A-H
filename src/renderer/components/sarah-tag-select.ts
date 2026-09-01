@@ -135,7 +135,7 @@ export class SarahTagSelect extends SarahElement {
 
       const input = document.createElement('input');
       input.className = 'add-input';
-      input.placeholder = 'Eigenen Bereich hinzufügen...';
+      input.placeholder = this.getAttribute('custom-placeholder') || 'Eigenen Bereich hinzufügen...';
 
       const addBtn = document.createElement('button');
       addBtn.className = 'add-btn';
@@ -227,11 +227,13 @@ export function sarahTagSelect(props: {
   options: TagOption[];
   selected?: string[];
   allowCustom?: boolean;
+  customPlaceholder?: string;
   onChange?: (values: string[]) => void;
 }): SarahTagSelect {
   const el = document.createElement('sarah-tag-select') as SarahTagSelect;
   if (props.label) el.setAttribute('label', props.label);
   if (props.allowCustom) el.setAttribute('allow-custom', '');
+  if (props.customPlaceholder) el.setAttribute('custom-placeholder', props.customPlaceholder);
   el.setOptions(props.options);
   if (props.selected) el.setSelected(props.selected);
   if (props.onChange) {

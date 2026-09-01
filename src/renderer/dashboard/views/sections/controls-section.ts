@@ -1,9 +1,10 @@
 import { sarahInput } from '../../../components/sarah-input.js';
 import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahButton } from '../../../components/sarah-button.js';
-import { showSaved, createSectionHeader, save, createSpacer, createHint } from '../../../shared/settings-utils.js';
+import { showSaved, createSectionHeader, save, createHint } from '../../../shared/settings-utils.js';
 import type { SarahConfig, CustomCommand } from '../../../../core/config-schema.js';
 import { BUILTIN_COMMANDS, RESERVED_BUILTIN_COMMANDS } from '../../../../services/commands/builtin-commands.js';
+import { createSettingsSubtabs } from '../../../shared/settings-subtabs.js';
 
 const ALLOWED_PTT_KEYS = [
   'F1', 'F2', 'F3', 'F4', 'F5', 'F6',
@@ -44,8 +45,12 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
   const section = document.createElement('div');
   section.className = 'settings-section';
 
-  const { header, feedback } = createSectionHeader('Steuerung');
+  const { header, feedback } = createSectionHeader('Bedienung');
   section.appendChild(header);
+
+  const controlPanel = document.createElement('div');
+  controlPanel.className = 'settings-control-stack';
+  const commandsPanel = document.createElement('div');
 
   // Voice mode
   const voiceModeSelect = sarahSelect({
@@ -62,7 +67,7 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
       showSaved(feedback);
     },
   });
-  section.appendChild(voiceModeSelect);
+  controlPanel.appendChild(voiceModeSelect);
 
   // Push-to-Talk Taste (only visible in push-to-talk mode)
   const hotkeyWrapper = sarahInput({
@@ -82,11 +87,12 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
     save('controls', { ...controls, pushToTalkKey: key });
     showSaved(feedback);
   });
-  section.appendChild(hotkeyWrapper);
-  section.appendChild(createSpacer());
+  controlPanel.appendChild(hotkeyWrapper);
 
   // Quiet mode duration
-  section.appendChild(sarahSelect({
+  const quietModeGroup = document.createElement('div');
+  quietModeGroup.className = 'settings-field-group';
+  quietModeGroup.appendChild(sarahSelect({
     label: 'Ruhemodus-Dauer',
     options: [
       { value: '15', label: '15 Minuten' },
@@ -97,35 +103,8 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
     value: String(controls.quietModeDuration ?? 60),
     onChange: (val) => { controls.quietModeDuration = parseInt(val, 10); save('controls', controls); showSaved(feedback); },
   }));
-  section.appendChild(createHint('Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.'));
-
-  // Performance profile
-  const llm = { ...config.llm };
-  section.appendChild(createSpacer());
-
-  section.appendChild(sarahSelect({
-    label: 'GPU-Leistungsprofil',
-    options: [
-      { value: 'leistung', label: 'Leistung — Maximale GPU-Nutzung' },
-      { value: 'schnell', label: 'Schnell — Hohe GPU-Nutzung' },
-      { value: 'normal', label: 'Normal — Ausgewogen' },
-      { value: 'sparsam', label: 'Sparsam — Weniger GPU, mehr CPU' },
-    ],
-    value: llm.performanceProfile || 'normal',
-    onChange: (val) => {
-      llm.performanceProfile = val as typeof llm.performanceProfile;
-      save('llm', llm);
-      showSaved(feedback);
-    },
-  }));
-  section.appendChild(createHint('Steuert wie viele GPU-Layer für das große Sprachmodell verwendet werden. Höhere Stufen sind schneller, belegen aber mehr VRAM.'));
-  section.appendChild(createSpacer('lg'));
-
-  // Slash Commands header
-  const cmdTitle = document.createElement('div');
-  cmdTitle.className = 'cmd-title';
-  cmdTitle.textContent = 'Slash-Commands';
-  section.appendChild(cmdTitle);
+  quietModeGroup.appendChild(createHint('Mit /quietmode aktivierst du den Ruhemodus. Sarah hört nicht zu und reagiert nicht, bis die Zeit abläuft oder du erneut /quietmode eingibst.'));
+  controlPanel.appendChild(quietModeGroup);
 
   const cmdList = document.createElement('div');
   cmdList.className = 'cmd-list';
@@ -155,7 +134,7 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
   }
 
   renderCustomCommands();
-  section.appendChild(cmdList);
+  commandsPanel.appendChild(cmdList);
 
   // Add custom command
   const addArea = document.createElement('div');
@@ -198,7 +177,12 @@ export function createControlsSection(config: SarahConfig): HTMLElement {
   addArea.appendChild(cmdInput);
   addArea.appendChild(promptInput);
   addArea.appendChild(addBtn);
-  section.appendChild(addArea);
+  commandsPanel.appendChild(addArea);
+
+  section.appendChild(createSettingsSubtabs([
+    { id: 'control-settings', label: 'Steuerung', content: controlPanel },
+    { id: 'slash-commands', label: 'Slash-Commands', content: commandsPanel },
+  ]));
 
   return section;
 }

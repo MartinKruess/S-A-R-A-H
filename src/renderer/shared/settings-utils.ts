@@ -68,12 +68,6 @@ export function saveAudio(value: Partial<AudioConfig>): Promise<SaveConfigResult
   return latestSave;
 }
 
-export function createSpacer(size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {
-  const spacer = document.createElement('div');
-  spacer.className = `settings-spacer-${size}`;
-  return spacer;
-}
-
 export function createHint(text: string): HTMLElement {
   const hint = document.createElement('div');
   hint.className = 'settings-hint';

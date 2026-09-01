@@ -1,8 +1,8 @@
 import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahToggle } from '../../../components/sarah-toggle.js';
 import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
-import { sarahButton } from '../../../components/sarah-button.js';
-import { showSaved, createSectionHeader, save, createSpacer, createHint, getSarah } from '../../../shared/settings-utils.js';
+import { showSaved, createSectionHeader, save, createHint } from '../../../shared/settings-utils.js';
+import { createSettingsSubtabs } from '../../../shared/settings-subtabs.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
 
 const EXCLUSION_OPTIONS = [
@@ -13,17 +13,24 @@ const EXCLUSION_OPTIONS = [
 ];
 
 export function createTrustSection(config: SarahConfig): HTMLElement {
-  const trust = { ...config.trust };
+  const trust = config.trust;
   const section = document.createElement('div');
   section.className = 'settings-section';
 
-  const { header, feedback } = createSectionHeader('Vertrauen & Sicherheit');
+  const { header, feedback } = createSectionHeader('Datenschutz & Sicherheit');
   section.appendChild(header);
 
-  const exclusionsWrapper = document.createElement('div');
-  exclusionsWrapper.style.display = (trust.memoryAllowed !== false) ? 'block' : 'none';
+  const intro = document.createElement('div');
+  intro.className = 'settings-security-intro';
+  intro.textContent = 'Du entscheidest, was Sarah speichern, verwenden und an verbundene Dienste weitergeben darf. Passwörter sowie Bank- und Versicherungsdaten werden niemals als Langzeiterinnerung gespeichert.';
+  section.appendChild(intro);
 
-  section.appendChild(sarahToggle({
+  const privacyPanel = document.createElement('div');
+  privacyPanel.className = 'settings-control-stack';
+  const exclusionsWrapper = document.createElement('div');
+  exclusionsWrapper.style.display = trust.memoryAllowed !== false ? 'block' : 'none';
+
+  privacyPanel.appendChild(sarahToggle({
     label: 'Erinnerungen erlauben',
     description: 'Neue Erinnerungen erlauben. Ausschalten pausiert das Gedächtnis, ohne bestehende Erinnerungen zu löschen.',
     checked: trust.memoryAllowed !== false,
@@ -35,20 +42,22 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     },
   }));
 
-  section.appendChild(createHint('Sarah merkt sich dein Verhalten und Muster, aber niemals Passwörter, Bank- oder Versicherungsdaten.'));
-
-  section.appendChild(sarahToggle({
-    label: 'Kontext einsehen',
-    description: 'Erlaubt /showcontext und /exportmemory für deine kuratierten Erinnerungen.',
-    checked: trust.showContextEnabled,
-    onChange: (val) => {
-      trust.showContextEnabled = val;
+  const exclusions = trust.memoryExclusions || [];
+  exclusionsWrapper.appendChild(sarahTagSelect({
+    label: 'Was soll Sarah sich nicht merken?',
+    options: EXCLUSION_OPTIONS,
+    selected: exclusions,
+    allowCustom: true,
+    customPlaceholder: 'Eigenen Ausschluss hinzufügen...',
+    onChange: (values) => {
+      trust.memoryExclusions = values;
       save('trust', trust);
       showSaved(feedback);
     },
   }));
+  privacyPanel.appendChild(exclusionsWrapper);
 
-  section.appendChild(sarahToggle({
+  privacyPanel.appendChild(sarahToggle({
     label: 'Vertrauliche Nachrichten',
     description: 'Erlaubt einmalige vertrauliche Nachrichten und private Abschnitte mit /anonymous.',
     checked: trust.anonymousEnabled,
@@ -59,7 +68,7 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     },
   }));
 
-  section.appendChild(sarahToggle({
+  privacyPanel.appendChild(sarahToggle({
     label: 'Browser verwenden',
     description: 'Erlaubt Websuchen und das Öffnen der dazugehörigen Suchergebnisse. OAuth-Anmeldungen werden separat gesteuert.',
     checked: trust.webAccessAllowed,
@@ -70,18 +79,11 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
     },
   }));
 
-  const exclusions = trust.memoryExclusions || [];
-  exclusionsWrapper.appendChild(sarahTagSelect({
-    label: 'Was soll Sarah sich nicht merken?',
-    options: EXCLUSION_OPTIONS,
-    selected: exclusions,
-    allowCustom: true,
-    onChange: (values) => { trust.memoryExclusions = values; save('trust', trust); showSaved(feedback); },
-  }));
-  section.appendChild(exclusionsWrapper);
-  section.appendChild(createSpacer());
-
-  section.appendChild(sarahSelect({
+  const protectionPanel = document.createElement('div');
+  protectionPanel.className = 'settings-control-stack';
+  const recognitionGroup = document.createElement('div');
+  recognitionGroup.className = 'settings-field-group';
+  recognitionGroup.appendChild(sarahSelect({
     label: 'Programmerkennung',
     options: [
       { value: 'none', label: 'Keine Programmerkennung' },
@@ -89,12 +91,16 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
       { value: 'all', label: 'Systemweit installierte Programme' },
     ],
     value: trust.fileAccess || 'specific-folders',
-    onChange: (val) => { trust.fileAccess = val as typeof trust.fileAccess; save('trust', trust); showSaved(feedback); },
+    onChange: (val) => {
+      trust.fileAccess = val as typeof trust.fileAccess;
+      save('trust', trust);
+      showSaved(feedback);
+    },
   }));
+  recognitionGroup.appendChild(createHint('Steuert ausschließlich, wo Sarah nach startbaren Programmen suchen darf. Inhalte von Bildern, PDFs oder Projekten werden derzeit nicht analysiert.'));
+  protectionPanel.appendChild(recognitionGroup);
 
-  section.appendChild(createSpacer());
-
-  section.appendChild(sarahSelect({
+  protectionPanel.appendChild(sarahSelect({
     label: 'Bestätigungen',
     options: [
       { value: 'minimal', label: 'Minimal — nur bei kritischen Aktionen' },
@@ -102,43 +108,17 @@ export function createTrustSection(config: SarahConfig): HTMLElement {
       { value: 'maximal', label: 'Maximal — bei jeder verändernden Aktion' },
     ],
     value: trust.confirmationLevel || 'standard',
-    onChange: (val) => { trust.confirmationLevel = val as typeof trust.confirmationLevel; save('trust', trust); showSaved(feedback); },
-  }));
-  section.appendChild(createHint(
-    'Steuert ausschließlich, wo Sarah nach startbaren Programmen suchen darf. Inhalte von Bildern, PDFs oder Projekten werden derzeit nicht analysiert.',
-  ));
-
-  section.appendChild(createSpacer());
-  section.appendChild(createHint(
-    'Falls alte verschlüsselte Daten isoliert wurden, kannst du sie hier prüfen. Sie werden niemals automatisch wieder in Sarahs Kontext übernommen.',
-  ));
-  const recoveryStatus = document.createElement('div');
-  recoveryStatus.className = 'settings-hint';
-  const recoveryButton = sarahButton({
-    label: 'Isolierte Altwerte prüfen',
-    variant: 'secondary',
-    onClick: () => {
-      recoveryButton.setAttribute('disabled', '');
-      recoveryStatus.textContent = 'Prüfung läuft …';
-      void getSarah().reviewLegacyDbRecovery().then(async (review) => {
-        if (review.candidates.length === 0) {
-          recoveryStatus.textContent = 'Keine wiederherstellbaren Altwerte gefunden.';
-          return;
-        }
-        const result = await getSarah().restoreLegacyDbRecovery(
-          review.candidates.slice(0, 10).map((candidate) => candidate.quarantineId),
-        );
-        recoveryStatus.textContent = result
-          ? `${result.restored} Altwerte wiederhergestellt. Sicherung: ${result.backupPath}${review.candidates.length > 10 ? ' Weitere isolierte Altwerte können in einem nächsten Durchlauf geprüft werden.' : ''}`
-          : 'Wiederherstellung abgebrochen. Die Altwerte bleiben isoliert.';
-      }).catch((error) => {
-        console.warn('[Settings] legacy DB recovery failed:', error);
-        recoveryStatus.textContent = 'Altwerte konnten nicht geprüft oder wiederhergestellt werden.';
-      }).finally(() => recoveryButton.removeAttribute('disabled'));
+    onChange: (val) => {
+      trust.confirmationLevel = val as typeof trust.confirmationLevel;
+      save('trust', trust);
+      showSaved(feedback);
     },
-  });
-  section.appendChild(recoveryButton);
-  section.appendChild(recoveryStatus);
+  }));
+
+  section.appendChild(createSettingsSubtabs([
+    { id: 'privacy', label: 'Datenschutz', content: privacyPanel },
+    { id: 'protection', label: 'Schutz & Zugriff', content: protectionPanel },
+  ]));
 
   return section;
 }

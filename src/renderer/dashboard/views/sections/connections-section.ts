@@ -4,6 +4,7 @@ import { getSarah } from '../../../shared/window-global.js';
 import { toRowView, performAction } from './connections-section-logic.js';
 import type { ConnectionInfo } from '../../../../core/sarah-api.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
+import { createSettingsSubtabs } from '../../../shared/settings-subtabs.js';
 
 /**
  * "Integrationen" settings section: lists every OAuth provider with a status
@@ -17,18 +18,36 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
   const { header } = createSectionHeader('Integrationen');
   section.appendChild(header);
 
-  section.appendChild(
+  const externalPanel = document.createElement('div');
+  externalPanel.className = 'settings-control-stack';
+  externalPanel.appendChild(
     createHint('Verbinde externe Dienste, damit Sarah sie steuern kann — z. B. die Spotify-Lautstärke.'),
   );
 
   const list = document.createElement('div');
   list.className = 'conn-list';
-  section.appendChild(list);
+  externalPanel.appendChild(list);
 
   const errorBox = document.createElement('div');
   errorBox.className = 'conn-error';
   errorBox.hidden = true;
-  section.appendChild(errorBox);
+  externalPanel.appendChild(errorBox);
+
+  const localPanel = document.createElement('div');
+  localPanel.className = 'settings-subtab-empty';
+  const localTitle = document.createElement('div');
+  localTitle.className = 'settings-subtab-empty-title';
+  localTitle.textContent = 'Lokale Integrationen';
+  const localText = document.createElement('div');
+  localText.className = 'settings-hint';
+  localText.textContent = 'Hier erscheinen später lokale Programme, Erweiterungen und Gerätefunktionen.';
+  localPanel.appendChild(localTitle);
+  localPanel.appendChild(localText);
+
+  section.appendChild(createSettingsSubtabs([
+    { id: 'external', label: 'Externe Anbindungen', content: externalPanel },
+    { id: 'local', label: 'Lokale Integrationen', content: localPanel },
+  ]));
 
   const connections = getSarah().connections;
   const pendingConnections = new Set<string>();

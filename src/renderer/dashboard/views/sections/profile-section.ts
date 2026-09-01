@@ -14,8 +14,11 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
     (l) => l.description.trim() !== '' || l.url.trim() !== ''
   );
 
+  const layout = document.createElement('div');
+  layout.className = 'settings-split-layout settings-profile-layout';
+
   const section = document.createElement('div');
-  section.className = 'settings-section';
+  section.className = 'settings-section settings-column';
 
   const { header, feedback } = createSectionHeader('Profil');
   section.appendChild(header);
@@ -121,13 +124,11 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
 
   section.appendChild(grid);
 
-  // Linksammlung
+  // Linksammlung als gleichwertige rechte Spalte
   const linksBlock = document.createElement('div');
-  linksBlock.className = 'settings-links-block';
+  linksBlock.className = 'settings-section settings-column settings-links-block';
 
-  const linksHeader = document.createElement('div');
-  linksHeader.className = 'settings-links-header';
-  linksHeader.textContent = 'Linksammlung';
+  const { header: linksHeader, feedback: linksFeedback } = createSectionHeader('Link-Sammlung');
   linksBlock.appendChild(linksHeader);
 
   const linksDesc = document.createElement('div');
@@ -151,7 +152,7 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
       onChange: (val) => {
         entry.description = val;
         save('profile', profile);
-        showSaved(feedback);
+        showSaved(linksFeedback);
       },
     });
 
@@ -163,7 +164,7 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
       onChange: (val) => {
         entry.url = val;
         save('profile', profile);
-        showSaved(feedback);
+        showSaved(linksFeedback);
       },
     });
 
@@ -176,7 +177,7 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
       profile.linkPreferences = profile.linkPreferences.filter(l => l.id !== entry.id);
       row.remove();
       save('profile', profile);
-      showSaved(feedback);
+      showSaved(linksFeedback);
     });
 
     row.appendChild(descInput);
@@ -198,12 +199,13 @@ export function createProfileSection(config: SarahConfig): HTMLElement {
     profile.linkPreferences.push(newEntry);
     linksList.appendChild(renderLinkRow(newEntry));
     save('profile', profile);
-    showSaved(feedback);
+    showSaved(linksFeedback);
   });
   linksBlock.appendChild(addBtn);
 
-  section.appendChild(linksBlock);
+  layout.appendChild(section);
+  layout.appendChild(linksBlock);
 
-  return section;
+  return layout;
 }
 
