@@ -3,7 +3,6 @@ import type { SarahService } from '../../core/service.interface.js';
 import type { TypedBusMessage, ServiceStatus } from '../../core/types.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import type { AppContext } from '../../core/bootstrap.js';
-import { MEMORY_RECOVERY_GUARD_KEY } from '../../core/bootstrap.js';
 import { DEFAULT_LLM_CONFIG } from '../../core/llm-defaults.js';
 import type { LlmProvider } from './llm-provider.interface.js';
 import {
@@ -12,7 +11,7 @@ import {
 } from './sensitive-turn-guard.js';
 import { ModelRuntime, type ModelRuntimePort } from './model-runtime.js';
 import { ConversationStore, FALLBACK_CONVERSATION_ID } from '../../core/storage/conversation-store.js';
-import { Layer2MemoryStore, type CuratedMemoryView } from '../../core/storage/layer2-memory-store.js';
+import { Layer2MemoryStore } from '../../core/storage/layer2-memory-store.js';
 import { MemoryCurator } from './memory-curator.js';
 import { ContextWindowError } from './context-window.js';
 import { looksLikeActionCommand, type ActionName } from '../actions/action-schemas.js';
@@ -34,15 +33,10 @@ import {
 } from '../../core/turn-contract.js';
 import { TurnCoordinator, TurnQueueFullError } from '../../core/turn-coordinator.js';
 import {
-  abortError,
-  linkAbortSignals,
-  runWithTimeout,
   throwIfAborted,
 } from '../../core/abort-utils.js';
 import {
   hasConfiguredMemoryExclusion,
-  MemoryPolicyApplyError,
-  mustKeepTurnTransient,
   type TurnPersistencePolicy,
 } from '../../core/memory-policy.js';
 import { resolveActionConfirmationIntent } from '../../core/action-confirmation.js';
@@ -56,6 +50,7 @@ import {
 } from './router-turn-persistence.js';
 import { RouterWorkerFlow } from './router-worker-flow.js';
 import { RouterOutputFlow } from './router-output-flow.js';
+import { RouterPersistenceRuntime } from './router-persistence-runtime.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -97,8 +92,6 @@ export class RouterService implements SarahService {
   private readonly conversationStore: ConversationStore;
   private readonly memoryStore: Layer2MemoryStore;
   private readonly memoryCurator: MemoryCurator;
-  private curatedMemories: CuratedMemoryView[] = [];
-  private persistenceWarned = false;
   private readonly coordinator = new TurnCoordinator();
   private readonly turnDrafts = new Map<TurnId, RouterTurnDraft>();
   private readonly outputFlow: RouterOutputFlow;
@@ -106,17 +99,12 @@ export class RouterService implements SarahService {
   private readonly memoryFlow: RouterMemoryFlow;
   private readonly turnPersistence: RouterTurnPersistence;
   private readonly workerFlow: RouterWorkerFlow;
+  private readonly persistenceRuntime: RouterPersistenceRuntime;
   private lifecycleUnsubscribe: (() => void) | null = null;
   private incognitoActive = false;
   private readonly incognitoHistoryTurnIds = new Set<TurnId>();
-  private memoryPolicyReady = true;
-  private memoryPolicyBarrier: Promise<void> | null = null;
-  private memoryMutationQueue: Promise<void> = Promise.resolve();
-  private readonly shutdownAbort = new AbortController();
   private shuttingDown = false;
-  private readonly memoryPolicyWaitTimeoutMs: number;
   private readonly actionResultTimeoutMs: number;
-  private readonly shutdownDrainTimeoutMs: number;
   private readonly reminderClock: ReminderClock;
 
   constructor(
@@ -126,11 +114,11 @@ export class RouterService implements SarahService {
     mediaContext: MediaContext = new MediaContext(),
     options: RouterServiceOptions = {},
   ) {
-    this.memoryPolicyWaitTimeoutMs = options.memoryPolicyWaitTimeoutMs
+    const memoryPolicyWaitTimeoutMs = options.memoryPolicyWaitTimeoutMs
       ?? DEFAULT_MEMORY_POLICY_WAIT_TIMEOUT_MS;
     this.actionResultTimeoutMs = options.actionResultTimeoutMs
       ?? DEFAULT_ACTION_RESULT_TIMEOUT_MS;
-    this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs
+    const shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs
       ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
     this.reminderClock = options.reminderClock ?? createSystemReminderClock();
     if ('generateWorkerText' in runtimeOrRouterProvider) {
@@ -173,7 +161,7 @@ export class RouterService implements SarahService {
     this.memoryStore = new Layer2MemoryStore(this.context.db);
     this.memoryCurator = new MemoryCurator(this.memoryStore, this.modelRuntime, {
       onMemoryChanged: async () => {
-        await this.refreshMemoryCache();
+        await this.persistenceRuntime.refreshMemoryCache();
       },
       onMaintenanceFailure: () => {
         this.context.bus.emit(this.id, 'storage:degraded', {
@@ -181,36 +169,47 @@ export class RouterService implements SarahService {
         });
       },
       getCurrentPolicy: () => ({
-        allowed: this.memoryPolicyReady && this.context.parsedConfig.trust.memoryAllowed,
+        allowed: this.persistenceRuntime.memoryPolicyReady && this.context.parsedConfig.trust.memoryAllowed,
         exclusions: [...this.context.parsedConfig.trust.memoryExclusions],
       }),
       numCtx: this.context.parsedConfig.llm.workerOptions?.num_ctx
         ?? DEFAULT_LLM_CONFIG.workerOptions.num_ctx,
     });
+    this.persistenceRuntime = new RouterPersistenceRuntime({
+      context: this.context,
+      memoryStore: this.memoryStore,
+      memoryCurator: this.memoryCurator,
+      coordinator: this.coordinator,
+      turnDrafts: this.turnDrafts,
+      getHistory: () => this.history,
+      setHistory: (history) => { this.history = history; },
+      memoryPolicyWaitTimeoutMs,
+      shutdownDrainTimeoutMs,
+    });
     this.memoryFlow = new RouterMemoryFlow({
       context: this.context,
       memoryStore: this.memoryStore,
       memoryCurator: this.memoryCurator,
-      isMemoryPolicyReady: () => this.memoryPolicyReady,
+      isMemoryPolicyReady: () => this.persistenceRuntime.memoryPolicyReady,
       isIncognitoActive: () => this.incognitoActive,
       getConversationId: () => this.conversationId,
-      runMutation: (operation, signal) => this.runMemoryMutation(operation, signal),
-      refreshCache: () => this.refreshMemoryCache(),
-      warnPersistence: () => this.warnPersistenceOnce(),
+      runMutation: (operation, signal) => this.persistenceRuntime.runMemoryMutation(operation, signal),
+      refreshCache: () => this.persistenceRuntime.refreshMemoryCache(),
+      warnPersistence: () => this.persistenceRuntime.warnPersistenceOnce(),
       emitAssistantResponse: (...args) => this.outputFlow.emitAssistantResponse(...args),
     });
     this.turnPersistence = new RouterTurnPersistence({
       drafts: this.turnDrafts,
       getHistory: () => this.history,
       setHistory: (history) => { this.history = history; },
-      getMemoryPolicyReady: () => this.memoryPolicyReady,
+      getMemoryPolicyReady: () => this.persistenceRuntime.memoryPolicyReady,
       getLivePolicy: () => ({
         allowed: this.context.parsedConfig.trust.memoryAllowed,
         exclusions: [...this.context.parsedConfig.trust.memoryExclusions],
       }),
       isIncognitoActive: () => this.incognitoActive,
       incognitoTurnIds: this.incognitoHistoryTurnIds,
-      persistTurn: (...args) => this.persistTurn(...args),
+      persistTurn: (...args) => this.persistenceRuntime.persistTurn(this.conversationId, ...args),
     });
     this.workerFlow = new RouterWorkerFlow({
       context: this.context,
@@ -219,8 +218,8 @@ export class RouterService implements SarahService {
       actionFlow: this.actionFlow,
       drafts: this.turnDrafts,
       getHistory: () => this.history,
-      getCuratedMemories: () => this.curatedMemories,
-      waitForMemoryPolicy: (signal) => this.waitForMemoryPolicy(signal),
+      getCuratedMemories: () => [...this.persistenceRuntime.curatedMemories],
+      waitForMemoryPolicy: (signal) => this.persistenceRuntime.waitForMemoryPolicy(signal),
       enqueueOutput: (job) => this.outputFlow.enqueue(job),
       isTurnOperational: (turnId, signal) => this.outputFlow.isTurnOperational(turnId, signal),
       emitAssistantResponse: (turnId, text, signal) => this.outputFlow.emitAssistantResponse(turnId, text, signal),
@@ -262,37 +261,14 @@ export class RouterService implements SarahService {
       });
     }
     const trust = this.context.parsedConfig.trust;
-    try {
-      if (trust.memoryAllowed || !this.context.memoryRecoveryGuardActive) {
-        await this.memoryStore.applyPolicy({
-          allowed: trust.memoryAllowed,
-          exclusions: trust.memoryExclusions,
-        });
-        if (trust.memoryAllowed) await this.clearMemoryRecoveryGuard();
-      }
-    } catch {
-      this.memoryPolicyReady = false;
-      this.markStorageDegraded();
-      console.warn('[Router] Memory policy cleanup unavailable; persistence disabled for this run');
-    }
+    await this.persistenceRuntime.initializePolicy();
     const boot = await this.conversationStore.boot({
       memoryAllowed: trust.memoryAllowed,
       memoryExclusions: trust.memoryExclusions,
     });
     this.conversationId = boot.conversationId;
-    if (boot.degraded) this.markStorageDegraded();
-    if (this.memoryPolicyReady && trust.memoryAllowed) {
-      try {
-        await this.memoryStore.recoverInterruptedJobs(Date.now(), true);
-        await this.memoryStore.recoverFailedJobs();
-        await this.refreshMemoryCache();
-        if (await this.memoryStore.hasPending()) this.memoryCurator.schedule();
-      } catch {
-        this.memoryPolicyReady = false;
-        this.curatedMemories = [];
-        this.markStorageDegraded();
-      }
-    }
+    if (boot.degraded) this.persistenceRuntime.markStorageDegraded();
+    await this.persistenceRuntime.recoverMemoryJobs();
 
     try {
       await this.modelRuntime.init(signal);
@@ -313,7 +289,7 @@ export class RouterService implements SarahService {
     this.lifecycleUnsubscribe = null;
     const activeTurnId = this.coordinator.activeTurnId;
     this.coordinator.destroy();
-    this.shutdownAbort.abort(abortError('Router shutdown started'));
+    this.persistenceRuntime.abortShutdown();
     this.actionFlow.reset();
     this.turnDrafts.clear();
     this.outputFlow.reset();
@@ -324,7 +300,7 @@ export class RouterService implements SarahService {
     this.mediaContext.clear();
     this.context.actionConfirmations.clear();
     try {
-      await this.drainPendingWork(activeTurnId, signal);
+      await this.persistenceRuntime.drainPendingWork(activeTurnId, this.outputFlow.pendingOutput, signal);
       await this.memoryCurator.destroy();
       await this.conversationStore.close(this.conversationId);
       await this.modelRuntime.destroy(signal);
@@ -500,11 +476,11 @@ export class RouterService implements SarahService {
         this.outputFlow.emitTerminal(request.turnId, 'canceled');
       }
     } finally {
-      if (this.memoryPolicyReady && this.context.parsedConfig.trust.memoryAllowed) {
+      if (this.persistenceRuntime.memoryPolicyReady && this.context.parsedConfig.trust.memoryAllowed) {
         try {
           if (await this.memoryStore.hasPending()) this.memoryCurator.schedule();
         } catch {
-          this.warnPersistenceOnce();
+          this.persistenceRuntime.warnPersistenceOnce();
         }
       }
     }
@@ -527,7 +503,7 @@ export class RouterService implements SarahService {
       persistedUser: envelope.originalText,
       assistants: [],
       persistence: {
-        allowed: this.memoryPolicyReady
+        allowed: this.persistenceRuntime.memoryPolicyReady
           && trust.memoryAllowed
           && !this.incognitoActive
           && envelope.command.kind !== 'anonymous'
@@ -622,67 +598,7 @@ export class RouterService implements SarahService {
   }
 
   async applyMemoryPolicy(policy: TurnPersistencePolicy): Promise<void> {
-    this.memoryPolicyReady = false;
-    let releasePolicyBarrier!: () => void;
-    const policyBarrier = new Promise<void>((resolve) => { releasePolicyBarrier = resolve; });
-    this.memoryPolicyBarrier = policyBarrier;
-    try {
-      const activeTurnId = this.coordinator.activeTurnId;
-      const recalledContents = activeTurnId
-        ? this.turnDrafts.get(activeTurnId)?.recalledContents ?? []
-        : [];
-      if (activeTurnId && recalledContents.length > 0
-        && mustKeepTurnTransient(recalledContents, policy)) {
-        this.coordinator.cancel(activeTurnId, 'Memory policy became more restrictive');
-        await this.coordinator.waitForTurn(activeTurnId);
-      }
-      await this.runMemoryMutation(async () => {
-        await this.memoryCurator.cancelAndWait();
-        if (policy.allowed || !this.context.memoryRecoveryGuardActive) {
-          await this.memoryStore.applyPolicy(policy);
-        }
-        const byTurn = new Map<TurnId, RouterHistoryEntry[]>();
-        for (const entry of this.history) {
-          const entries = byTurn.get(entry.turnId) ?? [];
-          entries.push(entry);
-          byTurn.set(entry.turnId, entries);
-        }
-        const excluded = new Set<TurnId>();
-        for (const [turnId, entries] of byTurn) {
-          if (mustKeepTurnTransient(
-            entries.map((entry) => entry.content),
-            { allowed: true, exclusions: policy.exclusions },
-          )) excluded.add(turnId);
-        }
-        this.history = this.history.filter((entry) => !excluded.has(entry.turnId));
-        if (policy.allowed) await this.refreshMemoryCache();
-        else this.curatedMemories = [];
-        this.memoryPolicyReady = true;
-        if (policy.allowed) await this.clearMemoryRecoveryGuard();
-      });
-    } catch (error) {
-      this.memoryPolicyReady = false;
-      this.curatedMemories = [];
-      this.warnPersistenceOnce();
-      throw new MemoryPolicyApplyError(
-        `Memory policy cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    } finally {
-      releasePolicyBarrier();
-      if (this.memoryPolicyBarrier === policyBarrier) this.memoryPolicyBarrier = null;
-    }
-  }
-
-  private async clearMemoryRecoveryGuard(): Promise<void> {
-    if (!this.context.memoryRecoveryGuardActive) return;
-    this.context.memoryRecoveryGuardActive = false;
-    try {
-      await this.context.config.set(MEMORY_RECOVERY_GUARD_KEY, false);
-    } catch (error) {
-      // The in-memory policy is authoritative for this run. A stale persisted
-      // guard is conservative and will be retried after the next successful boot.
-      console.warn('[Router] Memory recovery guard could not be cleared:', error);
-    }
+    return this.persistenceRuntime.applyMemoryPolicy(policy);
   }
 
   /** Number of complete/partial live turns retained in RAM for diagnostics. */
@@ -749,7 +665,7 @@ export class RouterService implements SarahService {
         await this.outputFlow.emitAssistantResponse(turnId, 'Das Gedächtnis ist in den Einstellungen deaktiviert.', signal);
         return;
       }
-      if (!this.memoryPolicyReady) {
+      if (!this.persistenceRuntime.memoryPolicyReady) {
         await this.outputFlow.emitAssistantResponse(
           turnId,
           'Das Gedächtnis ist wegen eines Speicherfehlers vorübergehend gesperrt.',
@@ -827,118 +743,19 @@ export class RouterService implements SarahService {
     }
   }
 
-  private async refreshMemoryCache(): Promise<void> {
-    this.curatedMemories = await this.memoryStore.listWithTopics();
+  /** Compatibility boundary for focused mutation-ordering tests. */
+  private runMemoryMutation<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.persistenceRuntime.runMemoryMutation(operation, signal);
   }
 
-  private warnPersistenceOnce(): void {
-    this.markStorageDegraded();
-    if (this.persistenceWarned) return;
-    this.persistenceWarned = true;
-    this.context.bus.emit(this.id, 'storage:degraded', {
-      message: 'Speichern nicht möglich — diese Unterhaltung wird nach einem Neustart vergessen.',
-    });
+  /** Compatibility boundary for focused mutation-drain tests. */
+  private get memoryMutationQueue(): Promise<void> {
+    return this.persistenceRuntime.pendingMutation;
   }
 
-  private markStorageDegraded(): void {
-    this.context.lifecycle?.setCapability(
-      'storage',
-      'degraded',
-      'Speichern nicht möglich — neue Unterhaltungen bleiben nur bis zum Neustart erhalten.',
-    );
-  }
-
-  private async waitForMemoryPolicy(signal: AbortSignal): Promise<void> {
-    const barrier = this.memoryPolicyBarrier;
-    if (!barrier) return;
-    await runWithTimeout(
-      () => barrier,
-      this.memoryPolicyWaitTimeoutMs,
-      'Memory policy wait timed out',
-      signal,
-    );
-    throwIfAborted(signal);
-    if (!this.memoryPolicyReady) {
-      throw new MemoryPolicyApplyError('Memory policy is unavailable');
-    }
-  }
-
-  private async persistTurn(
-    turnId: TurnId,
-    messages: ReadonlyArray<{ role: 'user' | 'assistant'; content: string }>,
-    policy: TurnPersistencePolicy,
-    signal: AbortSignal,
-  ): Promise<void> {
-    throwIfAborted(signal);
-    if (this.conversationId === FALLBACK_CONVERSATION_ID) {
-      this.warnPersistenceOnce();
-      return;
-    }
-    try {
-      const stagingId = await this.runMemoryMutation(() => this.memoryStore.persistTurn(
-        this.conversationId,
-        turnId,
-        messages,
-        policy,
-      ), signal);
-      throwIfAborted(signal);
-      if (stagingId != null) this.memoryCurator.schedule();
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') throw err;
-      console.warn('[Router] Turn persist failed (non-fatal):', err);
-      this.warnPersistenceOnce();
-    }
-  }
-
-  private async runMemoryMutation<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const linked = linkAbortSignals(signal, this.shutdownAbort.signal);
-    const mutationSignal = linked.signal;
-    const execute = async (): Promise<T> => {
-      throwIfAborted(mutationSignal);
-      const result = await operation();
-      throwIfAborted(mutationSignal);
-      return result;
-    };
-    const run = this.memoryMutationQueue.then(execute, execute);
-    this.memoryMutationQueue = run.then(() => undefined, () => undefined);
-    try {
-      throwIfAborted(mutationSignal);
-      return await new Promise<T>((resolve, reject) => {
-        let settled = false;
-        const finish = (callback: () => void): void => {
-          if (settled) return;
-          settled = true;
-          mutationSignal.removeEventListener('abort', onAbort);
-          callback();
-        };
-        const onAbort = (): void => finish(() => {
-          const reason = mutationSignal.reason;
-          reject(reason instanceof Error ? reason : abortError());
-        });
-        mutationSignal.addEventListener('abort', onAbort, { once: true });
-        run.then(
-          (value) => finish(() => resolve(value)),
-          (error: Error) => finish(() => reject(error)),
-        );
-      });
-    } finally {
-      linked.dispose();
-    }
-  }
-
-  private async drainPendingWork(activeTurnId: TurnId | null, signal?: AbortSignal): Promise<void> {
-    const drains: Promise<void>[] = [this.outputFlow.pendingOutput, this.memoryMutationQueue];
-    if (activeTurnId) drains.push(this.coordinator.waitForTurn(activeTurnId));
-    try {
-      await runWithTimeout(
-        () => Promise.allSettled(drains).then(() => undefined),
-        this.shutdownDrainTimeoutMs,
-        'Router shutdown drain timed out',
-        signal,
-      );
-    } catch (error) {
-      console.warn('[Router] Pending work did not drain before shutdown:', error);
-    }
+  /** Compatibility boundary for existing Router policy-state diagnostics. */
+  private get memoryPolicyReady(): boolean {
+    return this.persistenceRuntime.memoryPolicyReady;
   }
 
   private isOperational(): boolean {
