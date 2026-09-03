@@ -176,7 +176,7 @@ Verbindlicher Detailplan und erstes Audit:
 ## 7. Layer 3 – Intelligence, Decisions und Planning
 
 **Leitfrage:** Wie wird aus einem Nutzerziel ein sinnvoller, überprüfbarer Lösungsweg?
-**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet. Der begrenzte Multi-Intent-Vertrag besteht als inaktive Grundlage; produktive Zerlegung, Bestätigung, Ausführung und Evaluierung fehlen noch.
+**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet. Multi-Intent-Vertrag, datensparsamer DecisionContext und aktueller Fähigkeits-Snapshot bestehen als inaktive Grundlage; produktive Zerlegung, Bestätigung, Ausführung und Evaluierung fehlen noch.
 
 ### Gehört zu Layer 3
 
@@ -222,10 +222,12 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Für den er
 - inaktiver V1-Proposal-Parser für zwei bis drei explizite Intents mit striktem Fail-Closed-Schema
 - unveränderlicher, gefingerprinter Multi-Intent-Plan mit höchstens sechs Schritten und gebundenem Privatkontext
 - deterministische Handoff-Grenze `Bestätigung -> Spezialistenübergabe`, noch ohne Executor oder Provider-Aufruf
+- unveränderlicher, turngebundener `DecisionContext` mit ausschließlich expliziten Programmrollen und relevanten Quellenhinweisen ohne Pfade oder URLs
+- fail-closed `DecisionCapabilitySnapshot` aus Lifecycle-, ModelRuntime-, Service- und Web-Policy-Zustand; Media ohne Readiness-Quelle und Spezialisten ohne Adapter bleiben nicht verfügbar
+- lokale Programmrollenauflösung, die den kanonischen Programmnamen und seine Herkunft bis in Bestätigung und Plan-Fingerprint bindet
 
 ### Nächste Architekturbausteine
 
-- kleiner `DecisionContext` und aktueller `CapabilitySnapshot`, ohne den vollständigen Memory-Prompt in den Router zu kopieren
 - actionspezifisches fachliches Grounding der bislang nur schema-validierten Parameter
 - produktive Router-Aktivierung des Multi-Intent-Vertrags samt sichtbarer Planbestätigung
 - ausführbarer Planner-/Evaluator-Kreislauf mit Schritten, Erfolgskriterien und kontrollierter Re-Planung
@@ -234,6 +236,7 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Für den er
 Verbindlicher Implementierungsplan für den Vertragsstand:
 
 - [`2026-09-03-multi-intent-contract.md`](../superpowers/plans/2026-09-03-multi-intent-contract.md)
+- [`2026-09-03-decision-context-capability-snapshot.md`](../superpowers/plans/2026-09-03-decision-context-capability-snapshot.md)
 
 ## 8. Layer 4 – Fähigkeiten und Tools
 

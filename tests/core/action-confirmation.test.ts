@@ -244,4 +244,42 @@ describe('ActionConfirmationGate', () => {
       approved.confirmation,
     )).toBe(true);
   });
+
+  it('binds confirmation to the exact program-role parameter resolution', () => {
+    const gate = new ActionConfirmationGate();
+    const approvedIntent = intent('proposal-turn', 'open_program', 'Visual Studio Code', {
+      decisionSource: 'router_model',
+      evidenceSource: 'user_text',
+      validation: 'semantic_grounding',
+      evidenceScope: { kind: 'whole_turn' },
+      parameterResolution: {
+        kind: 'program_role',
+        role: 'code_editor',
+        programName: 'Visual Studio Code',
+      },
+    });
+    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    if (!confirmationId) throw new Error('expected confirmation request');
+    const approved = gate.approve(confirmationId, 'confirmation-turn');
+    if (!approved) throw new Error('expected approval');
+
+    const changedResolution = intent('proposal-turn', 'open_program', 'Visual Studio Code', {
+      ...approvedIntent.provenance,
+      parameterResolution: {
+        kind: 'program_role',
+        role: 'browser',
+        programName: 'Visual Studio Code',
+      },
+    });
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      changedResolution,
+      approved.confirmation,
+    )).toBe(false);
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      approved.intent,
+      approved.confirmation,
+    )).toBe(true);
+  });
 });

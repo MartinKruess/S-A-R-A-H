@@ -1,5 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import type { ActionIntent, ActionProvenance } from '../../core/action-intent.js';
+import type {
+  ActionIntent,
+  ActionParameterResolution,
+  ActionProvenance,
+} from '../../core/action-intent.js';
+import type { ProgramRole } from '../../core/config-schema.js';
+import {
+  createDecisionContext,
+  type DecisionCapability,
+  type DecisionContext,
+} from '../../core/decision-context.js';
 import {
   createIntentPlan,
   type IntentClauseReference,
@@ -26,6 +36,9 @@ export type RouterPlanFailure =
   | 'unordered_evidence'
   | 'unknown_action'
   | 'insufficient_action_grounding'
+  | 'decision_context_mismatch'
+  | 'capability_unavailable'
+  | 'unresolved_program_role'
   | 'invalid_action'
   | 'invalid_plan';
 
@@ -35,8 +48,8 @@ export type RouterPlanResult =
 
 export interface RouterPlanValidationDependencies {
   readonly reminderClock: ReminderClock;
+  readonly decisionContext: DecisionContext;
   readonly createIntentId?: () => string;
-  readonly privateContext?: boolean;
 }
 
 type EvidenceResolution =
@@ -115,6 +128,7 @@ function createActionProvenance(
   envelope: TurnEnvelope,
   evidence: IntentClauseReference,
   validation: ActionProvenance['validation'],
+  parameterResolution?: ActionParameterResolution,
 ): ActionProvenance {
   const inputEvidence = envelope.command.kind === 'custom'
     ? {
@@ -127,8 +141,86 @@ function createActionProvenance(
     decisionSource: 'router_model',
     validation,
     evidenceScope: { kind: 'clause', ...evidence },
+    ...(parameterResolution ? { parameterResolution } : {}),
     ...inputEvidence,
   };
+}
+
+const PROGRAM_ROLE_PHRASES: Readonly<Record<ProgramRole, RegExp>> = {
+  browser: /\b(?:browser|internetbrowser)\b/iu,
+  code_editor: /\b(?:editor|code[\s-]?editor|entwicklungsumgebung|ide)\b/iu,
+  music_player: /\b(?:musik[\s-]?player|player)\b/iu,
+};
+const OPEN_PROGRAM_REQUEST = /\b(?:offn[a-z]*|start[a-z]*|launch[a-z]*)\b|\bmach\b.{0,60}\bauf\b/u;
+
+function normalizedGroundingText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLocaleLowerCase('de-DE');
+}
+
+function resolveProgramRoleAction(
+  proposal: Extract<RouterIntentProposal, { kind: 'action' }>,
+  evidenceText: string,
+  context: DecisionContext,
+): { readonly param: string; readonly resolution: ActionParameterResolution } | null {
+  if (proposal.action !== 'open_program') return null;
+  const match = /^role:(browser|code_editor|music_player)$/u.exec(proposal.param);
+  const role = match?.[1] as ProgramRole | undefined;
+  const normalizedEvidence = normalizedGroundingText(evidenceText);
+  if (
+    !role
+    || !OPEN_PROGRAM_REQUEST.test(normalizedEvidence)
+    || !PROGRAM_ROLE_PHRASES[role].test(normalizedEvidence)
+  ) return null;
+  const bindings = context.programRoles.filter((binding) => binding.role === role);
+  if (bindings.length !== 1) return null;
+  const binding = bindings[0];
+  if (!binding) return null;
+  return {
+    param: binding.programName,
+    resolution: {
+      kind: 'program_role',
+      role,
+      programName: binding.programName,
+    },
+  };
+}
+
+function isCapabilityAvailable(capability: DecisionCapability): boolean {
+  return capability.state === 'available';
+}
+
+function actionCapabilityAvailable(action: ActionName, context: DecisionContext): boolean {
+  if (!isCapabilityAvailable(context.capabilities.actions)) return false;
+  if (action === 'web_search') return isCapabilityAvailable(context.capabilities.webSearch);
+  if (action === 'show_browser') {
+    return isCapabilityAvailable(context.capabilities.visibleBrowserResult);
+  }
+  if (action === 'set_reminder' || action === 'list_reminders' || action === 'cancel_reminder') {
+    return isCapabilityAvailable(context.capabilities.reminders);
+  }
+  if (
+    action === 'spotify_volume'
+    || action === 'spotify_volume_adjust'
+    || action === 'media_play'
+    || action === 'media_pause'
+    || action === 'media_toggle'
+    || action === 'media_next'
+    || action === 'media_previous'
+  ) return isCapabilityAvailable(context.capabilities.media);
+  return true;
+}
+
+function contextMatchesEnvelope(context: DecisionContext, envelope: TurnEnvelope): boolean {
+  if (context.turn.turnId !== envelope.turnId || context.turn.mode !== envelope.mode) return false;
+  if (envelope.command.kind === 'anonymous' && !context.turn.privateContext) return false;
+  if (envelope.command.kind === 'custom') {
+    return context.turn.inputOrigin.kind === 'custom_command_expansion'
+      && context.turn.inputOrigin.customCommand === envelope.command.command;
+  }
+  return context.turn.inputOrigin.kind === 'user_text';
 }
 
 function validateActionProposal(
@@ -137,8 +229,24 @@ function validateActionProposal(
   evidenceText: string,
   envelope: TurnEnvelope,
   reminderClock: ReminderClock,
+  context: DecisionContext,
 ): ActionIntent<ActionName> | RouterPlanFailure {
   if (!isActionName(proposal.action)) return 'unknown_action';
+  if (!actionCapabilityAvailable(proposal.action, context)) return 'capability_unavailable';
+  const roleResolution = resolveProgramRoleAction(proposal, evidenceText, context);
+  if (proposal.action === 'open_program' && proposal.param.startsWith('role:')) {
+    if (!roleResolution) return 'unresolved_program_role';
+    return {
+      action: proposal.action,
+      param: roleResolution.param,
+      provenance: createActionProvenance(
+        envelope,
+        evidence,
+        'semantic_grounding',
+        roleResolution.resolution,
+      ),
+    };
+  }
   const grounding = groundActionRequest(
     proposal.action,
     proposal.param,
@@ -162,13 +270,27 @@ function validateProposalIntent(
   order: ValidatedExplicitIntent['order'],
   envelope: TurnEnvelope,
   reminderClock: ReminderClock,
+  context: DecisionContext,
 ): ValidatedExplicitIntent | RouterPlanFailure {
   if (proposal.kind === 'action') {
-    const action = validateActionProposal(proposal, evidence, evidenceText, envelope, reminderClock);
+    const action = validateActionProposal(
+      proposal,
+      evidence,
+      evidenceText,
+      envelope,
+      reminderClock,
+      context,
+    );
     return typeof action === 'string' ? action : { kind: 'action', order, intent: action };
   }
   if (proposal.kind === 'answer') {
+    if (!isCapabilityAvailable(context.capabilities.localAnswer)) {
+      return 'capability_unavailable';
+    }
     return { kind: 'answer', order, evidence, text: evidenceText };
+  }
+  if (!isCapabilityAvailable(context.capabilities.specialists[proposal.specialist])) {
+    return 'capability_unavailable';
   }
   return {
     kind: 'handoff',
@@ -199,6 +321,15 @@ export function validateRouterPlanProposal(
 ): RouterPlanResult {
   const parsedProposal = routerPlanProposalSchema.safeParse(proposal);
   if (!parsedProposal.success) return { ok: false, reason: 'proposal_invalid_schema' };
+  let decisionContext: DecisionContext;
+  try {
+    decisionContext = createDecisionContext(dependencies.decisionContext);
+  } catch {
+    return { ok: false, reason: 'decision_context_mismatch' };
+  }
+  if (!contextMatchesEnvelope(decisionContext, envelope)) {
+    return { ok: false, reason: 'decision_context_mismatch' };
+  }
   const effectiveText = envelope.effectiveText;
   const createIntentId = dependencies.createIntentId ?? randomUUID;
   const intents: ValidatedExplicitIntent[] = [];
@@ -228,6 +359,7 @@ export function validateRouterPlanProposal(
       index === 0 ? 'independent' : order,
       envelope,
       dependencies.reminderClock,
+      decisionContext,
     );
     if (typeof intent === 'string') return { ok: false, reason: intent };
     intents.push(intent);
@@ -243,7 +375,7 @@ export function validateRouterPlanProposal(
       plan: createIntentPlan({
         sourceTurnId: envelope.turnId,
         intents,
-        privateContext: dependencies.privateContext === true || envelope.command.kind === 'anonymous',
+        privateContext: decisionContext.turn.privateContext,
       }),
     };
   } catch {

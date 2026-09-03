@@ -1,4 +1,5 @@
 import { sarahPathPicker } from '../../../components/sarah-path-picker.js';
+import { sarahSelect } from '../../../components/sarah-select.js';
 import { sarahTagSelect } from '../../../components/sarah-tag-select.js';
 import { PDF_CATEGORY_OPTIONS } from '../../../shared/pdf-constants.js';
 import { createPdfBlock } from '../../../shared/pdf-block.js';
@@ -6,12 +7,24 @@ import { showSaved, createSectionHeader, createHint, save } from '../../../share
 import { createProgramPicker } from '../../../shared/program-picker.js';
 import { createSettingsSubtabs } from '../../../shared/settings-subtabs.js';
 import { createContextManagementPanel } from './context-management-section.js';
-import type { SarahConfig, PdfCategory } from '../../../../core/config-schema.js';
+import {
+  PROGRAM_ROLES,
+  type SarahConfig,
+  type PdfCategory,
+  type ProgramRole,
+} from '../../../../core/config-schema.js';
+
+const PROGRAM_ROLE_LABELS: Readonly<Record<ProgramRole, string>> = {
+  browser: 'Mein Browser',
+  code_editor: 'Mein Code-Editor',
+  music_player: 'Mein Musikplayer',
+};
 
 export function createFilesSection(config: SarahConfig): HTMLElement {
   const resources = {
     ...config.resources,
     importantFolders: [...config.resources.importantFolders],
+    programRoles: [...config.resources.programRoles],
   };
   const skills = { ...config.skills };
   const section = document.createElement('div');
@@ -26,11 +39,44 @@ export function createFilesSection(config: SarahConfig): HTMLElement {
   };
 
   const programsPanel = document.createElement('div');
+  const programRoles = document.createElement('div');
+  programRoles.className = 'settings-grid settings-subtab-grid';
+
+  const renderProgramRoles = (): void => {
+    programRoles.replaceChildren();
+    const options = [
+      { value: '', label: 'Nicht festgelegt' },
+      ...resources.programs
+        .filter((program) => program.verified)
+        .map((program) => ({ value: program.name, label: program.name })),
+    ];
+    for (const role of PROGRAM_ROLES) {
+      const current = resources.programRoles.find((binding) => binding.role === role);
+      programRoles.appendChild(sarahSelect({
+        label: PROGRAM_ROLE_LABELS[role],
+        options,
+        value: current?.programName ?? '',
+        onChange: (programName) => {
+          resources.programRoles = resources.programRoles.filter((binding) => (
+            binding.role !== role
+          ));
+          if (programName) resources.programRoles.push({ role, programName });
+          notifyResources();
+        },
+      }));
+    }
+  };
+
   programsPanel.appendChild(createProgramPicker({
     initialSelected: resources.programs,
     onChange: (entries) => {
       resources.programs = entries;
+      const verifiedNames = new Set(entries.filter((entry) => entry.verified).map((entry) => entry.name));
+      resources.programRoles = resources.programRoles.filter((binding) => (
+        verifiedNames.has(binding.programName)
+      ));
       notifyResources();
+      renderProgramRoles();
     },
     includeFolderScanners: false,
   }));
@@ -39,6 +85,14 @@ export function createFilesSection(config: SarahConfig): HTMLElement {
   programPickerHint.className = 'program-picker-hint';
   programPickerHint.textContent = 'Nach Ordner-Änderung App neu starten, um neue Programme zu erfassen.';
   programsPanel.appendChild(programPickerHint);
+
+  const programRolesHeading = document.createElement('div');
+  programRolesHeading.className = 'settings-secondary-heading';
+  programRolesHeading.textContent = 'Bevorzugte Programme';
+  programsPanel.appendChild(programRolesHeading);
+  programsPanel.appendChild(createHint('Damit Sarah Formulierungen wie „mein Editor“ eindeutig einem verifizierten Programm zuordnen kann.'));
+  renderProgramRoles();
+  programsPanel.appendChild(programRoles);
 
   const programFolders = document.createElement('div');
   programFolders.className = 'settings-grid settings-subtab-grid';

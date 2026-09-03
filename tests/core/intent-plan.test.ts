@@ -184,6 +184,53 @@ describe('IntentPlan core contract', () => {
     })).toThrow(/source turn/u);
   });
 
+  it('freezes program-role resolution and requires it to match the final parameter', () => {
+    const resolvedIntent: ActionIntent = {
+      ...actionIntent(),
+      param: 'Visual Studio Code',
+      provenance: {
+        ...actionIntent().provenance,
+        parameterResolution: {
+          kind: 'program_role',
+          role: 'code_editor',
+          programName: 'Visual Studio Code',
+        },
+      },
+    };
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{ kind: 'action', order: 'independent', intent: resolvedIntent }],
+    });
+    const action = plan.steps[0];
+    if (action.kind !== 'action') throw new Error('expected action step');
+
+    expect(action.intent.provenance.parameterResolution).toEqual({
+      kind: 'program_role',
+      role: 'code_editor',
+      programName: 'Visual Studio Code',
+    });
+    expect(Object.isFrozen(action.intent.provenance.parameterResolution)).toBe(true);
+
+    expect(() => createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{
+        kind: 'action',
+        order: 'independent',
+        intent: {
+          ...resolvedIntent,
+          provenance: {
+            ...resolvedIntent.provenance,
+            parameterResolution: {
+              kind: 'program_role',
+              role: 'code_editor',
+              programName: 'Cursor',
+            },
+          },
+        },
+      }],
+    })).toThrow(/source turn/u);
+  });
+
   it('rejects whole-turn action evidence and invalid clause grouping', () => {
     const wholeTurnIntent: ActionIntent = {
       ...actionIntent(),
