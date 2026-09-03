@@ -68,6 +68,7 @@ function createActionProvenance(
     sourceTurnId: envelope.turnId,
     decisionSource: options.decisionSource ?? 'router_model',
     validation,
+    evidenceScope: { kind: 'whole_turn' },
     ...inputEvidence,
     ...(options.interactionContext ? { interactionContext: options.interactionContext } : {}),
   };

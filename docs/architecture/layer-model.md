@@ -1,6 +1,6 @@
 # S.A.R.A.H. – Architektur-Layer
 
-**Stand:** 26.08.2026
+**Stand:** 03.09.2026
 **Geltungsbereich:** S.A.R.A.H. Desktop und die darauf aufbauenden späteren Systeme
 **Zweck:** Dauerhafte Zuordnung technischer Verantwortung, bekannter Bestandteile und zukünftiger Erweiterungen
 
@@ -176,7 +176,7 @@ Verbindlicher Detailplan und erstes Audit:
 ## 7. Layer 3 – Intelligence, Decisions und Planning
 
 **Leitfrage:** Wie wird aus einem Nutzerziel ein sinnvoller, überprüfbarer Lösungsweg?
-**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet; der allgemeine Planner-/Evaluator-Kreislauf und mehrere gemeinsame Entscheidungsverträge fehlen noch.
+**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet. Der begrenzte Multi-Intent-Vertrag besteht als inaktive Grundlage; produktive Zerlegung, Bestätigung, Ausführung und Evaluierung fehlen noch.
 
 ### Gehört zu Layer 3
 
@@ -206,7 +206,7 @@ Ziel verstehen
     -> Gesamtergebnis prüfen und ausgeben
 ```
 
-Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Sie können anfangs dasselbe Modell verwenden, müssen aber getrennte Verantwortungen und überprüfbare Verträge besitzen.
+Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Für den ersten begrenzten Multi-Intent-Ausbau liefert das bestehende Router-Modell nur einen untrusted Proposal; deterministischer TypeScript-Code validiert und kompiliert ihn. Ein drittes Planner-LLM ist dafür nicht vorgesehen.
 
 ### Bereits vorhandene Grundlage
 
@@ -218,14 +218,22 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Sie können
 - begrenztes Worker- und Router-Kontextbudget mit ehrlicher Überlaufmeldung
 - datensicherer Recall und systemseitige Vertrauensgrenzen für externe beziehungsweise lokale Daten
 - abgesicherte Turn-, Privacy- und Provenienzgrenzen zu Layer 1 und 2
+- verpflichtende, bei Bestätigungen unverändert gebundene Evidence-Scope-Provenienz für Einzel-Actions und klauselscharfe Multi-Intent-Actions
+- inaktiver V1-Proposal-Parser für zwei bis drei explizite Intents mit striktem Fail-Closed-Schema
+- unveränderlicher, gefingerprinter Multi-Intent-Plan mit höchstens sechs Schritten und gebundenem Privatkontext
+- deterministische Handoff-Grenze `Bestätigung -> Spezialistenübergabe`, noch ohne Executor oder Provider-Aufruf
 
 ### Nächste Architekturbausteine
 
 - kleiner `DecisionContext` und aktueller `CapabilitySnapshot`, ohne den vollständigen Memory-Prompt in den Router zu kopieren
 - actionspezifisches fachliches Grounding der bislang nur schema-validierten Parameter
-- Multi-Intent-Vertrag für zusammengesetzte Nutzerziele
+- produktive Router-Aktivierung des Multi-Intent-Vertrags samt sichtbarer Planbestätigung
 - ausführbarer Planner-/Evaluator-Kreislauf mit Schritten, Erfolgskriterien und kontrollierter Re-Planung
 - echte Executor-Verträge oder fail-closed Ablehnung für Backend-, Extern- und Vision-Routen
+
+Verbindlicher Implementierungsplan für den Vertragsstand:
+
+- [`2026-09-03-multi-intent-contract.md`](../superpowers/plans/2026-09-03-multi-intent-contract.md)
 
 ## 8. Layer 4 – Fähigkeiten und Tools
 

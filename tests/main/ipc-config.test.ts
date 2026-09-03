@@ -277,6 +277,7 @@ describe('save-config audio patches', () => {
           decisionSource: 'router_model',
           evidenceSource: 'user_text',
           validation: 'schema_only',
+          evidenceScope: { kind: 'whole_turn' },
         },
       },
     );

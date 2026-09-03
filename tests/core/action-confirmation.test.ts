@@ -14,6 +14,7 @@ function intent(
     decisionSource: 'router_model',
     evidenceSource: 'user_text',
     validation: 'semantic_grounding',
+    evidenceScope: { kind: 'whole_turn' },
   },
 ): ActionIntent {
   return {
@@ -43,6 +44,7 @@ describe('ActionConfirmationGate', () => {
           decisionSource: 'router_model',
           evidenceSource: 'user_text',
           validation: 'semantic_grounding',
+          evidenceScope: { kind: 'whole_turn' },
         },
       },
     });
@@ -164,6 +166,7 @@ describe('ActionConfirmationGate', () => {
       evidenceSource: 'custom_command_expansion',
       customCommand: '/spotify',
       validation: 'semantic_grounding',
+      evidenceScope: { kind: 'whole_turn' },
       interactionContext: {
         kind: 'visible_search_result',
         contextTurnId: 'search-turn',
@@ -190,10 +193,49 @@ describe('ActionConfirmationGate', () => {
       decisionSource: 'deterministic_shortcut',
       evidenceSource: 'user_text',
       validation: 'semantic_grounding',
+      evidenceScope: { kind: 'whole_turn' },
     });
     expect(gate.consume(
       approved.confirmationTurnId,
       changedIntent,
+      approved.confirmation,
+    )).toBe(false);
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      approved.intent,
+      approved.confirmation,
+    )).toBe(true);
+  });
+
+  it('binds confirmation to the exact clause evidence scope', () => {
+    const gate = new ActionConfirmationGate();
+    const approvedIntent = intent('proposal-turn', 'set_volume', '30', {
+      decisionSource: 'router_model',
+      evidenceSource: 'user_text',
+      validation: 'semantic_grounding',
+      evidenceScope: {
+        kind: 'clause',
+        intentId: 'intent-2',
+        ordinal: 1,
+        startOffset: 20,
+        endOffset: 50,
+      },
+    });
+    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    if (!confirmationId) throw new Error('expected confirmation request');
+    const approved = gate.approve(confirmationId, 'confirmation-turn');
+    if (!approved) throw new Error('expected approval');
+
+    const changedScopeIntent = intent('proposal-turn', 'set_volume', '30', {
+      ...approvedIntent.provenance,
+      evidenceScope: {
+        ...approvedIntent.provenance.evidenceScope,
+        endOffset: 51,
+      },
+    });
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      changedScopeIntent,
       approved.confirmation,
     )).toBe(false);
     expect(gate.consume(

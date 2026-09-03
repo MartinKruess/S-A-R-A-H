@@ -23,6 +23,7 @@ function testIntent(action: string, param: string, sourceTurnId = TURN_ID): Acti
       decisionSource: 'router_model',
       evidenceSource: 'user_text',
       validation: 'schema_only',
+      evidenceScope: { kind: 'whole_turn' },
     },
   };
 }

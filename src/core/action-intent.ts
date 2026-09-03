@@ -4,6 +4,22 @@ export type ActionDecisionSource = 'router_model' | 'deterministic_shortcut';
 export type ActionValidation = 'schema_only' | 'semantic_grounding';
 export type ActionInteractionContext = 'media_followup' | 'reminder_cancel_followup' | 'visible_search_result';
 
+/**
+ * Binds parameter evidence either to the complete effective turn text or to one validated clause.
+ * Clause offsets use the effective text and an exclusive end offset.
+ *
+ * @category Validation
+ */
+export type ActionEvidenceScope =
+  | { readonly kind: 'whole_turn' }
+  | {
+    readonly kind: 'clause';
+    readonly intentId: string;
+    readonly ordinal: 0 | 1 | 2;
+    readonly startOffset: number;
+    readonly endOffset: number;
+  };
+
 export type ActionEvidence =
   | { readonly evidenceSource: 'user_text' }
   | { readonly evidenceSource: 'custom_command_expansion'; readonly customCommand: string };
@@ -20,6 +36,7 @@ export type ActionProvenance = Readonly<{
   sourceTurnId: TurnId;
   decisionSource: ActionDecisionSource;
   validation: ActionValidation;
+  evidenceScope: ActionEvidenceScope;
   interactionContext?: Readonly<{
     kind: ActionInteractionContext;
     contextTurnId: TurnId;

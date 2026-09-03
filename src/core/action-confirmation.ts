@@ -31,10 +31,20 @@ const DEFAULT_CONFIRMATION_TTL_MS = 5 * 60_000;
 export const SPOKEN_ACTION_CONFIRMATION_PHRASE = 'Diese Aktion jetzt verbindlich bestätigen';
 
 function copyProvenance(provenance: ActionProvenance): ActionProvenance {
+  const evidenceScope = provenance.evidenceScope.kind === 'clause'
+    ? {
+      kind: provenance.evidenceScope.kind,
+      intentId: provenance.evidenceScope.intentId,
+      ordinal: provenance.evidenceScope.ordinal,
+      startOffset: provenance.evidenceScope.startOffset,
+      endOffset: provenance.evidenceScope.endOffset,
+    } as const
+    : { kind: provenance.evidenceScope.kind } as const;
   const base = {
     sourceTurnId: provenance.sourceTurnId,
     decisionSource: provenance.decisionSource,
     validation: provenance.validation,
+    evidenceScope,
     ...(provenance.interactionContext ? {
       interactionContext: {
         kind: provenance.interactionContext.kind,
@@ -66,9 +76,18 @@ function matchesProvenance(left: ActionProvenance, right: ActionProvenance): boo
     || left.decisionSource !== right.decisionSource
     || left.validation !== right.validation
     || left.evidenceSource !== right.evidenceSource
+    || left.evidenceScope.kind !== right.evidenceScope.kind
     || left.interactionContext?.kind !== right.interactionContext?.kind
     || left.interactionContext?.contextTurnId !== right.interactionContext?.contextTurnId
   ) return false;
+  if (left.evidenceScope.kind === 'clause' && right.evidenceScope.kind === 'clause') {
+    if (
+      left.evidenceScope.intentId !== right.evidenceScope.intentId
+      || left.evidenceScope.ordinal !== right.evidenceScope.ordinal
+      || left.evidenceScope.startOffset !== right.evidenceScope.startOffset
+      || left.evidenceScope.endOffset !== right.evidenceScope.endOffset
+    ) return false;
+  }
   if (
     left.evidenceSource === 'custom_command_expansion'
     && right.evidenceSource === 'custom_command_expansion'
