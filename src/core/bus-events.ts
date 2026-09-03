@@ -10,6 +10,7 @@ import type {
   VoiceCaptureId,
 } from './turn-contract.js';
 import type { ActionConfirmationReference } from './action-confirmation.js';
+import type { ActionIntent } from './action-intent.js';
 
 /** Semantic speech classes carried by the main-process-only priority speech bus. */
 export type PrioritySpeechCategory = 'background' | 'normal' | 'timer' | 'critical' | 'user';
@@ -55,7 +56,7 @@ export type BusEvents = {
   'storage:degraded':    { message: string };
   'privacy:incognito':   { active: boolean; turnId: TurnId };
   'search:discard-session': { requestId: string };
-  'action:request':      { turnId: TurnId; requestId: string; action: string; param: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference; originMode?: TurnMode; privateContext?: boolean };
+  'action:request':      ActionIntent & { turnId: TurnId; requestId: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference; originMode?: TurnMode; privateContext?: boolean };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };
   'action:result':       {
     turnId: TurnId;

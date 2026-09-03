@@ -211,8 +211,10 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Sie können
 ### Bereits vorhandene Grundlage
 
 - deterministisches Routing zwischen Direktantwort, Action und Worker
+- typisierter Einzel-`ActionIntent` mit Entscheidungs-, Eingabe- und optionaler Interaktionsprovenienz bis durch Bestätigung und Ausführung
 - zentrale, vor Ankündigung und Ausführung erneut geprüfte ActionPolicy
-- fachliches Grounding für Timer und Reminder sowie korrelierte Bestätigungen
+- fachliches Grounding für Timer und Reminder sowie ehrliche Kennzeichnung noch rein schema-validierter Action-Parameter
+- korrelierte Bestätigungen, die den vollständigen Action-Intent unverändert bewahren
 - begrenztes Worker- und Router-Kontextbudget mit ehrlicher Überlaufmeldung
 - datensicherer Recall und systemseitige Vertrauensgrenzen für externe beziehungsweise lokale Daten
 - abgesicherte Turn-, Privacy- und Provenienzgrenzen zu Layer 1 und 2
@@ -220,7 +222,7 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Sie können
 ### Nächste Architekturbausteine
 
 - kleiner `DecisionContext` und aktueller `CapabilitySnapshot`, ohne den vollständigen Memory-Prompt in den Router zu kopieren
-- gemeinsame fachliche Parameter-Provenienz für alle Actions
+- actionspezifisches fachliches Grounding der bislang nur schema-validierten Parameter
 - Multi-Intent-Vertrag für zusammengesetzte Nutzerziele
 - ausführbarer Planner-/Evaluator-Kreislauf mit Schritten, Erfolgskriterien und kontrollierter Re-Planung
 - echte Executor-Verträge oder fail-closed Ablehnung für Backend-, Extern- und Vision-Routen

@@ -10,8 +10,22 @@ import type { ProgramLauncher } from '../../../src/main/program-launcher.js';
 import { ActionConfirmationGate, type ConfirmationLevel } from '../../../src/core/action-confirmation.js';
 import type { ReminderClock } from '../../../src/services/actions/reminder-contract.js';
 import type { TurnPersistencePolicy } from '../../../src/core/memory-policy.js';
+import type { ActionIntent } from '../../../src/core/action-intent.js';
 
 const TURN_ID = 'turn-1';
+
+function testIntent(action: string, param: string, sourceTurnId = TURN_ID): ActionIntent {
+  return {
+    action,
+    param,
+    provenance: {
+      sourceTurnId,
+      decisionSource: 'router_model',
+      evidenceSource: 'user_text',
+      validation: 'schema_only',
+    },
+  };
+}
 
 function makeSearch(over: {
   runSearch?: ReturnType<typeof vi.fn<SearchLike['runSearch']>>;
@@ -114,8 +128,7 @@ async function request(
   bus.emit('test', 'action:request', {
     turnId: TURN_ID,
     requestId: 'rid-1',
-    action,
-    param,
+    ...testIntent(action, param),
     ...(confirmation ? { confirmation } : {}),
     ...context,
   });
@@ -171,6 +184,26 @@ describe('ActionService', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
+  it('rejects an action intent whose provenance belongs to another turn', async () => {
+    const media = makeMedia();
+    const { bus, results, service } = makeService({ media });
+    await service.init();
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'foreign-provenance',
+      ...testIntent('media_next', '', 'another-turn'),
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+
+    expect(media.next).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      action: 'media_next',
+      ok: false,
+      speak: 'Diese Aktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.',
+    });
+  });
+
   it('unknown action name → refusal (defense in depth behind the router check)', async () => {
     const { bus, results, service } = makeService();
     await service.init();
@@ -220,8 +253,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'r',
-      action: 'set_timer',
-      param: '1',
+      ...testIntent('set_timer', '1'),
       originMode: 'chat',
       privateContext: true,
     });
@@ -482,7 +514,11 @@ describe('ActionService', () => {
     bus.on('turn:cancel', (msg) => service.onMessage(msg));
     await service.init();
 
-    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'timer', action: 'set_timer', param: '1' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'timer',
+      ...testIntent('set_timer', '1'),
+    });
     bus.emit('test', 'turn:cancel', { turnId: TURN_ID, reason: 'barge-in' });
     await vi.advanceTimersByTimeAsync(60_000 + 50);
 
@@ -589,7 +625,10 @@ describe('ActionService', () => {
       confirmationLevel: 'maximal',
     });
     await service.init();
-    const confirmationId = confirmationGate.request('request-turn', 'media_next', '');
+    const confirmationId = confirmationGate.request(
+      'request-turn',
+      testIntent('media_next', '', 'request-turn'),
+    );
     const approved = confirmationGate.approve(confirmationId, TURN_ID);
     if (!approved) throw new Error('expected confirmation');
     const confirmation = approved.confirmation;
@@ -597,16 +636,14 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'approved',
-      action: 'media_next',
-      param: '',
+      ...approved.intent,
       confirmation,
     });
     await vi.waitFor(() => expect(results).toHaveLength(1));
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'replay',
-      action: 'media_next',
-      param: '',
+      ...approved.intent,
       confirmation,
     });
     await vi.waitFor(() => expect(results).toHaveLength(2));
@@ -624,23 +661,25 @@ describe('ActionService', () => {
       confirmationLevel: 'maximal',
     });
     await service.init();
-    const confirmationId = confirmationGate.request('request-turn', 'media_next', '');
+    const confirmationId = confirmationGate.request(
+      'request-turn',
+      testIntent('media_next', '', 'request-turn'),
+    );
     const approved = confirmationGate.approve(confirmationId, 'approved-turn');
     if (!approved) throw new Error('expected confirmation');
 
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'wrong-turn',
-      action: 'media_next',
-      param: '',
+      ...approved.intent,
       confirmation: approved.confirmation,
     });
     await vi.waitFor(() => expect(results).toHaveLength(1));
     bus.emit('test', 'action:request', {
       turnId: 'approved-turn',
       requestId: 'wrong-action',
+      ...approved.intent,
       action: 'media_pause',
-      param: '',
       confirmation: approved.confirmation,
     });
     await vi.waitFor(() => expect(results).toHaveLength(2));
@@ -661,8 +700,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'show-request',
-      action: 'show_browser',
-      param: '1',
+      ...testIntent('show_browser', '1'),
       sourceRequestId: 'search-a',
     });
     await vi.waitFor(() => expect(results).toHaveLength(1));
@@ -686,11 +724,19 @@ describe('ActionService', () => {
     });
     const { bus, results, service } = makeService({ media });
     await service.init();
-    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'before', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'before',
+      ...testIntent('media_next', ''),
+    });
     await vi.waitFor(() => expect(actionSignal).toBeDefined());
 
     await service.destroy();
-    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'after', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'after',
+      ...testIntent('media_next', ''),
+    });
     await Promise.resolve();
 
     expect(actionSignal?.aborted).toBe(true);
@@ -703,7 +749,11 @@ describe('ActionService', () => {
     media.next = vi.fn(async () => new Promise<MediaResult>(() => {}));
     const { bus, results, service } = makeService({ media, drainTimeoutMs: 5 });
     await service.init();
-    bus.emit('test', 'action:request', { turnId: TURN_ID, requestId: 'blocked', action: 'media_next', param: '' });
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'blocked',
+      ...testIntent('media_next', ''),
+    });
     await vi.waitFor(() => expect(media.next).toHaveBeenCalledOnce());
 
     await service.destroy();
@@ -719,8 +769,7 @@ describe('ActionService', () => {
     const payload = {
       turnId: TURN_ID,
       requestId: 'duplicate',
-      action: 'media_next',
-      param: '',
+      ...testIntent('media_next', ''),
     };
 
     bus.emit('test', 'action:request', payload);
@@ -741,8 +790,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'too-late',
-      action: 'media_next',
-      param: '',
+      ...testIntent('media_next', ''),
     });
     await Promise.resolve();
 
@@ -764,8 +812,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'in-flight',
-      action: 'media_next',
-      param: '',
+      ...testIntent('media_next', ''),
     });
     await vi.waitFor(() => expect(media.next).toHaveBeenCalledOnce());
 
@@ -792,8 +839,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'cancel-me',
-      action: 'media_next',
-      param: '',
+      ...testIntent('media_next', ''),
     });
     await vi.waitFor(() => expect(actionSignal).toBeDefined());
 
@@ -818,8 +864,7 @@ describe('ActionService', () => {
     bus.emit('test', 'action:request', {
       turnId: TURN_ID,
       requestId: 'deadline',
-      action: 'media_next',
-      param: '',
+      ...testIntent('media_next', ''),
     });
     await vi.waitFor(() => expect(signals.size).toBe(1));
 

@@ -269,8 +269,16 @@ describe('save-config audio patches', () => {
     const actionConfirmations = new ActionConfirmationGate();
     const confirmationId = actionConfirmations.request(
       'proposal-turn',
-      'open_program',
-      'spotify',
+      {
+        action: 'open_program',
+        param: 'spotify',
+        provenance: {
+          sourceTurnId: 'proposal-turn',
+          decisionSource: 'router_model',
+          evidenceSource: 'user_text',
+          validation: 'schema_only',
+        },
+      },
     );
     const context = {
       parsedConfig: initial,

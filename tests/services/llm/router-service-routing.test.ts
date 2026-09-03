@@ -223,7 +223,16 @@ describe('RouterService (routing & commands)', () => {
     await runActionTurn('/spotify');
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ action: 'open_program', param: 'spotify' });
+    expect(requests[0]).toMatchObject({
+      action: 'open_program',
+      param: 'spotify',
+      provenance: {
+        decisionSource: 'router_model',
+        evidenceSource: 'custom_command_expansion',
+        customCommand: '/spotify',
+        validation: 'schema_only',
+      },
+    });
     expect(routerP.lastMessages?.at(-1)).toEqual({ role: 'user', content: 'Öffne Spotify' });
   });
 
@@ -264,9 +273,19 @@ describe('RouterService (routing & commands)', () => {
     const reminder = await runActionTurn('/essen');
 
     expect(timer).toMatchObject({ action: 'set_timer', param: '5m|Brötchen' });
+    expect(timer.provenance).toMatchObject({
+      evidenceSource: 'custom_command_expansion',
+      customCommand: '/brot',
+      validation: 'semantic_grounding',
+    });
     expect(reminder).toMatchObject({
       action: 'set_reminder',
       param: expect.stringMatching(/^at=date:\d{4}-\d{2}-\d{2}@\d{2}:\d{2}\|text=Essen$/u),
+    });
+    expect(reminder.provenance).toMatchObject({
+      evidenceSource: 'custom_command_expansion',
+      customCommand: '/essen',
+      validation: 'semantic_grounding',
     });
   });
 

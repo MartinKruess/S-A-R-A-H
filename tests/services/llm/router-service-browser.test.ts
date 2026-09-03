@@ -205,6 +205,15 @@ describe('RouterService (browser actions)', () => {
     expect(showRequest).toMatchObject({
       action: 'show_browser',
       sourceRequestId: searchRequest.requestId,
+      provenance: {
+        decisionSource: 'deterministic_shortcut',
+        evidenceSource: 'user_text',
+        interactionContext: {
+          kind: 'visible_search_result',
+          contextTurnId: searchRequest.turnId,
+        },
+        validation: 'schema_only',
+      },
     });
     ctx.bus.emit('test', 'action:result', {
       turnId: showRequest.turnId,
@@ -213,6 +222,29 @@ describe('RouterService (browser actions)', () => {
       ok: true,
     });
     await showTurn;
+
+    ctx.parsedConfig.controls.customCommands = [
+      { command: '/erstes', prompt: 'Zeig mir das erste Ergebnis' },
+    ];
+    const customShowTurn = router.handleChatMessage('/erstes');
+    await vi.waitFor(() => expect(requests).toHaveLength(3));
+    const customShowRequest = requests[2];
+    expect(customShowRequest.provenance).toMatchObject({
+      decisionSource: 'deterministic_shortcut',
+      evidenceSource: 'custom_command_expansion',
+      customCommand: '/erstes',
+      interactionContext: {
+        kind: 'visible_search_result',
+        contextTurnId: searchRequest.turnId,
+      },
+    });
+    ctx.bus.emit('test', 'action:result', {
+      turnId: customShowRequest.turnId,
+      requestId: customShowRequest.requestId,
+      action: 'show_browser',
+      ok: true,
+    });
+    await customShowTurn;
   });
 
   it('clears a visible search only when its owning turn is canceled or fails', async () => {

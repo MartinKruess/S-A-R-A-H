@@ -3,6 +3,13 @@ import type { AppContext } from '../../core/bootstrap.js';
 import type { BusEvents } from '../../core/bus-events.js';
 import { runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 import type { ActionConfirmationReference, ConfirmedAction } from '../../core/action-confirmation.js';
+import type {
+  ActionDecisionSource,
+  ActionIntent,
+  ActionInteractionContext,
+  ActionProvenance,
+  ActionValidation,
+} from '../../core/action-intent.js';
 import type { TurnEnvelope, TurnId } from '../../core/turn-contract.js';
 import type { ActionName } from '../actions/action-schemas.js';
 import { isActionName } from '../actions/action-schemas.js';
@@ -37,6 +44,35 @@ interface RouterActionFlowDependencies {
   markBrowserSearchIntentTransient(turnId: TurnId, action: ActionName): void;
 }
 
+interface ActionDispatchOptions {
+  decisionSource?: ActionDecisionSource;
+  interactionContext?: {
+    kind: ActionInteractionContext;
+    contextTurnId: TurnId;
+  };
+  reminderCancelFollowupId?: number;
+}
+
+function createActionProvenance(
+  envelope: TurnEnvelope,
+  validation: ActionValidation,
+  options: ActionDispatchOptions,
+): ActionProvenance {
+  const inputEvidence = envelope.command.kind === 'custom'
+    ? {
+      evidenceSource: 'custom_command_expansion' as const,
+      customCommand: envelope.command.command,
+    }
+    : { evidenceSource: 'user_text' as const };
+  return {
+    sourceTurnId: envelope.turnId,
+    decisionSource: options.decisionSource ?? 'router_model',
+    validation,
+    ...inputEvidence,
+    ...(options.interactionContext ? { interactionContext: options.interactionContext } : {}),
+  };
+}
+
 /** Coordinates action validation, confirmation, dispatch and correlated results. */
 export class RouterActionFlow {
   private readonly pendingActions = new Map<string, {
@@ -51,6 +87,9 @@ export class RouterActionFlow {
   constructor(private readonly deps: RouterActionFlowDependencies) {}
 
   get hasVisibleSearchSession(): boolean { return this.visibleSearchSession !== null; }
+  get visibleSearchContextTurnId(): TurnId | null {
+    return this.visibleSearchSession?.ownerTurnId ?? null;
+  }
 
   clearVisibleSearchForTurn(turnId: TurnId): void {
     if (this.visibleSearchSession?.ownerTurnId === turnId) this.visibleSearchSession = null;
@@ -104,13 +143,13 @@ export class RouterActionFlow {
 
   private async dispatchAction(
     envelope: TurnEnvelope,
-    action: ActionName,
-    param: string,
+    intent: ActionIntent<ActionName>,
     acknowledgement: string,
     signal: AbortSignal,
     confirmation?: ActionConfirmationReference,
     confirmedSourceRequestId?: string,
   ): Promise<void> {
+    const { action, param } = intent;
     const actionService = this.deps.context.registry.get('actions');
     if (!actionService || actionService.status !== 'running') {
       await this.deps.emitAssistantResponse(
@@ -138,8 +177,7 @@ export class RouterActionFlow {
     this.deps.context.bus.emit(this.deps.serviceId, 'action:request', {
       turnId: envelope.turnId,
       requestId,
-      action,
-      param,
+      ...intent,
       originMode: envelope.mode,
       privateContext: this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous',
       ...((confirmedSourceRequestId || (action === 'show_browser' && this.visibleSearchSession))
@@ -156,7 +194,7 @@ export class RouterActionFlow {
       );
       throwIfAborted(signal);
       if (result.ok && action.startsWith('media_')) {
-        this.deps.mediaContext.record(action as MediaAction, Date.now());
+        this.deps.mediaContext.record(action as MediaAction, Date.now(), envelope.turnId);
       }
       if (action === 'web_search' && result.ok) {
         if (privateSearch && !this.deps.isIncognitoActive()) {
@@ -198,20 +236,25 @@ export class RouterActionFlow {
     action: ActionName,
     param: string,
     signal: AbortSignal,
-    reminderCancelFollowupId?: number,
+    options: ActionDispatchOptions = {},
   ): Promise<void> {
     const grounding = groundActionRequest(
       action,
       param,
       envelope.effectiveText,
       this.deps.reminderClock,
-      reminderCancelFollowupId,
+      options.reminderCancelFollowupId,
     );
     if (!grounding.ok) {
       await this.deps.emitAssistantResponse(envelope.turnId, grounding.message, signal);
       return;
     }
     const validatedParam = grounding.param;
+    const intent: ActionIntent<ActionName> = {
+      action,
+      param: validatedParam,
+      provenance: createActionProvenance(envelope, grounding.validation, options),
+    };
     const validatedAcknowledgement = getActionAcknowledgement(action, validatedParam);
     this.deps.markBrowserSearchIntentTransient(envelope.turnId, action);
     const trust = this.deps.context.parsedConfig.trust;
@@ -245,10 +288,17 @@ export class RouterActionFlow {
         : undefined;
       const confirmationId = this.deps.context.actionConfirmations.request(
         envelope.turnId,
-        action,
-        validatedParam,
+        intent,
         sourceRequestId,
       );
+      if (!confirmationId) {
+        await this.deps.emitAssistantResponse(
+          envelope.turnId,
+          'Diese Aktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.',
+          signal,
+        );
+        return;
+      }
       const description = getActionConfirmationDescription(action, validatedParam);
       const spokenConfirmationPrompt = `Soll ich ${description}? Sage oder schreibe „Bestätigen“ oder „Abbrechen“.`;
       const confirmationPrompt = `${spokenConfirmationPrompt} Alternativ im Textchat: /confirm ${confirmationId}`;
@@ -270,7 +320,7 @@ export class RouterActionFlow {
       );
       return;
     }
-    await this.dispatchAction(envelope, action, validatedParam, validatedAcknowledgement, signal);
+    await this.dispatchAction(envelope, intent, validatedAcknowledgement, signal);
   }
 
   async handleReminderCancelFollowup(
@@ -309,7 +359,14 @@ export class RouterActionFlow {
         'cancel_reminder',
         `id=${candidate.id}`,
         signal,
-        candidate.id,
+        {
+          decisionSource: 'deterministic_shortcut',
+          interactionContext: {
+            kind: 'reminder_cancel_followup',
+            contextTurnId: context.ownerTurnId,
+          },
+          reminderCancelFollowupId: candidate.id,
+        },
       );
       return true;
     }
@@ -337,7 +394,14 @@ export class RouterActionFlow {
       'cancel_reminder',
       `id=${candidate.id}`,
       signal,
-      candidate.id,
+      {
+        decisionSource: 'deterministic_shortcut',
+        interactionContext: {
+          kind: 'reminder_cancel_followup',
+          contextTurnId: context.ownerTurnId,
+        },
+        reminderCancelFollowupId: candidate.id,
+      },
     );
     return true;
   }
@@ -401,15 +465,18 @@ export class RouterActionFlow {
     confirmed: ConfirmedAction,
     signal: AbortSignal,
   ): Promise<void> {
-    if (!isActionName(confirmed.action)) {
+    if (!isActionName(confirmed.intent.action)) {
       await this.deps.emitAssistantResponse(envelope.turnId, 'Diese Bestätigung ist ungültig.', signal);
       return;
     }
+    const intent: ActionIntent<ActionName> = {
+      ...confirmed.intent,
+      action: confirmed.intent.action,
+    };
     await this.dispatchAction(
       envelope,
-      confirmed.action,
-      confirmed.param,
-      getActionAcknowledgement(confirmed.action, confirmed.param),
+      intent,
+      getActionAcknowledgement(intent.action, intent.param),
       signal,
       confirmed.confirmation,
       confirmed.sourceRequestId,

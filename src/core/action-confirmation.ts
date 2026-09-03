@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import type { ActionIntent, ActionProvenance } from './action-intent.js';
 import type { TurnId } from './turn-contract.js';
 
 export type ConfirmationLevel = 'minimal' | 'standard' | 'maximal';
@@ -11,15 +12,13 @@ export interface ActionConfirmationReference {
 export interface ConfirmedAction {
   confirmation: ActionConfirmationReference;
   confirmationTurnId: TurnId;
-  action: string;
-  param: string;
+  intent: ActionIntent;
   sourceRequestId?: string;
 }
 
 interface PendingAction {
   requestedTurnId: TurnId;
-  action: string;
-  param: string;
+  intent: ActionIntent;
   sourceRequestId?: string;
   expiresAt: number;
 }
@@ -30,6 +29,58 @@ interface Approval extends ConfirmedAction {
 
 const DEFAULT_CONFIRMATION_TTL_MS = 5 * 60_000;
 export const SPOKEN_ACTION_CONFIRMATION_PHRASE = 'Diese Aktion jetzt verbindlich bestätigen';
+
+function copyProvenance(provenance: ActionProvenance): ActionProvenance {
+  const base = {
+    sourceTurnId: provenance.sourceTurnId,
+    decisionSource: provenance.decisionSource,
+    validation: provenance.validation,
+    ...(provenance.interactionContext ? {
+      interactionContext: {
+        kind: provenance.interactionContext.kind,
+        contextTurnId: provenance.interactionContext.contextTurnId,
+      },
+    } : {}),
+  } as const;
+  if (provenance.evidenceSource === 'custom_command_expansion') {
+    return {
+      ...base,
+      evidenceSource: provenance.evidenceSource,
+      customCommand: provenance.customCommand,
+    };
+  }
+  return { ...base, evidenceSource: provenance.evidenceSource };
+}
+
+function copyIntent(intent: ActionIntent): ActionIntent {
+  return {
+    action: intent.action,
+    param: intent.param,
+    provenance: copyProvenance(intent.provenance),
+  };
+}
+
+function matchesProvenance(left: ActionProvenance, right: ActionProvenance): boolean {
+  if (
+    left.sourceTurnId !== right.sourceTurnId
+    || left.decisionSource !== right.decisionSource
+    || left.validation !== right.validation
+    || left.evidenceSource !== right.evidenceSource
+    || left.interactionContext?.kind !== right.interactionContext?.kind
+    || left.interactionContext?.contextTurnId !== right.interactionContext?.contextTurnId
+  ) return false;
+  if (
+    left.evidenceSource === 'custom_command_expansion'
+    && right.evidenceSource === 'custom_command_expansion'
+  ) return left.customCommand === right.customCommand;
+  return left.evidenceSource === 'user_text' && right.evidenceSource === 'user_text';
+}
+
+function matchesIntent(left: ActionIntent, right: ActionIntent): boolean {
+  return left.action === right.action
+    && left.param === right.param
+    && matchesProvenance(left.provenance, right.provenance);
+}
 
 function normalizeConfirmationText(text: string): string {
   return text
@@ -109,15 +160,14 @@ export class ActionConfirmationGate {
   /** Registriert eine bestätigungspflichtige Action und gibt deren einmalige ID zurück. */
   request(
     requestedTurnId: TurnId,
-    action: string,
-    param: string,
+    intent: ActionIntent,
     sourceRequestId?: string,
-  ): string {
+  ): string | null {
     this.removeExpired();
+    if (intent.provenance.sourceTurnId !== requestedTurnId) return null;
     for (const [id, pending] of this.pending) {
       if (
-        pending.action === action
-        && pending.param === param
+        matchesIntent(pending.intent, intent)
         && pending.sourceRequestId === sourceRequestId
       ) {
         if (pending.requestedTurnId !== requestedTurnId) {
@@ -132,8 +182,7 @@ export class ActionConfirmationGate {
     const confirmationId = randomUUID();
     this.pending.set(confirmationId, {
       requestedTurnId,
-      action,
-      param,
+      intent: copyIntent(intent),
       ...(sourceRequestId ? { sourceRequestId } : {}),
       expiresAt: this.now() + this.ttlMs,
     });
@@ -152,15 +201,15 @@ export class ActionConfirmationGate {
         requestedTurnId: pending.requestedTurnId,
       },
       confirmationTurnId,
-      action: pending.action,
-      param: pending.param,
+      intent: copyIntent(pending.intent),
       ...(pending.sourceRequestId ? { sourceRequestId: pending.sourceRequestId } : {}),
     };
     this.approvals.set(confirmationId, {
       ...confirmed,
+      intent: copyIntent(confirmed.intent),
       expiresAt: this.now() + this.ttlMs,
     });
-    return confirmed;
+    return { ...confirmed, intent: copyIntent(confirmed.intent) };
   }
 
   /** Bestätigt die einzige offene Action über die fest vorgegebene Sprachphrase. */
@@ -188,8 +237,7 @@ export class ActionConfirmationGate {
   /** Verbraucht eine exakt passende Zustimmung; abweichende oder wiederholte Requests werden abgewiesen. */
   consume(
     confirmationTurnId: TurnId,
-    action: string,
-    param: string,
+    intent: ActionIntent,
     reference: ActionConfirmationReference | undefined,
     sourceRequestId?: string,
   ): boolean {
@@ -200,8 +248,7 @@ export class ActionConfirmationGate {
       !approval
       || approval.confirmationTurnId !== confirmationTurnId
       || approval.confirmation.requestedTurnId !== reference.requestedTurnId
-      || approval.action !== action
-      || approval.param !== param
+      || !matchesIntent(approval.intent, intent)
       || approval.sourceRequestId !== sourceRequestId
     ) return false;
     this.approvals.delete(reference.confirmationId);
@@ -221,8 +268,7 @@ export class ActionConfirmationGate {
     this.recoverableApprovals.delete(id);
     this.pending.set(id, {
       requestedTurnId: confirmed.confirmation.requestedTurnId,
-      action: confirmed.action,
-      param: confirmed.param,
+      intent: copyIntent(confirmed.intent),
       ...(confirmed.sourceRequestId ? { sourceRequestId: confirmed.sourceRequestId } : {}),
       expiresAt: this.now() + this.ttlMs,
     });
@@ -279,8 +325,7 @@ export class ActionConfirmationGate {
     return left.confirmation.confirmationId === right.confirmation.confirmationId
       && left.confirmation.requestedTurnId === right.confirmation.requestedTurnId
       && left.confirmationTurnId === right.confirmationTurnId
-      && left.action === right.action
-      && left.param === right.param
+      && matchesIntent(left.intent, right.intent)
       && left.sourceRequestId === right.sourceRequestId;
   }
 }

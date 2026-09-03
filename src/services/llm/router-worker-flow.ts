@@ -42,7 +42,13 @@ export class RouterWorkerFlow {
     const { context, serviceId, modelRuntime, actionFlow } = this.options;
     const { effectiveText: text, mode, turnId } = envelope;
     if (isActiveReminderListShortcut(envelope.normalizedText)) {
-      await actionFlow.dispatchOrRequestConfirmation(envelope, 'list_reminders', 'upcoming', signal);
+      await actionFlow.dispatchOrRequestConfirmation(
+        envelope,
+        'list_reminders',
+        'upcoming',
+        signal,
+        { decisionSource: 'deterministic_shortcut' },
+      );
       return;
     }
     const result = await modelRuntime.route(text, signal);
@@ -66,6 +72,9 @@ export class RouterWorkerFlow {
       const timerParam = action === 'set_reminder'
         ? timerFromMisroutedReminder(param, envelope.effectiveText)
         : null;
+      const correctedByDeterministicRule = explicitCancelReminderParam !== null
+        || reminderParam !== null
+        || timerParam !== null;
       await actionFlow.dispatchOrRequestConfirmation(
         envelope,
         explicitCancelReminderParam
@@ -77,6 +86,9 @@ export class RouterWorkerFlow {
               : action,
         explicitCancelReminderParam ?? reminderParam ?? timerParam ?? param,
         signal,
+        correctedByDeterministicRule
+          ? { decisionSource: 'deterministic_shortcut' }
+          : undefined,
       );
       return;
     }

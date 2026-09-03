@@ -36,6 +36,7 @@ import {
   ActionConfirmationGate,
   type ConfirmationLevel,
 } from '../../core/action-confirmation.js';
+import type { ActionIntent } from '../../core/action-intent.js';
 
 /** Structural view of SearchService (Task 9) — keeps this task testable standalone. */
 export interface SearchLike {
@@ -253,11 +254,13 @@ export class ActionService implements SarahService {
       requestId,
       action,
       param,
+      provenance,
       sourceRequestId,
       confirmation,
       originMode,
       privateContext,
     } = msg.data;
+    const intent: ActionIntent = { action, param, provenance };
     if (this.bus.isTurnTerminal(turnId)) {
       console.warn('[Actions] request for terminal turn refused', { action });
       return;
@@ -271,8 +274,7 @@ export class ActionService implements SarahService {
     const operation = this.execute(
       turnId,
       requestId,
-      action,
-      param,
+      intent,
       sourceRequestId,
       confirmation,
       originMode ?? 'voice',
@@ -356,8 +358,7 @@ export class ActionService implements SarahService {
   private async execute(
     turnId: string,
     requestId: string,
-    action: string,
-    param: string,
+    intent: ActionIntent,
     sourceRequestId: string | undefined,
     confirmation: BusEvents['action:request']['confirmation'],
     originMode: NonNullable<BusEvents['action:request']['originMode']>,
@@ -365,6 +366,12 @@ export class ActionService implements SarahService {
     signal: AbortSignal,
   ): Promise<ActionExecutionResult> {
     throwIfAborted(signal);
+    const { action, param } = intent;
+    const expectedSourceTurnId = confirmation?.requestedTurnId ?? turnId;
+    if (intent.provenance.sourceTurnId !== expectedSourceTurnId) {
+      console.warn('[Actions] action intent provenance mismatch', { action });
+      return { ok: false, speak: 'Diese Aktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.' };
+    }
     if (!isActionName(action)) {
       console.warn('[Actions] unknown action refused');
       return { ok: false, speak: 'Das kann ich noch nicht.' };
@@ -393,7 +400,7 @@ export class ActionService implements SarahService {
     }
     if (
       policy.effect === 'confirm'
-      && !this.confirmationGate.consume(turnId, action, param, confirmation, sourceRequestId)
+      && !this.confirmationGate.consume(turnId, intent, confirmation, sourceRequestId)
     ) {
       console.warn('[Actions] unconfirmed action refused', { action });
       return { ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' };
