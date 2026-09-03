@@ -27,7 +27,7 @@ function intent(
 describe('ActionConfirmationGate', () => {
   it('accepts a controlled spoken phrase when exactly one proposal is pending', () => {
     const gate = new ActionConfirmationGate();
-    gate.request('proposal-turn', intent('proposal-turn', 'open_program', 'spotify'));
+    gate.request('proposal-turn', intent('proposal-turn', 'open_program', 'spotify'), false);
 
     expect(gate.approveSpoken('vielleicht', 'confirmation-turn')).toBeNull();
     expect(gate.approveSpoken('Bitte bestätigen', 'confirmation-turn')).toBeNull();
@@ -52,8 +52,8 @@ describe('ActionConfirmationGate', () => {
 
   it('keeps exactly one pending proposal and replaces a different older proposal', () => {
     const gate = new ActionConfirmationGate();
-    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
-    const secondId = gate.request('proposal-two', intent('proposal-two', 'media_next', ''));
+    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'), false);
+    const secondId = gate.request('proposal-two', intent('proposal-two', 'media_next', ''), false);
 
     expect(secondId).not.toBe(firstId);
     expect(gate.approve(firstId, 'first-confirmation')).toBeNull();
@@ -62,9 +62,9 @@ describe('ActionConfirmationGate', () => {
 
   it('reuses the same pending ID only inside the same proposal turn', () => {
     const gate = new ActionConfirmationGate();
-    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
-    const repeatedId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
-    const replacementId = gate.request('proposal-two', intent('proposal-two', 'open_program', 'spotify'));
+    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'), false);
+    const repeatedId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'), false);
+    const replacementId = gate.request('proposal-two', intent('proposal-two', 'open_program', 'spotify'), false);
 
     expect(repeatedId).toBe(firstId);
     expect(replacementId).not.toBe(firstId);
@@ -81,7 +81,38 @@ describe('ActionConfirmationGate', () => {
     expect(gate.request(
       'actual-proposal',
       intent('foreign-proposal', 'open_program', 'spotify'),
+      false,
     )).toBeNull();
+    expect(gate.hasSinglePending()).toBe(false);
+  });
+
+  it.each([
+    {
+      action: 'delete_everything',
+      param: '',
+      provenance: {
+        sourceTurnId: 'proposal-turn',
+        decisionSource: 'router_model',
+        evidenceSource: 'user_text',
+        validation: 'semantic_grounding',
+        evidenceScope: { kind: 'whole_turn' },
+      },
+    },
+    {
+      action: 'open_program',
+      param: 'spotify',
+      provenance: {
+        sourceTurnId: 'proposal-turn',
+        decisionSource: 'forged',
+        evidenceSource: 'user_text',
+        validation: 'semantic_grounding',
+        evidenceScope: { kind: 'whole_turn' },
+      },
+    },
+  ] as ActionIntent[])('does not create a confirmation for a forged runtime intent: %#', (forged) => {
+    const gate = new ActionConfirmationGate();
+
+    expect(gate.request('proposal-turn', forged, false)).toBeNull();
     expect(gate.hasSinglePending()).toBe(false);
   });
 
@@ -124,8 +155,8 @@ describe('ActionConfirmationGate', () => {
 
   it('invalidates only proposals and approvals owned by a failed turn', () => {
     const gate = new ActionConfirmationGate();
-    const failedProposalId = gate.request('failed-proposal', intent('failed-proposal', 'open_program', 'spotify'));
-    const retainedProposalId = gate.request('completed-proposal', intent('completed-proposal', 'media_next', ''));
+    const failedProposalId = gate.request('failed-proposal', intent('failed-proposal', 'open_program', 'spotify'), false);
+    const retainedProposalId = gate.request('completed-proposal', intent('completed-proposal', 'media_next', ''), false);
     const approved = gate.approve(retainedProposalId, 'failed-confirmation');
     if (!approved) throw new Error('expected approval');
 
@@ -139,7 +170,7 @@ describe('ActionConfirmationGate', () => {
 
   it('restores an unconsumed approval but never revives one consumed by ActionService', () => {
     const gate = new ActionConfirmationGate();
-    const restorableId = gate.request('proposal-one', intent('proposal-one', 'media_next', ''));
+    const restorableId = gate.request('proposal-one', intent('proposal-one', 'media_next', ''), false);
     const restorable = gate.approve(restorableId, 'confirmation-one');
     if (!restorable) throw new Error('expected restorable approval');
 
@@ -147,13 +178,14 @@ describe('ActionConfirmationGate', () => {
     expect(gate.restorePending(restorable)).toBe(true);
     expect(gate.approve(restorableId, 'confirmation-two')).not.toBeNull();
 
-    const consumedId = gate.request('proposal-two', intent('proposal-two', 'media_pause', ''));
+    const consumedId = gate.request('proposal-two', intent('proposal-two', 'media_pause', ''), false);
     const consumed = gate.approve(consumedId, 'confirmation-three');
     if (!consumed) throw new Error('expected consumed approval');
     expect(gate.consume(
       consumed.confirmationTurnId,
       consumed.intent,
       consumed.confirmation,
+      false,
     )).toBe(true);
     expect(gate.restorePending(consumed)).toBe(false);
     expect(gate.approve(consumedId, 'confirmation-four')).toBeNull();
@@ -172,7 +204,7 @@ describe('ActionConfirmationGate', () => {
         contextTurnId: 'search-turn',
       },
     });
-    const confirmationId = gate.request('proposal-turn', customIntent);
+    const confirmationId = gate.request('proposal-turn', customIntent, false);
     const approved = gate.approve(confirmationId, 'confirmation-turn');
     if (!approved) throw new Error('expected approval');
 
@@ -185,7 +217,7 @@ describe('ActionConfirmationGate', () => {
   it('rejects consumption when provenance differs from the approved intent', () => {
     const gate = new ActionConfirmationGate();
     const approvedIntent = intent('proposal-turn', 'open_program', 'spotify');
-    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    const confirmationId = gate.request('proposal-turn', approvedIntent, false);
     const approved = gate.approve(confirmationId, 'confirmation-turn');
     if (!approved) throw new Error('expected approval');
 
@@ -199,11 +231,13 @@ describe('ActionConfirmationGate', () => {
       approved.confirmationTurnId,
       changedIntent,
       approved.confirmation,
+      false,
     )).toBe(false);
     expect(gate.consume(
       approved.confirmationTurnId,
       approved.intent,
       approved.confirmation,
+      false,
     )).toBe(true);
   });
 
@@ -221,7 +255,7 @@ describe('ActionConfirmationGate', () => {
         endOffset: 50,
       },
     });
-    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    const confirmationId = gate.request('proposal-turn', approvedIntent, false);
     if (!confirmationId) throw new Error('expected confirmation request');
     const approved = gate.approve(confirmationId, 'confirmation-turn');
     if (!approved) throw new Error('expected approval');
@@ -237,11 +271,13 @@ describe('ActionConfirmationGate', () => {
       approved.confirmationTurnId,
       changedScopeIntent,
       approved.confirmation,
+      false,
     )).toBe(false);
     expect(gate.consume(
       approved.confirmationTurnId,
       approved.intent,
       approved.confirmation,
+      false,
     )).toBe(true);
   });
 
@@ -258,7 +294,7 @@ describe('ActionConfirmationGate', () => {
         programName: 'Visual Studio Code',
       },
     });
-    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    const confirmationId = gate.request('proposal-turn', approvedIntent, false);
     if (!confirmationId) throw new Error('expected confirmation request');
     const approved = gate.approve(confirmationId, 'confirmation-turn');
     if (!approved) throw new Error('expected approval');
@@ -275,11 +311,53 @@ describe('ActionConfirmationGate', () => {
       approved.confirmationTurnId,
       changedResolution,
       approved.confirmation,
+      false,
     )).toBe(false);
     expect(gate.consume(
       approved.confirmationTurnId,
       approved.intent,
       approved.confirmation,
+      false,
+    )).toBe(true);
+  });
+
+  it('binds the original private context and mode through approval, restore, and consume', () => {
+    const gate = new ActionConfirmationGate();
+    const approvedIntent = intent('private-proposal', 'set_reminder', 'after=10m|text=Geheimnis');
+    const confirmationId = gate.request('private-proposal', approvedIntent, true, undefined, 'voice');
+    const approved = gate.approve(confirmationId, 'public-confirmation');
+    if (!approved) throw new Error('expected approval');
+
+    expect(approved.privateContext).toBe(true);
+    expect(approved.originMode).toBe('voice');
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      approved.intent,
+      approved.confirmation,
+      false,
+      undefined,
+      'voice',
+    )).toBe(false);
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      approved.intent,
+      approved.confirmation,
+      true,
+    )).toBe(false);
+
+    gate.invalidateTurn('public-confirmation');
+    expect(gate.restorePending(approved)).toBe(true);
+    const restored = gate.approve(confirmationId, 'second-confirmation');
+    if (!restored) throw new Error('expected restored approval');
+    expect(restored.privateContext).toBe(true);
+    expect(restored.originMode).toBe('voice');
+    expect(gate.consume(
+      restored.confirmationTurnId,
+      restored.intent,
+      restored.confirmation,
+      true,
+      undefined,
+      'voice',
     )).toBe(true);
   });
 });

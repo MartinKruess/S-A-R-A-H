@@ -82,13 +82,17 @@ const SEQUENTIAL_CONNECTOR_WORDS: ReadonlySet<string> = new Set([
   'afterwards',
 ]);
 
-function connectorOrder(text: string): ValidatedExplicitIntent['order'] | null {
-  const words = text
+function connectorWords(text: string): readonly string[] {
+  return text
     .replace(/[\s,;:.!?&()[\]{}'"„“‚‘\-–—]+/gu, ' ')
     .trim()
     .toLocaleLowerCase('de-DE')
     .split(' ')
     .filter((word) => word.length > 0);
+}
+
+function connectorOrder(text: string): ValidatedExplicitIntent['order'] | null {
+  const words = connectorWords(text);
   if (words.some((word) => !ALLOWED_CONNECTOR_WORDS.has(word))) return null;
   return words.some((word) => SEQUENTIAL_CONNECTOR_WORDS.has(word))
     ? 'after_previous'
@@ -149,9 +153,10 @@ function createActionProvenance(
 const PROGRAM_ROLE_PHRASES: Readonly<Record<ProgramRole, RegExp>> = {
   browser: /\b(?:browser|internetbrowser)\b/iu,
   code_editor: /\b(?:editor|code[\s-]?editor|entwicklungsumgebung|ide)\b/iu,
-  music_player: /\b(?:musik[\s-]?player|player)\b/iu,
+  music_player: /\b(?:musik[\s-]?player|audio[\s-]?player|musik[\s-]?app)\b/iu,
 };
 const OPEN_PROGRAM_REQUEST = /\b(?:offn[a-z]*|start[a-z]*|launch[a-z]*)\b|\bmach\b.{0,60}\bauf\b/u;
+const NEGATED_PROGRAM_REQUEST = /\b(?:nicht|nie|niemals|keinesfalls)\b/u;
 
 function normalizedGroundingText(value: string): string {
   return value
@@ -172,6 +177,7 @@ function resolveProgramRoleAction(
   if (
     !role
     || !OPEN_PROGRAM_REQUEST.test(normalizedEvidence)
+    || NEGATED_PROGRAM_REQUEST.test(normalizedEvidence)
     || !PROGRAM_ROLE_PHRASES[role].test(normalizedEvidence)
   ) return null;
   const bindings = context.programRoles.filter((binding) => binding.role === role);
@@ -198,6 +204,7 @@ function actionCapabilityAvailable(action: ActionName, context: DecisionContext)
   if (action === 'show_browser') {
     return isCapabilityAvailable(context.capabilities.visibleBrowserResult);
   }
+  if (action === 'set_reminder' && context.turn.privateContext) return false;
   if (action === 'set_reminder' || action === 'list_reminders' || action === 'cancel_reminder') {
     return isCapabilityAvailable(context.capabilities.reminders);
   }
@@ -351,6 +358,9 @@ export function validateRouterPlanProposal(
     const connector = effectiveText.slice(previousEndOffset, resolution.evidence.startOffset);
     const order = connectorOrder(connector);
     if (order === null) return { ok: false, reason: 'incomplete_evidence' };
+    if (index === 0 && order === 'after_previous') {
+      return { ok: false, reason: 'incomplete_evidence' };
+    }
     previousEndOffset = resolution.evidence.endOffset;
     const intent = validateProposalIntent(
       proposedIntent,
@@ -365,7 +375,11 @@ export function validateRouterPlanProposal(
     intents.push(intent);
   }
 
-  if (connectorOrder(effectiveText.slice(previousEndOffset)) === null) {
+  const trailingConnector = effectiveText.slice(previousEndOffset);
+  if (
+    connectorOrder(trailingConnector) === null
+    || connectorWords(trailingConnector).length > 0
+  ) {
     return { ok: false, reason: 'incomplete_evidence' };
   }
 
@@ -376,6 +390,7 @@ export function validateRouterPlanProposal(
         sourceTurnId: envelope.turnId,
         intents,
         privateContext: decisionContext.turn.privateContext,
+        originMode: decisionContext.turn.mode,
       }),
     };
   } catch {

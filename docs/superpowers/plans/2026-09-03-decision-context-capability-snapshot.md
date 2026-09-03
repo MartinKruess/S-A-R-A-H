@@ -107,6 +107,7 @@ the previous feature:
 
 - require a matching context for proposal validation;
 - derive plan privacy from that context;
+- bind the original voice/chat mode into the immutable plan;
 - reject intents whose required capability is unavailable or unknown;
 - resolve only allowlisted explicit program roles;
 - keep volatile capability data out of `IntentPlan` and its fingerprint;

@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import type { ActionName } from '../../core/action-name.js';
+export { isActionName } from '../../core/action-name.js';
+export type { ActionName } from '../../core/action-name.js';
 import {
   parseTimerRequest,
   parseTimerSelector,
@@ -56,9 +59,9 @@ const cancelReminderString = z.string().max(300).transform((param, context): str
 });
 
 /**
- * Single source of truth for V1 actions: names (allowlist) + param schemas.
- * RouterService imports the allowlist from here (llm → actions, no cycle) —
- * there is deliberately NO second copy anywhere (R4-Mi4).
+ * Parameter schemas for the central V1 action allowlist.
+ * `ActionName` comes from the dependency-free core list and this record must
+ * contain one schema for every action in that list.
  */
 export const ACTION_SCHEMAS = {
   open_program: z.string().min(1).max(100),
@@ -82,15 +85,7 @@ export const ACTION_SCHEMAS = {
   media_toggle: z.string().max(40),
   media_next: z.string().max(40),
   media_previous: z.string().max(40),
-} as const;
-
-export type ActionName = keyof typeof ACTION_SCHEMAS;
-
-const ACTION_NAME_SET: ReadonlySet<string> = new Set(Object.keys(ACTION_SCHEMAS));
-
-export function isActionName(name: string): name is ActionName {
-  return ACTION_NAME_SET.has(name);
-}
+} as const satisfies Record<ActionName, z.ZodType>;
 
 /**
  * Heuristic gate vocabulary (Spec §3): decides ONLY whether a 9B-window

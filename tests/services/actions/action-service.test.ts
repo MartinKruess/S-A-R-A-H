@@ -629,6 +629,7 @@ describe('ActionService', () => {
     const confirmationId = confirmationGate.request(
       'request-turn',
       testIntent('media_next', '', 'request-turn'),
+      false,
     );
     const approved = confirmationGate.approve(confirmationId, TURN_ID);
     if (!approved) throw new Error('expected confirmation');
@@ -639,6 +640,7 @@ describe('ActionService', () => {
       requestId: 'approved',
       ...approved.intent,
       confirmation,
+      originMode: approved.originMode,
     });
     await vi.waitFor(() => expect(results).toHaveLength(1));
     bus.emit('test', 'action:request', {
@@ -646,6 +648,7 @@ describe('ActionService', () => {
       requestId: 'replay',
       ...approved.intent,
       confirmation,
+      originMode: approved.originMode,
     });
     await vi.waitFor(() => expect(results).toHaveLength(2));
 
@@ -665,6 +668,7 @@ describe('ActionService', () => {
     const confirmationId = confirmationGate.request(
       'request-turn',
       testIntent('media_next', '', 'request-turn'),
+      false,
     );
     const approved = confirmationGate.approve(confirmationId, 'approved-turn');
     if (!approved) throw new Error('expected confirmation');
@@ -674,6 +678,7 @@ describe('ActionService', () => {
       requestId: 'wrong-turn',
       ...approved.intent,
       confirmation: approved.confirmation,
+      originMode: approved.originMode,
     });
     await vi.waitFor(() => expect(results).toHaveLength(1));
     bus.emit('test', 'action:request', {
@@ -682,12 +687,67 @@ describe('ActionService', () => {
       ...approved.intent,
       action: 'media_pause',
       confirmation: approved.confirmation,
+      originMode: approved.originMode,
     });
     await vi.waitFor(() => expect(results).toHaveLength(2));
 
     expect(media.next).not.toHaveBeenCalled();
     expect(media.pause).not.toHaveBeenCalled();
     expect(results.every((result) => !result.ok)).toBe(true);
+  });
+
+  it('rejects a confirmed request when its original private context or mode changes on the bus', async () => {
+    const confirmationGate = new ActionConfirmationGate();
+    const media = makeMedia();
+    const { bus, results, service } = makeService({
+      media,
+      confirmationGate,
+      confirmationLevel: 'maximal',
+    });
+    await service.init();
+    const confirmationId = confirmationGate.request(
+      'private-proposal',
+      testIntent('media_next', '', 'private-proposal'),
+      true,
+    );
+    const approved = confirmationGate.approve(confirmationId, TURN_ID);
+    if (!approved) throw new Error('expected confirmation');
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'privacy-downgrade',
+      ...approved.intent,
+      confirmation: approved.confirmation,
+      privateContext: false,
+      originMode: approved.originMode,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(1));
+    expect(results[0]?.ok).toBe(false);
+    expect(media.next).not.toHaveBeenCalled();
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'mode-changed',
+      ...approved.intent,
+      confirmation: approved.confirmation,
+      privateContext: true,
+      originMode: 'voice',
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(2));
+    expect(results[1]?.ok).toBe(false);
+    expect(media.next).not.toHaveBeenCalled();
+
+    bus.emit('test', 'action:request', {
+      turnId: TURN_ID,
+      requestId: 'original-context-preserved',
+      ...approved.intent,
+      confirmation: approved.confirmation,
+      privateContext: true,
+      originMode: approved.originMode,
+    });
+    await vi.waitFor(() => expect(results).toHaveLength(3));
+    expect(results[2]?.ok).toBe(true);
+    expect(media.next).toHaveBeenCalledOnce();
   });
 
   it('passes the exact source search request to browser result selection', async () => {

@@ -13,6 +13,8 @@ function lifecycle(state: RuntimeState = 'ready'): RuntimeSnapshot {
     generation: 7,
     updatedAt: 123_456,
     capabilities: {
+      router: { state: 'ready', message: 'private router lifecycle message' },
+      local_worker: { state: 'ready', message: 'private worker lifecycle message' },
       actions: { state: 'ready', message: 'C:\\private\\actions.exe' },
       search: { state: 'ready', message: 'https://private.example/search' },
       reminders: { state: 'ready', message: 'private database error' },
@@ -55,6 +57,7 @@ function input(
       search: 'running',
       reminders: 'running',
     },
+    searchAcceptingWork: true,
     webAccessAllowed: true,
     hasVisibleBrowserResult: true,
     ...overrides,
@@ -118,6 +121,29 @@ describe('buildDecisionCapabilitySnapshot', () => {
     expect(exclusive.modelExecutionMode).toBe('exclusive');
   });
 
+  it.each(['router', 'local_worker'] as const)(
+    'requires the %s lifecycle leaf to be exactly ready',
+    (role) => {
+      const missing = lifecycle();
+      delete missing.capabilities[role];
+      const degraded = lifecycle();
+      degraded.capabilities[role] = { state: 'degraded' };
+
+      const missingSnapshot = buildDecisionCapabilitySnapshot(input({ lifecycle: missing }));
+      const degradedSnapshot = buildDecisionCapabilitySnapshot(input({ lifecycle: degraded }));
+      const field = role === 'router' ? 'router' : 'localAnswer';
+
+      expect(missingSnapshot[field]).toEqual({
+        state: 'unavailable',
+        reason: 'lifecycle_unavailable',
+      });
+      expect(degradedSnapshot[field]).toEqual({
+        state: 'unavailable',
+        reason: 'lifecycle_unavailable',
+      });
+    },
+  );
+
   it('requires both lifecycle-ready and running services', () => {
     const notRunning: Record<'actions' | 'search' | 'reminders', ServiceStatus> = {
       actions: 'pending',
@@ -150,6 +176,16 @@ describe('buildDecisionCapabilitySnapshot', () => {
     expect(noResult.visibleBrowserResult).toEqual({
       state: 'unavailable',
       reason: 'no_visible_result',
+    });
+  });
+
+  it('marks web search unavailable while the service cannot accept another dispatch', () => {
+    const snapshot = buildDecisionCapabilitySnapshot(input({ searchAcceptingWork: false }));
+
+    expect(snapshot.webSearch).toEqual({ state: 'unavailable', reason: 'service_unavailable' });
+    expect(snapshot.visibleBrowserResult).toEqual({
+      state: 'unavailable',
+      reason: 'service_unavailable',
     });
   });
 

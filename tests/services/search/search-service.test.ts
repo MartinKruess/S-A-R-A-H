@@ -37,6 +37,27 @@ function makeService(over: {
 }
 
 describe('SearchService.runSearch', () => {
+  it('reports whether a new search can currently be accepted', async () => {
+    let release: (results: SearchResult[]) => void = () => {};
+    const search = vi.fn().mockReturnValue(new Promise<SearchResult[]>((resolve) => {
+      release = resolve;
+    }));
+    const { service } = makeService({ search });
+
+    expect(service.acceptingWork).toBe(false);
+    await service.init();
+    expect(service.acceptingWork).toBe(true);
+
+    const running = service.runSearch('langsam', SEARCH_ONE);
+    expect(service.acceptingWork).toBe(false);
+    release(RESULTS);
+    await running;
+    expect(service.acceptingWork).toBe(true);
+
+    await service.destroy();
+    expect(service.acceptingWork).toBe(false);
+  });
+
   it('hides the display and builds a deterministic overview without URLs or an LLM', async () => {
     const { service, calls } = makeService();
     const speak = await service.runSearch('hotels kiel', SEARCH_ONE);

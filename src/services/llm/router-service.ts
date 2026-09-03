@@ -152,6 +152,8 @@ export class RouterService implements SarahService {
       reminderClock: this.reminderClock,
       actionResultTimeoutMs: this.actionResultTimeoutMs,
       isIncognitoActive: () => this.incognitoActive,
+      getTurnPrivateContext: (turnId) => this.turnDrafts.get(turnId)?.privateContext
+        ?? this.incognitoActive,
       emitAssistantResponse: (...args) => this.outputFlow.emitAssistantResponse(...args),
       markBrowserSearchIntentTransient: (turnId, action) => {
         this.markBrowserSearchIntentTransient(turnId, action);

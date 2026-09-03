@@ -34,6 +34,7 @@ const availableCapabilities: DecisionCapabilitySnapshot = {
 
 interface DependencyOptions {
   readonly turnId?: string;
+  readonly mode?: 'chat' | 'voice';
   readonly privateContext?: boolean;
   readonly customCommand?: string;
   readonly createIntentId?: () => string;
@@ -52,7 +53,7 @@ function dependencies(options: DependencyOptions = {}) {
       version: 1,
       turn: {
         turnId: options.turnId ?? 'source-turn',
-        mode: 'chat',
+        mode: options.mode ?? 'chat',
         privateContext: options.privateContext ?? false,
         inputOrigin: options.customCommand
           ? { kind: 'custom_command_expansion', customCommand: options.customCommand }
@@ -172,6 +173,21 @@ describe('compileRouterPlanProposal', () => {
     expect(incognito.ok && incognito.plan.privateContext).toBe(true);
   });
 
+  it('binds the original voice mode into the immutable plan', () => {
+    const text = 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder';
+    const voiceEnvelope: TurnEnvelope = {
+      ...envelope(text),
+      source: 'voice',
+      mode: 'voice',
+    };
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_timer', param: '10m', evidence: 'Stelle einen Timer auf 10 Minuten' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), voiceEnvelope, dependencies({ mode: 'voice' }));
+
+    expect(result.ok && result.plan.originMode).toBe('voice');
+  });
+
   it('grounds an action only against its own evidence clause', () => {
     const text = 'Starte einen Timer in zehn Minuten und erinnere mich in fünf Minuten an Tee.';
     const result = compileRouterPlanProposal(output([
@@ -257,6 +273,34 @@ describe('compileRouterPlanProposal', () => {
     expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
   });
 
+  it.each([
+    'Öffne meinen Editor nicht',
+    'Öffne niemals meinen Editor',
+    'Starte keinesfalls meinen Editor',
+  ])('does not turn a negated program-role clause into an action: %s', (actionEvidence) => {
+    const text = `${actionEvidence} und erzähl etwas über Fahrräder`;
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'open_program', param: 'role:code_editor', evidence: actionEvidence },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({
+      programRoles: [{ role: 'code_editor', programName: 'Visual Studio Code' }],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+  });
+
+  it('does not resolve a generic video player as the configured music player', () => {
+    const text = 'Starte meinen Videoplayer und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'open_program', param: 'role:music_player', evidence: 'Starte meinen Videoplayer' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({
+      programRoles: [{ role: 'music_player', programName: 'Spotify' }],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+  });
+
   it('fails closed when the context belongs to another turn', () => {
     const text = 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder';
     const result = compileRouterPlanProposal(output([
@@ -278,6 +322,16 @@ describe('compileRouterPlanProposal', () => {
         media: { state: 'unknown', reason: 'no_readiness_source' },
       },
     }));
+
+    expect(result).toEqual({ ok: false, reason: 'capability_unavailable' });
+  });
+
+  it('does not plan a persistent reminder in private context', () => {
+    const text = 'Erinnere mich in 20 Minuten an Geheimnis und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_reminder', param: 'after=20m|text=Geheimnis', evidence: 'Erinnere mich in 20 Minuten an Geheimnis' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({ privateContext: true }));
 
     expect(result).toEqual({ ok: false, reason: 'capability_unavailable' });
   });
@@ -312,6 +366,30 @@ describe('compileRouterPlanProposal', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.plan.steps[1]?.dependsOn).toEqual([result.plan.steps[0]?.stepId]);
+  });
+
+  it.each([
+    {
+      text: 'Danach stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder',
+      firstEvidence: 'stelle einen Timer auf 10 Minuten',
+      secondEvidence: 'erzähl etwas über Fahrräder',
+    },
+    {
+      text: 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder und',
+      firstEvidence: 'Stelle einen Timer auf 10 Minuten',
+      secondEvidence: 'erzähl etwas über Fahrräder',
+    },
+  ])('rejects a dangling external or trailing dependency connector: $text', ({
+    text,
+    firstEvidence,
+    secondEvidence,
+  }) => {
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_timer', param: '10m', evidence: firstEvidence },
+      { kind: 'answer', evidence: secondEvidence },
+    ]), envelope(text), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
   });
 
   it('fails closed instead of storing offsets against a normalized copy', () => {

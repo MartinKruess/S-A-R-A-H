@@ -280,6 +280,7 @@ describe('save-config audio patches', () => {
           evidenceScope: { kind: 'whole_turn' },
         },
       },
+      false,
     );
     const context = {
       parsedConfig: initial,
