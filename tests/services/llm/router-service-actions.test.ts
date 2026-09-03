@@ -88,6 +88,12 @@ describe('RouterService (actions & confirmation)', () => {
     expect(requests).toHaveLength(1);
     expect(requests[0].action).toBe('open_program');
     expect(requests[0].param).toBe('spotify');
+    expect(requests[0].provenance).toMatchObject({
+      sourceTurnId: requests[0].turnId,
+      decisionSource: 'router_model',
+      evidenceSource: 'user_text',
+      validation: 'schema_only',
+    });
     expect(requests[0].requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(done).toEqual(['Ich öffne Spotify.']);
     const msgs = await ctx.db.query<{ role: string; content: string }>('messages');

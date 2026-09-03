@@ -4,11 +4,29 @@ import {
   SPOKEN_ACTION_CONFIRMATION_PHRASE,
   resolveActionConfirmationIntent,
 } from '../../src/core/action-confirmation.js';
+import type { ActionIntent } from '../../src/core/action-intent.js';
+
+function intent(
+  sourceTurnId: string,
+  action: ActionIntent['action'],
+  param: string,
+  provenance: Omit<ActionIntent['provenance'], 'sourceTurnId'> = {
+    decisionSource: 'router_model',
+    evidenceSource: 'user_text',
+    validation: 'semantic_grounding',
+  },
+): ActionIntent {
+  return {
+    action,
+    param,
+    provenance: { sourceTurnId, ...provenance },
+  };
+}
 
 describe('ActionConfirmationGate', () => {
   it('accepts a controlled spoken phrase when exactly one proposal is pending', () => {
     const gate = new ActionConfirmationGate();
-    gate.request('proposal-turn', 'open_program', 'spotify');
+    gate.request('proposal-turn', intent('proposal-turn', 'open_program', 'spotify'));
 
     expect(gate.approveSpoken('vielleicht', 'confirmation-turn')).toBeNull();
     expect(gate.approveSpoken('Bitte bestätigen', 'confirmation-turn')).toBeNull();
@@ -17,15 +35,23 @@ describe('ActionConfirmationGate', () => {
       'confirmation-turn',
     )).toMatchObject({
       confirmationTurnId: 'confirmation-turn',
-      action: 'open_program',
-      param: 'spotify',
+      intent: {
+        action: 'open_program',
+        param: 'spotify',
+        provenance: {
+          sourceTurnId: 'proposal-turn',
+          decisionSource: 'router_model',
+          evidenceSource: 'user_text',
+          validation: 'semantic_grounding',
+        },
+      },
     });
   });
 
   it('keeps exactly one pending proposal and replaces a different older proposal', () => {
     const gate = new ActionConfirmationGate();
-    const firstId = gate.request('proposal-one', 'open_program', 'spotify');
-    const secondId = gate.request('proposal-two', 'media_next', '');
+    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
+    const secondId = gate.request('proposal-two', intent('proposal-two', 'media_next', ''));
 
     expect(secondId).not.toBe(firstId);
     expect(gate.approve(firstId, 'first-confirmation')).toBeNull();
@@ -34,9 +60,9 @@ describe('ActionConfirmationGate', () => {
 
   it('reuses the same pending ID only inside the same proposal turn', () => {
     const gate = new ActionConfirmationGate();
-    const firstId = gate.request('proposal-one', 'open_program', 'spotify');
-    const repeatedId = gate.request('proposal-one', 'open_program', 'spotify');
-    const replacementId = gate.request('proposal-two', 'open_program', 'spotify');
+    const firstId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
+    const repeatedId = gate.request('proposal-one', intent('proposal-one', 'open_program', 'spotify'));
+    const replacementId = gate.request('proposal-two', intent('proposal-two', 'open_program', 'spotify'));
 
     expect(repeatedId).toBe(firstId);
     expect(replacementId).not.toBe(firstId);
@@ -45,6 +71,16 @@ describe('ActionConfirmationGate', () => {
     expect(gate.approve(replacementId, 'current-confirmation')).toMatchObject({
       confirmation: { requestedTurnId: 'proposal-two' },
     });
+  });
+
+  it('rejects provenance owned by a different proposal turn', () => {
+    const gate = new ActionConfirmationGate();
+
+    expect(gate.request(
+      'actual-proposal',
+      intent('foreign-proposal', 'open_program', 'spotify'),
+    )).toBeNull();
+    expect(gate.hasSinglePending()).toBe(false);
   });
 
   it.each([
@@ -86,8 +122,8 @@ describe('ActionConfirmationGate', () => {
 
   it('invalidates only proposals and approvals owned by a failed turn', () => {
     const gate = new ActionConfirmationGate();
-    const failedProposalId = gate.request('failed-proposal', 'open_program', 'spotify');
-    const retainedProposalId = gate.request('completed-proposal', 'media_next', '');
+    const failedProposalId = gate.request('failed-proposal', intent('failed-proposal', 'open_program', 'spotify'));
+    const retainedProposalId = gate.request('completed-proposal', intent('completed-proposal', 'media_next', ''));
     const approved = gate.approve(retainedProposalId, 'failed-confirmation');
     if (!approved) throw new Error('expected approval');
 
@@ -101,7 +137,7 @@ describe('ActionConfirmationGate', () => {
 
   it('restores an unconsumed approval but never revives one consumed by ActionService', () => {
     const gate = new ActionConfirmationGate();
-    const restorableId = gate.request('proposal-one', 'media_next', '');
+    const restorableId = gate.request('proposal-one', intent('proposal-one', 'media_next', ''));
     const restorable = gate.approve(restorableId, 'confirmation-one');
     if (!restorable) throw new Error('expected restorable approval');
 
@@ -109,16 +145,61 @@ describe('ActionConfirmationGate', () => {
     expect(gate.restorePending(restorable)).toBe(true);
     expect(gate.approve(restorableId, 'confirmation-two')).not.toBeNull();
 
-    const consumedId = gate.request('proposal-two', 'media_pause', '');
+    const consumedId = gate.request('proposal-two', intent('proposal-two', 'media_pause', ''));
     const consumed = gate.approve(consumedId, 'confirmation-three');
     if (!consumed) throw new Error('expected consumed approval');
     expect(gate.consume(
       consumed.confirmationTurnId,
-      consumed.action,
-      consumed.param,
+      consumed.intent,
       consumed.confirmation,
     )).toBe(true);
     expect(gate.restorePending(consumed)).toBe(false);
     expect(gate.approve(consumedId, 'confirmation-four')).toBeNull();
+  });
+
+  it('preserves custom-command provenance across approval and restore', () => {
+    const gate = new ActionConfirmationGate();
+    const customIntent = intent('proposal-turn', 'open_program', 'spotify', {
+      decisionSource: 'router_model',
+      evidenceSource: 'custom_command_expansion',
+      customCommand: '/spotify',
+      validation: 'semantic_grounding',
+      interactionContext: {
+        kind: 'visible_search_result',
+        contextTurnId: 'search-turn',
+      },
+    });
+    const confirmationId = gate.request('proposal-turn', customIntent);
+    const approved = gate.approve(confirmationId, 'confirmation-turn');
+    if (!approved) throw new Error('expected approval');
+
+    expect(approved.intent).toEqual(customIntent);
+    gate.invalidateTurn('confirmation-turn');
+    expect(gate.restorePending(approved)).toBe(true);
+    expect(gate.approve(confirmationId, 'second-confirmation')?.intent).toEqual(customIntent);
+  });
+
+  it('rejects consumption when provenance differs from the approved intent', () => {
+    const gate = new ActionConfirmationGate();
+    const approvedIntent = intent('proposal-turn', 'open_program', 'spotify');
+    const confirmationId = gate.request('proposal-turn', approvedIntent);
+    const approved = gate.approve(confirmationId, 'confirmation-turn');
+    if (!approved) throw new Error('expected approval');
+
+    const changedIntent = intent('proposal-turn', 'open_program', 'spotify', {
+      decisionSource: 'deterministic_shortcut',
+      evidenceSource: 'user_text',
+      validation: 'semantic_grounding',
+    });
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      changedIntent,
+      approved.confirmation,
+    )).toBe(false);
+    expect(gate.consume(
+      approved.confirmationTurnId,
+      approved.intent,
+      approved.confirmation,
+    )).toBe(true);
   });
 });

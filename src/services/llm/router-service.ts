@@ -690,8 +690,21 @@ export class RouterService implements SarahService {
 
     if (this.actionFlow.hasVisibleSearchSession) {
       const browserResult = resolveBrowserResultFollowup(text);
-      if (browserResult) {
-        await this.actionFlow.dispatchOrRequestConfirmation(envelope, 'show_browser', browserResult, signal);
+      const searchContextTurnId = this.actionFlow.visibleSearchContextTurnId;
+      if (browserResult && searchContextTurnId) {
+        await this.actionFlow.dispatchOrRequestConfirmation(
+          envelope,
+          'show_browser',
+          browserResult,
+          signal,
+          {
+            decisionSource: 'deterministic_shortcut',
+            interactionContext: {
+              kind: 'visible_search_result',
+              contextTurnId: searchContextTurnId,
+            },
+          },
+        );
         return;
       }
     }
@@ -700,7 +713,19 @@ export class RouterService implements SarahService {
     // fires in the warm-9B window, where terse words bypass the gate.
     const hit = this.mediaContext.resolve(text, Date.now());
     if (hit) {
-      await this.actionFlow.dispatchOrRequestConfirmation(envelope, hit.action, '', signal);
+      await this.actionFlow.dispatchOrRequestConfirmation(
+        envelope,
+        hit.action,
+        '',
+        signal,
+        {
+          decisionSource: 'deterministic_shortcut',
+          interactionContext: {
+            kind: 'media_followup',
+            contextTurnId: hit.contextTurnId,
+          },
+        },
+      );
       return;
     }
 

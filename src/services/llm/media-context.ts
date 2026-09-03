@@ -3,17 +3,20 @@
 // terse follow-up commands ("weiter"/"zurück"/"stopp") using the last media
 // action within a sliding window — no LLM in the resolution path.
 import type { MediaAction } from '../actions/media-controller.js';
+import type { TurnId } from '../../core/turn-contract.js';
 
 export const MEDIA_CONTEXT_WINDOW_MS = 12_000;
 
 export interface ResolvedMedia {
   action: MediaAction;
   speak: string;
+  contextTurnId: TurnId;
 }
 
 interface MediaContextState {
   lastAction: MediaAction;
   atMs: number;
+  contextTurnId: TurnId;
 }
 
 // Whole-sentence inputs are never terse follow-ups.
@@ -29,8 +32,8 @@ export class MediaContext {
   private state: MediaContextState | null = null;
 
   /** Record that a media_* command was issued (refreshes the window). */
-  record(action: MediaAction, nowMs: number): void {
-    this.state = { lastAction: action, atMs: nowMs };
+  record(action: MediaAction, nowMs: number, contextTurnId: TurnId): void {
+    this.state = { lastAction: action, atMs: nowMs, contextTurnId };
   }
 
   /** Clears the short-lived interpretation hint at privacy/lifecycle boundaries. */
@@ -47,13 +50,14 @@ export class MediaContext {
     if (!norm || norm.split(/\s+/).length > MAX_TERSE_TOKENS) return null;
     if (!this.state || nowMs - this.state.atMs > MEDIA_CONTEXT_WINDOW_MS) return null;
 
-    if (STOP_PHRASES.has(norm)) return { action: 'media_pause', speak: 'Pausiert.' };
-    if (BACK_PHRASES.has(norm)) return { action: 'media_previous', speak: 'Zurück.' };
-    if (NEXT_PHRASES.has(norm)) return { action: 'media_next', speak: 'Nächstes Lied.' };
+    const contextTurnId = this.state.contextTurnId;
+    if (STOP_PHRASES.has(norm)) return { action: 'media_pause', speak: 'Pausiert.', contextTurnId };
+    if (BACK_PHRASES.has(norm)) return { action: 'media_previous', speak: 'Zurück.', contextTurnId };
+    if (NEXT_PHRASES.has(norm)) return { action: 'media_next', speak: 'Nächstes Lied.', contextTurnId };
     if (FORWARD_PHRASES.has(norm)) {
       return this.state.lastAction === 'media_pause'
-        ? { action: 'media_play', speak: 'Läuft wieder.' }
-        : { action: 'media_next', speak: 'Nächstes Lied.' };
+        ? { action: 'media_play', speak: 'Läuft wieder.', contextTurnId }
+        : { action: 'media_next', speak: 'Nächstes Lied.', contextTurnId };
     }
     return null;
   }

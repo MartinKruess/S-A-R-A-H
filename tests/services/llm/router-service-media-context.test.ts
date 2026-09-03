@@ -61,7 +61,7 @@ describe('RouterService (media context)', () => {
 
     const worker = new FakeProvider();
     const mediaContext = new MediaContext();
-    mediaContext.record('media_next', Date.now()); // warm: last action was a skip
+    mediaContext.record('media_next', Date.now(), 'previous-media-turn'); // warm: last action was a skip
 
     const r = new RouterService(fakeCtx(bus), new FakeProvider(), worker, mediaContext);
     bus.on('action:result', (message) => r.onMessage(message));
@@ -80,6 +80,15 @@ describe('RouterService (media context)', () => {
 
     expect(requests).toHaveLength(1);
     expect(requests[0].action).toBe('media_next'); // shortcut fired before the 9B worker
+    expect(requests[0].provenance).toMatchObject({
+      decisionSource: 'deterministic_shortcut',
+      evidenceSource: 'user_text',
+      validation: 'schema_only',
+      interactionContext: {
+        kind: 'media_followup',
+        contextTurnId: 'previous-media-turn',
+      },
+    });
     expect(worker.lastMessages).toBeNull();          // worker.stream never ran
     await r.destroy();
   });
@@ -87,7 +96,7 @@ describe('RouterService (media context)', () => {
   it('does not advance the media hint when the correlated media action fails', async () => {
     const bus = new MessageBus();
     const mediaContext = new MediaContext();
-    mediaContext.record('media_pause', Date.now());
+    mediaContext.record('media_pause', Date.now(), 'previous-media-turn');
     const r = new RouterService(fakeCtx(bus), new FakeProvider(), new FakeProvider(), mediaContext);
     bus.on('action:result', (message) => r.onMessage(message));
     bus.on('action:request', (message) => {
@@ -115,11 +124,11 @@ describe('RouterService (media context)', () => {
     const r = new RouterService(context, new FakeProvider(), new FakeProvider(), mediaContext);
     r.status = 'running';
 
-    mediaContext.record('media_pause', Date.now());
+    mediaContext.record('media_pause', Date.now(), 'previous-media-turn');
     await r.handleChatMessage('/anonymous');
     expect(mediaContext.resolve('weiter', Date.now())).toBeNull();
 
-    mediaContext.record('media_pause', Date.now());
+    mediaContext.record('media_pause', Date.now(), 'previous-media-turn');
     await r.destroy();
     expect(mediaContext.resolve('weiter', Date.now())).toBeNull();
   });

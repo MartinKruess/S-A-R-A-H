@@ -365,6 +365,16 @@ describe('RouterService (timer & reminder actions)', () => {
     expect(followup.request).toMatchObject({
       action: 'cancel_reminder',
       param: 'id=42',
+      provenance: {
+        sourceTurnId: followup.request.turnId,
+        decisionSource: 'deterministic_shortcut',
+        evidenceSource: 'user_text',
+        interactionContext: {
+          kind: 'reminder_cancel_followup',
+          contextTurnId: first.request.turnId,
+        },
+        validation: 'semantic_grounding',
+      },
     });
     expect(routerProvider.calls).toBe(routerCallsAfterInitialCancel);
     ctx.bus.emit('test', 'action:result', {
