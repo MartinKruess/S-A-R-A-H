@@ -60,6 +60,7 @@ const wizardData: WizardData = {
   resources: {
     emails: [],
     programs: [],
+    programRoles: [],
     favoriteLinks: [],
     pdfCategories: [],
     picturesFolder: '',

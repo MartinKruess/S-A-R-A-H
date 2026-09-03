@@ -55,6 +55,33 @@ export const ProgramEntrySchema = z.object({
   processName: z.string().optional(),
 });
 
+export const PROGRAM_ROLES = ['browser', 'code_editor', 'music_player'] as const;
+export const MAX_PROGRAM_ROLE_BINDINGS = PROGRAM_ROLES.length;
+export const MAX_PROGRAM_ROLE_PROGRAM_NAME_LENGTH = 100;
+
+export const ProgramRoleSchema = z.enum(PROGRAM_ROLES);
+
+export const ProgramRoleBindingSchema = z.object({
+  role: ProgramRoleSchema,
+  programName: z.string().trim().min(1).max(MAX_PROGRAM_ROLE_PROGRAM_NAME_LENGTH),
+}).strict();
+
+const ProgramRoleBindingsSchema = z.array(ProgramRoleBindingSchema)
+  .max(MAX_PROGRAM_ROLE_BINDINGS)
+  .superRefine((bindings, context) => {
+    const seen = new Set<string>();
+    bindings.forEach((binding, index) => {
+      if (seen.has(binding.role)) {
+        context.addIssue({
+          code: 'custom',
+          message: `Program role "${binding.role}" must be unique`,
+          path: [index, 'role'],
+        });
+      }
+      seen.add(binding.role);
+    });
+  });
+
 export const PdfCategorySchema = z.object({
   tag: z.string(),
   folder: z.string(),
@@ -70,6 +97,7 @@ export const CustomCommandSchema = z.object({
 export const ResourcesSchema = z.object({
   emails: z.array(z.string()).default([]),
   programs: z.array(ProgramEntrySchema).default([]),
+  programRoles: ProgramRoleBindingsSchema.default([]),
   favoriteLinks: z.array(z.string()).default([]),
   pdfCategories: z.array(PdfCategorySchema).default([]),
   picturesFolder: z.string().default(''),
@@ -325,6 +353,8 @@ export type Profile = z.infer<typeof ProfileSchema>;
 export type LinkPreference = z.infer<typeof LinkPreferenceSchema>;
 export type Skills = z.infer<typeof SkillsSchema>;
 export type ProgramEntry = z.infer<typeof ProgramEntrySchema>;
+export type ProgramRole = z.infer<typeof ProgramRoleSchema>;
+export type ProgramRoleBinding = z.infer<typeof ProgramRoleBindingSchema>;
 export type PdfCategory = z.infer<typeof PdfCategorySchema>;
 export type CustomCommand = z.infer<typeof CustomCommandSchema>;
 export type Resources = z.infer<typeof ResourcesSchema>;

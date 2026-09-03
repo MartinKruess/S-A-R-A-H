@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ActionIntent, ActionProvenance } from './action-intent.js';
+import { PROGRAM_ROLES } from './config-schema.js';
 import type { TurnId } from './turn-contract.js';
 
 export const MAX_EXPLICIT_INTENTS = 3;
@@ -91,6 +92,7 @@ const SPECIALIST_CAPABILITIES: ReadonlySet<string> = new Set([
   'research',
   'vision',
 ]);
+const PROGRAM_ROLE_SET: ReadonlySet<string> = new Set(PROGRAM_ROLES);
 
 function isNonEmpty(value: string): boolean {
   return value.trim().length > 0;
@@ -146,12 +148,20 @@ function copyProvenance(provenance: ActionProvenance): ActionProvenance {
       contextTurnId: provenance.interactionContext.contextTurnId,
     })
     : undefined;
+  const parameterResolution = provenance.parameterResolution
+    ? Object.freeze({
+      kind: provenance.parameterResolution.kind,
+      role: provenance.parameterResolution.role,
+      programName: provenance.parameterResolution.programName,
+    })
+    : undefined;
   const base = {
     sourceTurnId: provenance.sourceTurnId,
     decisionSource: provenance.decisionSource,
     validation: provenance.validation,
     evidenceScope,
     ...(interactionContext ? { interactionContext } : {}),
+    ...(parameterResolution ? { parameterResolution } : {}),
   } as const;
   return Object.freeze(provenance.evidenceSource === 'custom_command_expansion'
     ? {
@@ -206,6 +216,13 @@ function canonicalProvenance(provenance: ActionProvenance): object {
       interactionContext: {
         kind: provenance.interactionContext.kind,
         contextTurnId: provenance.interactionContext.contextTurnId,
+      },
+    } : {}),
+    ...(provenance.parameterResolution ? {
+      parameterResolution: {
+        kind: provenance.parameterResolution.kind,
+        role: provenance.parameterResolution.role,
+        programName: provenance.parameterResolution.programName,
       },
     } : {}),
   };
@@ -267,6 +284,14 @@ function hasValidActionIntent(intent: ActionIntent, sourceTurnId: TurnId): boole
   if (intent.provenance.interactionContext
     && (!isNonEmpty(intent.provenance.interactionContext.contextTurnId)
       || !isNonEmpty(intent.provenance.interactionContext.kind))) return false;
+  if (intent.provenance.parameterResolution && (
+    intent.action !== 'open_program'
+    || intent.provenance.parameterResolution.programName.length > 100
+    || intent.provenance.parameterResolution.kind !== 'program_role'
+    || !PROGRAM_ROLE_SET.has(intent.provenance.parameterResolution.role)
+    || !isNonEmpty(intent.provenance.parameterResolution.programName)
+    || intent.param !== intent.provenance.parameterResolution.programName
+  )) return false;
   return true;
 }
 
@@ -376,7 +401,9 @@ function isDeeplyFrozenPlan(plan: IntentPlan): boolean {
       && Object.isFrozen(step.intent.provenance)
       && Object.isFrozen(step.intent.provenance.evidenceScope)
       && (!step.intent.provenance.interactionContext
-        || Object.isFrozen(step.intent.provenance.interactionContext));
+        || Object.isFrozen(step.intent.provenance.interactionContext))
+      && (!step.intent.provenance.parameterResolution
+        || Object.isFrozen(step.intent.provenance.parameterResolution));
   });
 }
 

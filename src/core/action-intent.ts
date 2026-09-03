@@ -1,4 +1,5 @@
 import type { TurnId } from './turn-contract.js';
+import type { ProgramRole } from './config-schema.js';
 
 export type ActionDecisionSource = 'router_model' | 'deterministic_shortcut';
 export type ActionValidation = 'schema_only' | 'semantic_grounding';
@@ -24,6 +25,12 @@ export type ActionEvidence =
   | { readonly evidenceSource: 'user_text' }
   | { readonly evidenceSource: 'custom_command_expansion'; readonly customCommand: string };
 
+export interface ActionParameterResolution {
+  readonly kind: 'program_role';
+  readonly role: ProgramRole;
+  readonly programName: string;
+}
+
 /**
  * Describes action provenance that the router model cannot choose freely.
  *
@@ -41,6 +48,7 @@ export type ActionProvenance = Readonly<{
     kind: ActionInteractionContext;
     contextTurnId: TurnId;
   }>;
+  parameterResolution?: ActionParameterResolution;
 }> & ActionEvidence;
 
 /**

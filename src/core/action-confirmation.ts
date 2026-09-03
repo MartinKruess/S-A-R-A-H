@@ -51,6 +51,13 @@ function copyProvenance(provenance: ActionProvenance): ActionProvenance {
         contextTurnId: provenance.interactionContext.contextTurnId,
       },
     } : {}),
+    ...(provenance.parameterResolution ? {
+      parameterResolution: {
+        kind: provenance.parameterResolution.kind,
+        role: provenance.parameterResolution.role,
+        programName: provenance.parameterResolution.programName,
+      },
+    } : {}),
   } as const;
   if (provenance.evidenceSource === 'custom_command_expansion') {
     return {
@@ -79,6 +86,10 @@ function matchesProvenance(left: ActionProvenance, right: ActionProvenance): boo
     || left.evidenceScope.kind !== right.evidenceScope.kind
     || left.interactionContext?.kind !== right.interactionContext?.kind
     || left.interactionContext?.contextTurnId !== right.interactionContext?.contextTurnId
+    || Boolean(left.parameterResolution) !== Boolean(right.parameterResolution)
+    || left.parameterResolution?.kind !== right.parameterResolution?.kind
+    || left.parameterResolution?.role !== right.parameterResolution?.role
+    || left.parameterResolution?.programName !== right.parameterResolution?.programName
   ) return false;
   if (left.evidenceScope.kind === 'clause' && right.evidenceScope.kind === 'clause') {
     if (

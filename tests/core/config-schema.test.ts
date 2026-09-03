@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { SarahConfigSchema } from '../../src/core/config-schema.js';
+import {
+  MAX_PROGRAM_ROLE_BINDINGS,
+  MAX_PROGRAM_ROLE_PROGRAM_NAME_LENGTH,
+  SarahConfigSchema,
+} from '../../src/core/config-schema.js';
 import { MAX_MEMORY_EXCLUSIONS, MAX_MEMORY_EXCLUSION_LENGTH } from '../../src/core/memory-exclusions.js';
 
 describe('SarahConfigSchema', () => {
@@ -15,6 +19,7 @@ describe('SarahConfigSchema', () => {
     expect(result.llm.baseUrl).toBe('http://localhost:11434');
     expect(result.trust.fileAccess).toBe('specific-folders');
     expect(result.trust.webAccessAllowed).toBe(true);
+    expect(result.resources.programRoles).toEqual([]);
   });
 
   it('preserves provided values', () => {
@@ -130,6 +135,49 @@ describe('SarahConfigSchema', () => {
       },
     });
     expect(result.profile.linkPreferences[0].id).toBe('fixed-id');
+  });
+
+  it('preserves bounded explicit program-role bindings with unique roles', () => {
+    const result = SarahConfigSchema.parse({
+      resources: {
+        programRoles: [
+          { role: 'browser', programName: ' Firefox ' },
+          { role: 'code_editor', programName: 'Visual Studio Code' },
+          { role: 'music_player', programName: 'Spotify' },
+        ],
+      },
+    });
+
+    expect(result.resources.programRoles).toEqual([
+      { role: 'browser', programName: 'Firefox' },
+      { role: 'code_editor', programName: 'Visual Studio Code' },
+      { role: 'music_player', programName: 'Spotify' },
+    ]);
+  });
+
+  it('rejects duplicate program roles instead of choosing one binding', () => {
+    const result = SarahConfigSchema.safeParse({
+      resources: {
+        programRoles: [
+          { role: 'browser', programName: 'Firefox' },
+          { role: 'browser', programName: 'Chrome' },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([
+    [{ role: 'terminal', programName: 'Terminal' }],
+    [{ role: 'browser', programName: '' }],
+    [{ role: 'browser', programName: 'x'.repeat(MAX_PROGRAM_ROLE_PROGRAM_NAME_LENGTH + 1) }],
+    Array.from({ length: MAX_PROGRAM_ROLE_BINDINGS + 1 }, (_, index) => ({
+      role: index === 0 ? 'browser' : 'code_editor',
+      programName: `Program ${index}`,
+    })),
+  ])('rejects invalid or oversized program-role configuration: %#', (programRoles) => {
+    expect(SarahConfigSchema.safeParse({ resources: { programRoles } }).success).toBe(false);
   });
 
   it('rejects a workerOptions.num_ctx below the response-reserve minimum', () => {
