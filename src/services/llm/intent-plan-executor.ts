@@ -51,10 +51,6 @@ export interface IntentPlanExecutorAdapters {
   ): Promise<IntentPlanAdapterResult>;
 }
 
-function isAbort(error: object, signal?: AbortSignal): boolean {
-  return signal?.aborted === true || (error instanceof Error && error.name === 'AbortError');
-}
-
 function executionContext(plan: IntentPlan): IntentPlanExecutionContext {
   return Object.freeze({
     planId: plan.planId,
@@ -105,7 +101,6 @@ export class IntentPlanExecutor {
       state = startPlanSteps(plan, state, [nextStep.stepId]);
       try {
         const result = await this.executeStep(nextStep, context, signal);
-        if (signal?.aborted) return cancelPlanExecution(plan, state, cancellationReason);
         state = applyPlanStepOutcome(plan, state, result.status === 'succeeded'
           ? { stepId: nextStep.stepId, status: 'succeeded' }
           : {
@@ -113,14 +108,19 @@ export class IntentPlanExecutor {
             status: 'failed',
             reason: result.reason,
           });
+        if (signal?.aborted && state.status === 'running') {
+          return cancelPlanExecution(plan, state, cancellationReason);
+        }
       } catch (error) {
-        if (isAbort(error instanceof Error ? error : {}, signal)) {
+        if (signal?.aborted) {
           return cancelPlanExecution(plan, state, cancellationReason);
         }
         state = applyPlanStepOutcome(plan, state, {
           stepId: nextStep.stepId,
           status: 'failed',
-          reason: 'executor_error',
+          reason: error instanceof Error && error.name === 'TimeoutError'
+            ? 'timeout'
+            : 'executor_error',
         });
       }
     }

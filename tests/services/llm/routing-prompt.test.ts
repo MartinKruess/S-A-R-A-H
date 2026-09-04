@@ -1,5 +1,34 @@
 import { describe, it, expect } from 'vitest';
+import { createDecisionContext } from '../../../src/core/decision-context.js';
 import { buildRoutingPrompt } from '../../../src/services/llm/routing-prompt.js';
+
+const decisionContext = createDecisionContext({
+  version: 1,
+  turn: {
+    turnId: 'routing-prompt-turn',
+    mode: 'chat',
+    privateContext: false,
+    inputOrigin: { kind: 'user_text' },
+  },
+  programRoles: [],
+  preferredSourceHints: [],
+  capabilities: {
+    lifecycleGeneration: 1,
+    modelExecutionMode: 'exclusive',
+    router: { state: 'available', reason: 'ready' },
+    localAnswer: { state: 'available', reason: 'ready' },
+    actions: { state: 'available', reason: 'ready' },
+    webSearch: { state: 'available', reason: 'ready' },
+    visibleBrowserResult: { state: 'available', reason: 'ready' },
+    reminders: { state: 'available', reason: 'ready' },
+    media: { state: 'unknown', reason: 'no_readiness_source' },
+    specialists: {
+      coding: { state: 'unavailable', reason: 'no_adapter' },
+      research: { state: 'unavailable', reason: 'no_adapter' },
+      vision: { state: 'unavailable', reason: 'no_adapter' },
+    },
+  },
+});
 
 describe('buildRoutingPrompt media_* coverage', () => {
   const prompt = buildRoutingPrompt();
@@ -14,6 +43,20 @@ describe('buildRoutingPrompt media_* coverage', () => {
 });
 
 describe('buildRoutingPrompt output contract', () => {
+  it('limits plan actions to the clause-grounded subset', () => {
+    const prompt = buildRoutingPrompt(new Date(2026, 8, 4, 10, 0), decisionContext);
+
+    expect(prompt).toContain('Plan action intents may use only open_program, web_search');
+    expect(prompt).toContain('lock_screen');
+    expect(prompt).toContain('Generic media transport remains legacy single-intent only');
+    expect(prompt).toContain('complete search clause');
+    expect(prompt).toContain('Hotels und Restaurants');
+    expect(prompt).toContain('behind a long conditional aside or sentence boundary');
+    expect(prompt).toContain('Do not propose any sequential answer after an earlier action');
+    expect(prompt).toContain('Action-result context is not available to plans yet');
+    expect(prompt).toContain('Questions that explicitly ask which reminders');
+  });
+
   it('forbids user-visible prose and routes every non-action to the worker', () => {
     const prompt = buildRoutingPrompt();
 

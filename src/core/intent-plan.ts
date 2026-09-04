@@ -303,7 +303,11 @@ function hasValidActionIntent(intent: ActionIntent, sourceTurnId: TurnId): boole
     || !isNonEmpty(intent.provenance.parameterResolution.programName)
     || intent.param !== intent.provenance.parameterResolution.programName
   )) return false;
-  if (intent.action === 'open_program' && !intent.provenance.parameterResolution) return false;
+  if (
+    intent.action === 'open_program'
+    && !intent.provenance.parameterResolution
+    && /^role:/u.test(intent.param)
+  ) return false;
   return true;
 }
 

@@ -23,7 +23,10 @@ import {
   type ActionName,
 } from '../actions/action-schemas.js';
 import type { ReminderClock } from '../actions/reminder-contract.js';
-import { groundActionRequest } from './router-action-grounding.js';
+import {
+  groundActionRequest,
+  hasCompleteOpenProgramSemantics,
+} from './router-action-grounding.js';
 import {
   parseRouterPlanProposal,
   routerPlanProposalSchema,
@@ -89,9 +92,10 @@ const SEQUENTIAL_CONNECTOR_WORDS: ReadonlySet<string> = new Set([
 const ALTERNATIVE_CONNECTOR_PATTERN = /\b(?:oder|or)\b/u;
 const SEQUENTIAL_CONNECTOR_PATTERN = /\b(?:dann|danach|anschliessend|daraufhin|then|afterwards)\b/gu;
 const COORDINATING_CONNECTOR_PATTERN = /\b(?:und|sowie|and|also)\b/gu;
+const SENTENCE_BOUNDARY_PATTERN = /[;:.!?]+/gu;
 const OPTIONAL_INTENT_PREAMBLE = '(?:\\p{L}+\\s*[,;:]?\\s+){0,3}';
 const ANSWER_INTENT_START_PATTERN = new RegExp(
-  `^${OPTIONAL_INTENT_PREAMBLE}(?:erzahl(?:e|st)?|erklar(?:e|st)?|sag(?:e|st)?|finde(?:st)?|beantworte(?:st)?|diskutiere(?:st)?|was|wie|wann|warum|wer|wo|welch)\\b`,
+  `^${OPTIONAL_INTENT_PREAMBLE}(?:erzahl(?:e|st)?|erklar(?:e|st)?|sag(?:e|st)?|nenn(?:e|st)?|finde(?:st)?|beantworte(?:st)?|diskutiere(?:st)?|was|wie|wann|warum|wer|wo|welch)\\b`,
   'u',
 );
 const HANDOFF_INTENT_START_PATTERN = new RegExp(
@@ -102,6 +106,7 @@ const ACTION_INTENT_START_PATTERN = new RegExp(
   `^${OPTIONAL_INTENT_PREAMBLE}(?:offne(?:n|st)?|starte(?:n|st)?|launche(?:n|st)?|suche(?:n|st)?|google(?:st)?|zeige(?:n|st)?|stell(?:e|st)?|setz(?:e|t)?|mach(?:e|st)?|erinner(?:e|st)?|losch(?:e|st)?|entfern(?:e|st)?|brich|stopp(?:e|st)?|pausier(?:e|st)?|spiel(?:e|st)?|sperr(?:e|st)?|erhoh(?:e|st)?|senk(?:e|st)?|reduziere(?:st)?|dreh(?:e|st)?)\\b`,
   'u',
 );
+const EXPLICIT_INTENT_SIGNAL_PATTERN = /\b(?:erzahl(?:e|st)?|erklar(?:e|st)?|sag(?:e|st)?|nenn(?:e|st)?|finde(?:st)?|beantworte(?:st)?|diskutiere(?:st)?|was|wie|wann|warum|wer|wo|welch\p{L}*|bau(?:e|st)?|implementiere(?:st)?|pruf(?:e|st)?|ander(?:e|st)?|repariere(?:st)?|schreib(?:e|st)?|analysiere(?:st)?|recherchiere(?:st)?|offne(?:n|st)?|starte(?:n|st)?|launche(?:n|st)?|suche(?:n|st)?|google(?:st)?|zeige(?:n|st)?|stell(?:e|st)?|setz(?:e|t)?|mach(?:e|st)?|erinner(?:e|st)?|losch(?:e|st)?|entfern(?:e|st)?|brich|stopp(?:e|st)?|pausier(?:e|st)?|spiel(?:e|st)?|sperr(?:e|st)?|erhoh(?:e|st)?|senk(?:e|st)?|reduziere(?:st)?|dreh(?:e|st)?)\b/u;
 const ACTION_SIGNAL_PATTERN = new RegExp(
   `(?:^|[\\s,.!?])(?:${ACTION_HINT_STEMS.map((stem) => normalizedSemanticText(stem)).join('|')})`,
   'u',
@@ -110,8 +115,8 @@ const QUESTION_INTENT_START_PATTERN = new RegExp(
   `^${OPTIONAL_INTENT_PREAMBLE}(?:was|wie|wann|warum|wer|wo|welch)\\b`,
   'u',
 );
+const LIST_REMINDERS_QUESTION_PATTERN = /^welch\p{L}*\b.*\b(?:erinnerung\p{L}*|reminder\p{L}*|termin\p{L}*)\b/u;
 const CLAUSE_BOUNDARY_PUNCTUATION = /[,;:.!?&]/u;
-const TIMER_DURATION_CONTINUATION = /^(?:(?:\d+|ein(?:e|en)?|zwei|drei|vier|funf|sechs|sieben|acht|neun|zehn|elf|zwolf)\s+)?(?:sekunden?|minuten?|stunden?)\b/u;
 
 function connectorWords(text: string): readonly string[] {
   return text
@@ -163,7 +168,8 @@ function startsProposedIntent(value: string, proposal: RouterIntentProposal): bo
   if (proposal.kind === 'handoff') {
     return wordCount >= 2 && HANDOFF_INTENT_START_PATTERN.test(value);
   }
-  return ACTION_INTENT_START_PATTERN.test(value) || ACTION_SIGNAL_PATTERN.test(value);
+  return ACTION_INTENT_START_PATTERN.test(value)
+    || (proposal.action === 'list_reminders' && LIST_REMINDERS_QUESTION_PATTERN.test(value));
 }
 
 function startsEmbeddedIntent(value: string): boolean {
@@ -171,6 +177,10 @@ function startsEmbeddedIntent(value: string): boolean {
     || HANDOFF_INTENT_START_PATTERN.test(value)
     || ACTION_INTENT_START_PATTERN.test(value)
     || ACTION_SIGNAL_PATTERN.test(value);
+}
+
+function containsExplicitIntentSignal(value: string): boolean {
+  return EXPLICIT_INTENT_SIGNAL_PATTERN.test(value);
 }
 
 function containsEmbeddedIntent(
@@ -189,16 +199,26 @@ function containsEmbeddedIntent(
   for (const connector of normalized.matchAll(COORDINATING_CONNECTOR_PATTERN)) {
     if (connector.index === undefined) continue;
     const remaining = normalized.slice(connector.index + connector[0].length).trimStart();
-    if (proposal.kind === 'action' && proposal.action !== 'set_reminder') {
-      if (proposal.action === 'set_timer' && TIMER_DURATION_CONTINUATION.test(remaining)) {
-        continue;
-      }
-      return true;
-    }
-    if (startsEmbeddedIntent(remaining)) return true;
-    if (connectorWords(remaining).length >= 2) return true;
+    if (proposal.kind === 'action' && proposal.action === 'open_program') return true;
+    if (startsEmbeddedIntent(remaining) || containsExplicitIntentSignal(remaining)) return true;
+  }
+
+  for (const boundary of normalized.matchAll(SENTENCE_BOUNDARY_PATTERN)) {
+    if (boundary.index === undefined) continue;
+    const remaining = normalized.slice(boundary.index + boundary[0].length).trimStart();
+    if (containsExplicitIntentSignal(remaining)) return true;
   }
   return false;
+}
+
+function isUnsupportedSequentialAnswerAfterAction(
+  proposal: RouterIntentProposal,
+  order: ValidatedExplicitIntent['order'],
+  priorIntents: readonly ValidatedExplicitIntent[],
+): boolean {
+  return proposal.kind === 'answer'
+    && order === 'after_previous'
+    && priorIntents.some((intent) => intent.kind === 'action');
 }
 
 function intentOrdinal(index: number): 0 | 1 | 2 {
@@ -276,11 +296,15 @@ function resolveProgramRoleAction(
   const match = /^role:(browser|code_editor|music_player)$/u.exec(proposal.param);
   const role = match?.[1] as ProgramRole | undefined;
   const normalizedEvidence = normalizedGroundingText(evidenceText);
+  const rolePhrase = role
+    ? PROGRAM_ROLE_PHRASES[role].exec(normalizedEvidence)?.[0]
+    : undefined;
   if (
     !role
     || !OPEN_PROGRAM_REQUEST.test(normalizedEvidence)
     || NEGATED_PROGRAM_REQUEST.test(normalizedEvidence)
-    || !PROGRAM_ROLE_PHRASES[role].test(normalizedEvidence)
+    || !rolePhrase
+    || !hasCompleteOpenProgramSemantics(evidenceText, rolePhrase)
   ) return null;
   const bindings = context.programRoles.filter((binding) => binding.role === role);
   if (bindings.length !== 1) return null;
@@ -454,8 +478,17 @@ export function validateRouterPlanProposal(
       createIntentId,
     );
     if (!resolution.ok) return resolution;
+    if (proposedIntent.kind === 'action' && !isActionName(proposedIntent.action)) {
+      return { ok: false, reason: 'unknown_action' };
+    }
     if (index > 0 && resolution.evidence.startOffset < previousEndOffset) {
       return { ok: false, reason: 'unordered_evidence' };
+    }
+    if (
+      index === 0
+      && !startsProposedIntent(normalizedSemanticText(resolution.text), proposedIntent)
+    ) {
+      return { ok: false, reason: 'incomplete_evidence' };
     }
     const connector = effectiveText.slice(previousEndOffset, resolution.evidence.startOffset);
     const order = connectorOrder(connector);
@@ -470,6 +503,9 @@ export function validateRouterPlanProposal(
       return { ok: false, reason: 'incomplete_evidence' };
     }
     if (index === 0 && order === 'after_previous') {
+      return { ok: false, reason: 'incomplete_evidence' };
+    }
+    if (isUnsupportedSequentialAnswerAfterAction(proposedIntent, order, intents)) {
       return { ok: false, reason: 'incomplete_evidence' };
     }
     if (containsEmbeddedIntent(proposedIntent, resolution.text)) {

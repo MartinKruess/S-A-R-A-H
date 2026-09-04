@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { RouterService, type RouterServiceOptions } from '../../../src/services/llm/router-service.js';
 import { bootstrap } from '../../../src/core/bootstrap.js';
 import type { AppContext } from '../../../src/core/bootstrap.js';
-import type { LlmProvider, ChatMessage } from '../../../src/services/llm/llm-provider.interface.js';
+import type { ChatMessage, ChatOptions, LlmProvider } from '../../../src/services/llm/llm-provider.interface.js';
 import type { ApplyMemoryAuthorDeltaInput, ApplyMemoryAuthorDeltaResult, CompleteMemoryStagingInput, StorageProvider, Filter, MessageRow, MessagesPageQuery, TurnMessageWrite, Layer2MemoryPurgeResult } from '../../../src/core/storage/storage.interface.js';
 import type { BusEvents } from '../../../src/core/bus-events.js';
 import { START_CONTEXT_HEADER } from '../../../src/services/llm/context-window.js';
@@ -32,6 +32,30 @@ import {
   UnavailableProvider,
   startAction,
 } from './router-service-test-harness.js';
+
+class MutatingScriptedProvider implements LlmProvider {
+  readonly id = 'mutating-scripted';
+  private calls = 0;
+
+  constructor(
+    private readonly replies: readonly string[],
+    private readonly beforeReply: (call: number) => void,
+  ) {}
+
+  async isAvailable(): Promise<boolean> { return true; }
+
+  async chat(
+    _messages: ChatMessage[],
+    onChunk: (text: string) => void,
+    _options?: ChatOptions,
+  ): Promise<string> {
+    this.calls += 1;
+    this.beforeReply(this.calls);
+    const reply = this.replies[this.calls - 1] ?? 'leer';
+    onChunk(reply);
+    return reply;
+  }
+}
 
 describe('RouterService (routing & commands)', () => {
   let tmpDir: string;
@@ -202,6 +226,74 @@ describe('RouterService (routing & commands)', () => {
     ]);
   });
 
+  it.each([
+    [
+      'Setze einen Timer auf 10 Minuten, anschließend öffne Spotify',
+      '[ACTION:set_timer:10m]',
+    ],
+    [
+      'Erinnere mich morgen an Tee, daraufhin sperre den Bildschirm',
+      '[ACTION:set_reminder:at=tomorrow@10:00|text=Tee]',
+    ],
+    [
+      'Pausiere die Musik sowie öffne Spotify',
+      '[ACTION:media_pause:]',
+    ],
+    [
+      'Stelle einen Timer auf 10 Minuten oder öffne Spotify',
+      '[ACTION:set_timer:10m]',
+    ],
+    [
+      'Set a timer and open Spotify',
+      '[ACTION:set_timer:10m]',
+    ],
+    [
+      'Sarah, öffne Spotify und stelle einen Timer',
+      '[ACTION:open_program:spotify]',
+    ],
+    [
+      'Kannst du Spotify öffnen und einen Timer stellen?',
+      '[ACTION:open_program:spotify]',
+    ],
+  ])('blocks every legacy partial action for a recognized plan candidate: %s', async (text, legacyOutput) => {
+    const routerP = new ScriptedProvider('ok', legacyOutput);
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage(text);
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.',
+    ]);
+  });
+
+  it.each([
+    'Kannst du mir sagen, was Rom ist?',
+    'Hey Sarah, kannst du erklären, warum der Himmel blau ist?',
+  ])('keeps one embedded question on the legacy single-intent path: %s', async (text) => {
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
+    const workerP = new ScriptedProvider('Eine normale Antwort.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage(text);
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(1);
+    expect(done).toEqual(['Eine normale Antwort.']);
+  });
+
   it('preflights all plan actions before starting any side effect', async () => {
     ctx.parsedConfig.trust.confirmationLevel = 'maximal';
     const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"Stelle einen Timer auf 10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
@@ -222,6 +314,128 @@ describe('RouterService (routing & commands)', () => {
     expect(done).toEqual([
       'Ich kann diesen kombinierten Auftrag so noch nicht sicher ausführen. Bitte teile ihn in einzelne Aufträge auf.',
     ]);
+  });
+
+  it('rejects the complete plan when worker capability changes during routing', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'minimal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"Stelle einen Timer auf 10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
+    const routerP = new MutatingScriptedProvider(['ok', proposal], (call) => {
+      if (call === 2) ctx.lifecycle.setCapability('local_worker', 'error');
+    });
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Timer auf 10 Minuten und erkläre Fahrräder');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich kann diesen kombinierten Auftrag so noch nicht sicher ausführen. Bitte teile ihn in einzelne Aufträge auf.',
+    ]);
+  });
+
+  it('rejects the complete plan when a required service stops during routing', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'minimal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"web_search","param":"Fahrräder","evidence":"Suche Fahrräder"},{"kind":"answer","evidence":"erkläre Rom"}]}';
+    const routerP = new MutatingScriptedProvider(['ok', proposal], (call) => {
+      if (call !== 2) return;
+      const search = ctx.registry.get('search');
+      if (search) search.status = 'stopped';
+    });
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Suche Fahrräder und erkläre Rom');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich kann diesen kombinierten Auftrag so noch nicht sicher ausführen. Bitte teile ihn in einzelne Aufträge auf.',
+    ]);
+  });
+
+  it('preserves inherited private context on planned action requests', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    ctx.parsedConfig.trust.confirmationLevel = 'minimal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"Stelle einen Timer auf 10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', proposal);
+    const workerP = new ScriptedProvider('Private Antwort.', 'Antwort nur über Fahrräder.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+
+    await router.handleChatMessage('/anonymous Mein Codename ist Eule');
+    const { request, actionTurn } = await startAction(
+      ctx,
+      router,
+      'Stelle einen Timer auf 10 Minuten und erkläre Fahrräder',
+    );
+    ctx.bus.emit('test', 'action:result', {
+      turnId: request.turnId,
+      requestId: request.requestId,
+      action: request.action,
+      ok: true,
+    });
+    await actionTurn;
+
+    expect(request).toMatchObject({
+      privateContext: true,
+      originMode: 'chat',
+    });
+  });
+
+  it('discards inherited-private planned searches without exposing a browser follow-up', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    ctx.parsedConfig.trust.confirmationLevel = 'minimal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"web_search","param":"Fahrräder","evidence":"Suche Fahrräder"},{"kind":"answer","evidence":"erkläre Rom"}]}';
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', proposal, '[ROUTE:9b]');
+    const workerP = new ScriptedProvider(
+      'Private Antwort.',
+      'Antwort nur über Rom.',
+      'Kein sichtbares Suchergebnis.',
+    );
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const requests: BusEvents['action:request'][] = [];
+    const discarded: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('search:discard-session', (message) => discarded.push(message.data.requestId));
+
+    await router.handleChatMessage('/anonymous Mein Codename ist Eule');
+    const { request, actionTurn } = await startAction(
+      ctx,
+      router,
+      'Suche Fahrräder und erkläre Rom',
+    );
+    ctx.bus.emit('test', 'action:result', {
+      turnId: request.turnId,
+      requestId: request.requestId,
+      action: request.action,
+      ok: true,
+    });
+    await actionTurn;
+    await router.handleChatMessage('Öffne das erste Ergebnis');
+
+    expect(request).toMatchObject({ action: 'web_search', privateContext: true });
+    expect(discarded).toContain(request.requestId);
+    expect(requests).toHaveLength(1);
+    expect(workerP.lastMessages?.at(-1)).toEqual({
+      role: 'user',
+      content: 'Öffne das erste Ergebnis',
+    });
   });
 
   it('reports a missing worker immediately and keeps deterministic router turns usable', async () => {
@@ -310,6 +524,32 @@ describe('RouterService (routing & commands)', () => {
     ]);
   });
 
+  it('does not publish orphaned partial output when a planned answer fails midstream', async () => {
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"answer","evidence":"Erkläre Fahrräder"},{"kind":"answer","evidence":"erkläre Rom"}]}';
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider('ok', proposal),
+      new FailingMidstreamProvider(),
+    );
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const chunks: BusEvents['llm:chunk'][] = [];
+    const done: BusEvents['llm:done'][] = [];
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('llm:chunk', (message) => chunks.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data));
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+
+    await router.handleChatMessage('Erkläre Fahrräder und erkläre Rom');
+
+    expect(chunks.map((chunk) => chunk.text)).not.toContain('Unvollständige Antwort');
+    expect(chunks.every((chunk) => done.some((output) => output.outputId === chunk.outputId)))
+      .toBe(true);
+    expect(terminals).toEqual([
+      expect.objectContaining({ status: 'done' }),
+    ]);
+  });
+
   it('expands a configured slash command before normal safe routing', async () => {
     ctx.parsedConfig.controls.customCommands = [
       { command: '/spotify', prompt: 'Öffne Spotify' },
@@ -331,7 +571,7 @@ describe('RouterService (routing & commands)', () => {
         decisionSource: 'router_model',
         evidenceSource: 'custom_command_expansion',
         customCommand: '/spotify',
-        validation: 'schema_only',
+        validation: 'semantic_grounding',
       },
     });
     expect(routerP.lastMessages?.at(-1)).toEqual({ role: 'user', content: 'Öffne Spotify' });

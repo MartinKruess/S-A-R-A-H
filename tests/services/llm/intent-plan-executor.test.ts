@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ActionIntent } from '../../../src/core/action-intent.js';
+import { abortError, timeoutError } from '../../../src/core/abort-utils.js';
 import {
   createIntentPlan,
   type IntentClauseReference,
@@ -180,7 +181,55 @@ describe('IntentPlanExecutor', () => {
     });
   });
 
-  it('marks the running and remaining steps canceled when aborted', async () => {
+  it('treats an adapter AbortError as a step failure when its signal was not aborted', async () => {
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [
+        answer('first', 0, 'independent', 'Erste Antwort.'),
+        answer('second', 1, 'independent', 'Zweite Antwort.'),
+      ],
+    });
+    const executeAnswer = vi.fn<IntentPlanExecutorAdapters['executeAnswer']>(async (step) => {
+      if (step.text === 'Erste Antwort.') throw abortError('Adapter stopped locally');
+      return { status: 'succeeded' };
+    });
+
+    const state = await new IntentPlanExecutor(adapters({ executeAnswer })).execute(
+      plan,
+      new AbortController().signal,
+    );
+
+    expect(executeAnswer).toHaveBeenCalledTimes(2);
+    expect(state.status).toBe('partially_completed');
+    expect(statuses(plan, state)).toMatchObject([
+      { status: 'failed', attempts: 1, failureReason: 'executor_error' },
+      { status: 'succeeded', attempts: 1 },
+    ]);
+  });
+
+  it('classifies the shared TimeoutError contract as a timeout failure', async () => {
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [
+        answer('first', 0, 'independent', 'Erste Antwort.'),
+        answer('dependent', 1, 'after_previous', 'Abhängige Antwort.'),
+      ],
+    });
+    const executeAnswer = vi.fn<IntentPlanExecutorAdapters['executeAnswer']>(async () => {
+      throw timeoutError('Adapter deadline reached');
+    });
+
+    const state = await new IntentPlanExecutor(adapters({ executeAnswer })).execute(plan);
+
+    expect(executeAnswer).toHaveBeenCalledOnce();
+    expect(state.status).toBe('failed');
+    expect(statuses(plan, state)).toMatchObject([
+      { status: 'failed', attempts: 1, failureReason: 'timeout' },
+      { status: 'skipped', attempts: 0, failureReason: 'dependency_failed' },
+    ]);
+  });
+
+  it('keeps a correlated success and cancels only unfinished steps when aborted afterwards', async () => {
     const plan = createIntentPlan({
       sourceTurnId: SOURCE_TURN_ID,
       intents: [
@@ -204,9 +253,32 @@ describe('IntentPlanExecutor', () => {
     expect(state.status).toBe('canceled');
     expect(state.cancellationReason).toBe('user_canceled');
     expect(state.steps.map((step) => [step.status, step.attempts])).toEqual([
-      ['canceled', 1],
+      ['succeeded', 1],
       ['canceled', 0],
     ]);
+  });
+
+  it('keeps a completed one-step plan successful when its adapter aborts after returning its outcome', async () => {
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [answer('answer', 0, 'independent', 'Erkläre etwas.')],
+    });
+    const controller = new AbortController();
+    const executeAnswer = vi.fn<IntentPlanExecutorAdapters['executeAnswer']>(async () => {
+      controller.abort();
+      return { status: 'succeeded' };
+    });
+
+    const state = await new IntentPlanExecutor(adapters({ executeAnswer })).execute(
+      plan,
+      controller.signal,
+      'user_canceled',
+    );
+
+    expect(executeAnswer).toHaveBeenCalledOnce();
+    expect(state.status).toBe('completed');
+    expect(state.cancellationReason).toBeUndefined();
+    expect(state.steps[0]).toMatchObject({ status: 'succeeded', attempts: 1 });
   });
 
   it('cancels without dispatching when the signal is already aborted', async () => {

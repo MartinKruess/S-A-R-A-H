@@ -91,6 +91,273 @@ function output(intents: readonly object[]): string {
 }
 
 describe('compileRouterPlanProposal', () => {
+  it.each([
+    {
+      evidence: 'übrigens',
+      proposal: { kind: 'answer', evidence: 'übrigens' },
+    },
+    {
+      evidence: 'Fahrräder',
+      proposal: { kind: 'answer', evidence: 'Fahrräder' },
+    },
+    {
+      evidence: 'Spotify',
+      proposal: { kind: 'action', action: 'open_program', param: 'spotify', evidence: 'Spotify' },
+    },
+    {
+      evidence: 'Sarah-Projekt',
+      proposal: { kind: 'handoff', specialist: 'coding', evidence: 'Sarah-Projekt' },
+    },
+  ])('rejects a first $proposal.kind intent made only from "$evidence"', ({ evidence, proposal }) => {
+    const text = `${evidence} und stelle einen Timer auf 10 Minuten`;
+    expect(compileRouterPlanProposal(output([
+      proposal,
+      {
+        kind: 'action',
+        action: 'set_timer',
+        param: '10m',
+        evidence: 'stelle einen Timer auf 10 Minuten',
+      },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'incomplete_evidence',
+    });
+  });
+
+  it.each([
+    {
+      evidence: 'Wie viele Tore hatte Deutschland?',
+      proposal: { kind: 'answer', evidence: 'Wie viele Tore hatte Deutschland?' },
+    },
+    {
+      evidence: 'Öffne Spotify',
+      proposal: { kind: 'action', action: 'open_program', param: 'spotify', evidence: 'Öffne Spotify' },
+    },
+    {
+      evidence: 'Prüfe den aktuellen Diff',
+      proposal: { kind: 'handoff', specialist: 'coding', evidence: 'Prüfe den aktuellen Diff' },
+    },
+  ])('keeps a legitimate first $proposal.kind intent starting with "$evidence"', ({ evidence, proposal }) => {
+    const text = `${evidence} und stelle einen Timer auf 10 Minuten`;
+    const result = compileRouterPlanProposal(output([
+      proposal,
+      {
+        kind: 'action',
+        action: 'set_timer',
+        param: '10m',
+        evidence: 'stelle einen Timer auf 10 Minuten',
+      },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('allows a reminder-list question as a plan action', () => {
+    const text = 'Welche Erinnerungen stehen heute an und erkläre Rom';
+    const result = compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'list_reminders',
+        param: 'today',
+        evidence: 'Welche Erinnerungen stehen heute an',
+      },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    {
+      text: 'Suche Hotels und Restaurants und erkläre Rom',
+      intents: [
+        {
+          kind: 'action',
+          action: 'web_search',
+          param: 'hotels und restaurants',
+          evidence: 'Suche Hotels und Restaurants',
+        },
+        { kind: 'answer', evidence: 'erkläre Rom' },
+      ],
+    },
+    {
+      text: 'Erkläre Angebot und Nachfrage und öffne Spotify',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Angebot und Nachfrage' },
+        {
+          kind: 'action',
+          action: 'open_program',
+          param: 'spotify',
+          evidence: 'öffne Spotify',
+        },
+      ],
+    },
+  ])('keeps noun coordination inside its clause: $text', ({ text, intents }) => {
+    expect(compileRouterPlanProposal(output(intents), envelope(text), dependencies()).ok).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'a question behind an unbounded conditional aside',
+      text: 'Erkläre Tee und wenn du heute kurz Zeit hast, warum ist der Himmel blau und erkläre Rom',
+      firstEvidence: 'Erkläre Tee und wenn du heute kurz Zeit hast, warum ist der Himmel blau',
+    },
+    {
+      name: 'a question behind a sentence boundary',
+      text: 'Erkläre Tee. Warum ist der Himmel blau und erkläre Rom',
+      firstEvidence: 'Erkläre Tee. Warum ist der Himmel blau',
+    },
+  ])('rejects $name inside the first evidence block', ({ text, firstEvidence }) => {
+    expect(compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: firstEvidence },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'incomplete_evidence',
+    });
+  });
+
+  it('rejects an answer that requires an earlier action result', () => {
+    const text = 'Suche Fahrräder und dann erkläre die Suchergebnisse';
+    expect(compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'web_search',
+        param: 'fahrräder',
+        evidence: 'Suche Fahrräder',
+      },
+      { kind: 'answer', evidence: 'erkläre die Suchergebnisse' },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'incomplete_evidence',
+    });
+  });
+
+  it('rejects every sequential answer after an action without inspecting answer words', () => {
+    const text = 'Suche Fahrräder und dann erkläre Rom';
+    expect(compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'web_search',
+        param: 'fahrräder',
+        evidence: 'Suche Fahrräder',
+      },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'incomplete_evidence',
+    });
+  });
+
+  it('rejects a web query distilled from an excluded clause term', () => {
+    const text = 'Suche Hotels ohne den Codenamen Eule und erkläre Rom';
+    expect(compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'web_search',
+        param: 'Eule',
+        evidence: 'Suche Hotels ohne den Codenamen Eule',
+      },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'insufficient_action_grounding',
+    });
+  });
+
+  it('allows an answer independent from an earlier search action', () => {
+    const text = 'Suche Fahrräder und erkläre Rom';
+    expect(compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'web_search',
+        param: 'fahrräder',
+        evidence: 'Suche Fahrräder',
+      },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies()).ok).toBe(true);
+  });
+
+  it.each([
+    ['open_program', 'spotify', 'Öffne Spotify'],
+    ['web_search', 'hotels kiel', 'Suche Hotels in Kiel'],
+    ['spotify_volume', '30', 'Stelle Spotify auf 30 Prozent'],
+    ['lock_screen', '', 'Sperre den Bildschirm'],
+  ] as const)(
+    'compiles a clause-grounded productive plan action %s=%s',
+    (action, param, actionEvidence) => {
+      const text = `${actionEvidence} und erzähl etwas über Fahrräder`;
+      const result = compileRouterPlanProposal(output([
+        { kind: 'action', action, param, evidence: actionEvidence },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ]), envelope(text), dependencies());
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const actionStep = result.plan.steps[0];
+      expect(actionStep?.kind).toBe('action');
+      if (actionStep?.kind !== 'action') return;
+      expect(actionStep.intent).toMatchObject({
+        action,
+        param,
+        provenance: { validation: 'semantic_grounding' },
+      });
+    },
+  );
+
+  it.each([
+    ['open_program', 'Discord', 'Öffne Spotify'],
+    ['web_search', 'hotels hamburg', 'Suche Hotels in Kiel'],
+    ['spotify_volume', '50', 'Stelle Spotify auf 30 Prozent'],
+    ['lock_screen', '', 'Sperre Spotify'],
+  ] as const)(
+    'rejects an invented or semantically unsupported plan action %s=%s',
+    (action, param, actionEvidence) => {
+      const text = `${actionEvidence} und erzähl etwas über Fahrräder`;
+      expect(compileRouterPlanProposal(output([
+        { kind: 'action', action, param, evidence: actionEvidence },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ]), envelope(text), dependencies())).toEqual({
+        ok: false,
+        reason: 'insufficient_action_grounding',
+      });
+    },
+  );
+
+  it.each([
+    {
+      text: 'Öffne Spotify erst morgen und erkläre Rom',
+      action: 'open_program',
+      param: 'spotify',
+      evidence: 'Öffne Spotify erst morgen',
+    },
+    {
+      text: 'Sperre den Bildschirm später und erkläre Rom',
+      action: 'lock_screen',
+      param: '',
+      evidence: 'Sperre den Bildschirm später',
+    },
+    {
+      text: 'Welche Erinnerungen stehen heute und morgen an und erkläre Rom',
+      action: 'list_reminders',
+      param: 'today',
+      evidence: 'Welche Erinnerungen stehen heute und morgen an',
+    },
+  ])('rejects an incompletely consumed simple-action clause: $text', ({
+    text,
+    action,
+    param,
+    evidence: actionEvidence,
+  }) => {
+    expect(compileRouterPlanProposal(output([
+      { kind: 'action', action, param, evidence: actionEvidence },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies())).toEqual({
+      ok: false,
+      reason: 'insufficient_action_grounding',
+    });
+  });
+
   it('creates an inert clause-bound plan for action, answer, and handoff', () => {
     const actionEvidence = 'Stelle einen Timer auf 10 Minuten';
     const text = `${actionEvidence}, erzähl mir etwas über Fahrräder und baue TTS in Sarah ein.`;
@@ -203,10 +470,10 @@ describe('compileRouterPlanProposal', () => {
     expect(result).toEqual({ ok: false, reason: 'invalid_action' });
   });
 
-  it('rejects allowlisted actions until their parameters have semantic grounding', () => {
-    const text = 'Öffne Spotify und erzähl etwas über Fahrräder';
+  it('rejects legacy-only actions without a clause-specific plan grounder', () => {
+    const text = 'Pausiere Spotify und erzähl etwas über Fahrräder';
     const result = compileRouterPlanProposal(output([
-      { kind: 'action', action: 'open_program', param: 'spotify', evidence: 'Öffne Spotify' },
+      { kind: 'action', action: 'media_pause', param: 'spotify', evidence: 'Pausiere Spotify' },
       { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
     ]), envelope(text), dependencies());
 
@@ -270,7 +537,7 @@ describe('compileRouterPlanProposal', () => {
       programRoles: [{ role: 'code_editor', programName: 'Visual Studio Code' }],
     }));
 
-    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
   });
 
   it.each([
@@ -282,6 +549,21 @@ describe('compileRouterPlanProposal', () => {
     const result = compileRouterPlanProposal(output([
       { kind: 'action', action: 'open_program', param: 'role:code_editor', evidence: actionEvidence },
       { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({
+      programRoles: [{ role: 'code_editor', programName: 'Visual Studio Code' }],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+  });
+
+  it.each([
+    'Öffne meinen Editor erst morgen',
+    'Öffne meinen Editor, wenn du Zeit hast',
+  ])('does not ground a program role with unconsumed clause semantics: %s', (actionEvidence) => {
+    const text = `${actionEvidence} und erkläre Rom`;
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'open_program', param: 'role:code_editor', evidence: actionEvidence },
+      { kind: 'answer', evidence: 'erkläre Rom' },
     ]), envelope(text), dependencies({
       programRoles: [{ role: 'code_editor', programName: 'Visual Studio Code' }],
     }));
@@ -674,10 +956,10 @@ describe('compileRouterPlanProposal', () => {
     },
     {
       name: 'unordered',
-      text: 'Öffne Spotify und erzähl etwas über Fahrräder',
+      text: 'Erkläre wie viele Tore Deutschland hatte',
       intents: [
-        { kind: 'answer', evidence: 'Öffne Spotify' },
-        { kind: 'answer', evidence: 'Spotify' },
+        { kind: 'answer', evidence: 'Erkläre wie viele Tore Deutschland hatte' },
+        { kind: 'answer', evidence: 'wie viele Tore Deutschland hatte' },
       ],
       reason: 'unordered_evidence',
     },

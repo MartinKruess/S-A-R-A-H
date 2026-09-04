@@ -54,6 +54,7 @@ import { RouterPersistenceRuntime } from './router-persistence-runtime.js';
 import { buildDecisionContext } from './decision-context-builder.js';
 import { buildDecisionCapabilitySnapshot } from './decision-capability-snapshot.js';
 import type { DecisionContext } from '../../core/decision-context.js';
+import { looksLikeBoundedMultiIntentCandidate } from './multi-intent-candidate.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -70,25 +71,6 @@ const REMEMBER_INTENT_PATTERN = /\b(?:merk(?:e)?\s+dir|erinner(?:e)?\s+dich|beha
 const EXPLICIT_REMEMBER_PATTERN = /^(?:bitte\s+)?(?:merk(?:e)?\s+dir|behalt(?:e)?\s+(?:das|dies)|speicher(?:e)?\s+(?:dir\s+)?(?:als\s+)?erinnerung)\s*[:,]?\s+([\s\S]+)$/iu;
 const MEANINGLESS_MEMORY_PATTERN = /^(?:das|dies|dieses|daran|es)$/iu;
 const RESUME_SPEECH_PATTERN = /^[^\p{L}\p{N}]*(?:(?:ich\s+)?bin\s+)?wieder da[^\p{L}\p{N}]*$/u;
-const DIRECTIVE_START_PATTERN = /^(?:bitte\s+)?(?:erkl(?:a|ä)r(?:e)?|sag(?:e)?|erz(?:a|ä)hl(?:e)?|beantworte|beschreibe|vergleiche|fass(?:e)?|nenn(?:e)?|zeig(?:e)?|such(?:e)?|find(?:e)?|pr(?:u|ü)f(?:e)?|(?:o|ö)ffne|start(?:e)?|stell(?:e)?|spiel(?:e)?|stoppe)\b/iu;
-const QUESTION_START_PATTERN = /^(?:wer|was|wann|wo|wohin|woher|warum|wieso|weshalb|wie|welche(?:r|s|n|m)?|wieviel(?:e)?)\b/iu;
-const MULTI_INTENT_CONNECTOR_PATTERN = /\b(?:und(?:\s+dann)?|danach|au(?:ss|ß)erdem|zus(?:a|ä)tzlich)\b/giu;
-
-/** Conservatively identifies coordinated request clauses that must not bypass planning. */
-function looksLikeBoundedMultiIntentCandidate(text: string): boolean {
-  const normalized = text.trim();
-  if (!DIRECTIVE_START_PATTERN.test(normalized) && !QUESTION_START_PATTERN.test(normalized)) {
-    return false;
-  }
-
-  for (const connector of normalized.matchAll(MULTI_INTENT_CONNECTOR_PATTERN)) {
-    const tail = normalized.slice((connector.index ?? 0) + connector[0].length).trimStart();
-    if (DIRECTIVE_START_PATTERN.test(tail) || QUESTION_START_PATTERN.test(tail)) {
-      return true;
-    }
-  }
-  return false;
-}
 export interface RouterServiceOptions {
   memoryPolicyWaitTimeoutMs?: number;
   actionResultTimeoutMs?: number;
@@ -176,6 +158,11 @@ export class RouterService implements SarahService {
       isIncognitoActive: () => this.incognitoActive,
       getTurnPrivateContext: (turnId) => this.turnDrafts.get(turnId)?.privateContext
         ?? this.incognitoActive,
+      getReminderPersistencePolicy: () => ({
+        allowed: this.persistenceRuntime.memoryPolicyReady
+          && this.context.parsedConfig.trust.memoryAllowed,
+        exclusions: [...this.context.parsedConfig.trust.memoryExclusions],
+      }),
       emitAssistantResponse: (...args) => this.outputFlow.emitAssistantResponse(...args),
       markBrowserSearchIntentTransient: (turnId, action) => {
         this.markBrowserSearchIntentTransient(turnId, action);
@@ -755,20 +742,21 @@ export class RouterService implements SarahService {
       return;
     }
 
+    const requiresPlan = looksLikeBoundedMultiIntentCandidate(text);
     if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
-      if (looksLikeActionCommand(text) || looksLikeBoundedMultiIntentCandidate(text)) {
+      if (looksLikeActionCommand(text) || requiresPlan) {
         // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
         // routing target isn't known yet at swap start, so use a short/neutral
         // phrase; the real action announcement follows over the normal path.
         if (mode === 'voice') {
           this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('switchingBack') });
         }
-        await this.workerFlow.routeAndRespond(envelope, signal);
+        await this.workerFlow.routeAndRespond(envelope, signal, requiresPlan);
       } else {
         await this.workerFlow.runWorkerWithFallback(envelope, signal);
       }
     } else {
-      await this.workerFlow.routeAndRespond(envelope, signal);
+      await this.workerFlow.routeAndRespond(envelope, signal, requiresPlan);
     }
   }
 

@@ -182,15 +182,19 @@ describe('RouterService (resume & lifecycle)', () => {
 
   it('heuristic gate: plain chat in 9B window goes straight to the worker', async () => {
     const routerP = new ScriptedProvider('ok', '[ROUTE:9b]');
-    const workerP = new ScriptedProvider('Erste Antwort.', 'Zweite Antwort.');
+    const workerP = new ScriptedProvider('Erste Antwort.', 'Zweite Antwort.', 'Dritte Antwort.');
     router = new RouterService(ctx, routerP, workerP);
     await router.init();
 
     await router.handleChatMessage('Erkläre mir Photosynthese');
+    const routerCallsBeforeFollowups = routerP.calls;
     await router.handleChatMessage('Und was war nochmal Chlorophyll?'); // kein Hint-Wort
+    await router.handleChatMessage('Erkläre Vor- und Nachteile von Fahrrädern.');
 
     expect(router.activeModel).toBe('9b');
+    expect(routerP.calls).toBe(routerCallsBeforeFollowups);
     expect(workerP.lastMessages!.some((m) => m.content.includes('Chlorophyll'))).toBe(true);
+    expect(workerP.lastMessages!.some((m) => m.content.includes('Vor- und Nachteile'))).toBe(true);
   });
 
   it('routes a bounded multi-intent candidate through the planner in the 9B window', async () => {
@@ -212,6 +216,105 @@ describe('RouterService (resume & lifecycle)', () => {
     expect(routerP.calls).toBe(routerCallsBeforePlan + 1);
     expect(done.slice(-2)).toEqual(['Fahrräder erklärt.', 'Rom erklärt.']);
     expect(workerP.lastMessages!.some((message) => message.content.includes('Erkläre Fahrräder und erkläre Rom'))).toBe(false);
+  });
+
+  it('routes validator-compatible hard sentence boundaries through the planner cold and warm', async () => {
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"answer","evidence":"Erkläre Fahrräder"},{"kind":"answer","evidence":"Erkläre Rom"}]}';
+    const routerP = new ScriptedProvider('ok', proposal, proposal);
+    const workerP = new ScriptedProvider(
+      'Fahrräder kalt.',
+      'Rom kalt.',
+      'Fahrräder warm.',
+      'Rom warm.',
+    );
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await ctx.lifecycle.start();
+    ctx.lifecycle.setCapability('router', 'ready');
+    ctx.lifecycle.setCapability('local_worker', 'ready');
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Erkläre Fahrräder. Erkläre Rom');
+    expect(router.activeModel).toBe('9b');
+    const callsAfterColdPlan = routerP.calls;
+
+    await router.handleChatMessage('Erkläre Fahrräder. Erkläre Rom');
+
+    expect(routerP.calls).toBe(callsAfterColdPlan + 1);
+    expect(done).toEqual([
+      'Fahrräder kalt.',
+      'Rom kalt.',
+      'Fahrräder warm.',
+      'Rom warm.',
+    ]);
+    expect(workerP.lastMessages?.at(-1)).toEqual({ role: 'user', content: 'Erkläre Rom' });
+  });
+
+  it('rejects a cold multi-intent candidate when the router returns one legacy action', async () => {
+    const routerP = new ScriptedProvider('ok', '[ACTION:set_timer:10m]');
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Timer auf 10 Minuten und öffne Spotify');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.',
+    ]);
+  });
+
+  it('rejects a warm multi-answer candidate when the router returns one legacy route', async () => {
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', '[ROUTE:9b]');
+    const workerP = new ScriptedProvider('Photosynthese erklärt.', 'darf nicht mit Gesamttext laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Erkläre Photosynthese');
+    expect(router.activeModel).toBe('9b');
+    const workerCallsBeforeMultiIntent = workerP.calls;
+    await router.handleChatMessage('Erkläre Fahrräder. Erkläre Rom');
+
+    expect(workerP.calls).toBe(workerCallsBeforeMultiIntent);
+    expect(workerP.lastMessages?.some((message) => (
+      message.content.includes('Erkläre Fahrräder. Erkläre Rom')
+    ))).toBe(false);
+    expect(done).toEqual([
+      'Photosynthese erklärt.',
+      'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.',
+    ]);
+  });
+
+  it('rejects an addressed shared-modal action pair in the warm worker window', async () => {
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', '[ACTION:open_program:spotify]');
+    const workerP = new ScriptedProvider('Photosynthese erklärt.', 'darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Erkläre Photosynthese');
+    expect(router.activeModel).toBe('9b');
+    const workerCallsBeforeMultiIntent = workerP.calls;
+
+    await router.handleChatMessage('Hey Sarah, kannst du Spotify öffnen und einen Timer stellen?');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(workerCallsBeforeMultiIntent);
+    expect(done).toEqual([
+      'Photosynthese erklärt.',
+      'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.',
+    ]);
   });
 
   it('queues two fast turns and keeps worker output and history in order', async () => {

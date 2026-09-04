@@ -212,7 +212,7 @@ describe('RouterService (browser actions)', () => {
           kind: 'visible_search_result',
           contextTurnId: searchRequest.turnId,
         },
-        validation: 'schema_only',
+        validation: 'semantic_grounding',
       },
     });
     ctx.bus.emit('test', 'action:result', {

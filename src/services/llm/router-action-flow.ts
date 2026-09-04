@@ -11,12 +11,13 @@ import type {
   ActionValidation,
 } from '../../core/action-intent.js';
 import { isValidActionIntent } from '../../core/action-intent.js';
+import { mustKeepTurnTransient, type TurnPersistencePolicy } from '../../core/memory-policy.js';
 import type { TurnEnvelope, TurnId, TurnMode } from '../../core/turn-contract.js';
 import type { ActionName } from '../actions/action-schemas.js';
 import { ACTION_SCHEMAS, isActionName } from '../actions/action-schemas.js';
 import { evaluateActionPolicy } from '../actions/action-policy.js';
 import type { MediaAction } from '../actions/media-controller.js';
-import type { ReminderClock } from '../actions/reminder-contract.js';
+import { parseSetReminderParam, type ReminderClock } from '../actions/reminder-contract.js';
 import { getActionAcknowledgement, getActionConfirmationDescription } from '../actions/action-feedback.js';
 import { groundActionRequest } from './router-action-grounding.js';
 import type { MediaContext } from './media-context.js';
@@ -35,6 +36,7 @@ interface RouterActionFlowDependencies {
   actionResultTimeoutMs: number;
   isIncognitoActive(): boolean;
   getTurnPrivateContext(turnId: TurnId): boolean;
+  getReminderPersistencePolicy(): TurnPersistencePolicy;
   emitAssistantResponse(
     turnId: TurnId,
     text: string,
@@ -60,7 +62,8 @@ export type PlannedActionPreflightFailure =
   | 'invalid_intent'
   | 'confirmation_required'
   | 'policy_denied'
-  | 'prepare_only';
+  | 'prepare_only'
+  | 'persistence_denied';
 
 export type PlannedActionPreflightResult =
   | { readonly ok: true }
@@ -68,6 +71,11 @@ export type PlannedActionPreflightResult =
 
 export interface PlannedActionExecutionResult {
   readonly ok: boolean;
+}
+
+export interface PlannedActionExecutionContext {
+  readonly privateContext: boolean;
+  readonly originMode: TurnMode;
 }
 
 function createActionProvenance(
@@ -183,66 +191,84 @@ export class RouterActionFlow {
     await this.deps.emitAssistantResponse(envelope.turnId, acknowledgement, signal);
     throwIfAborted(signal);
     const requestId = randomUUID();
-    const privateSearch = action === 'web_search'
-      && (this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous');
+    const effectivePrivateContext = confirmedPrivateContext
+      ?? (this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous');
+    const privateSearch = action === 'web_search' && effectivePrivateContext;
     if (privateSearch) this.privateSearchSessionIds.add(requestId);
     if (action === 'web_search') {
       // A new search owns the visible-result pointer. If it fails or is
       // canceled, a later "erstes Ergebnis" must not reopen stale results.
       this.visibleSearchSession = null;
     }
+    const resultHolder: { value?: BusEvents['action:result'] } = {};
     const resultPromise = new Promise<BusEvents['action:result']>((resolve) => {
-      this.pendingActions.set(requestId, { turnId: envelope.turnId, action, resolve });
+      this.pendingActions.set(requestId, {
+        turnId: envelope.turnId,
+        action,
+        resolve: (result) => {
+          resultHolder.value = result;
+          resolve(result);
+        },
+      });
     });
     this.deps.context.bus.emit(this.deps.serviceId, 'action:request', {
       turnId: envelope.turnId,
       requestId,
       ...intent,
       originMode: confirmedOriginMode ?? envelope.mode,
-      privateContext: confirmedPrivateContext
-        ?? (this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous'),
+      privateContext: effectivePrivateContext,
       ...((confirmedSourceRequestId || (action === 'show_browser' && this.visibleSearchSession))
         ? { sourceRequestId: confirmedSourceRequestId ?? this.visibleSearchSession?.requestId }
         : {}),
       ...(confirmation ? { confirmation } : {}),
     });
     try {
-      const result = await runWithTimeout(
-        () => resultPromise,
-        this.deps.actionResultTimeoutMs,
-        'Action timed out',
-        signal,
-      );
-      throwIfAborted(signal);
+      let result: BusEvents['action:result'];
+      try {
+        result = await runWithTimeout(
+          () => resultPromise,
+          this.deps.actionResultTimeoutMs,
+          'Action timed out',
+          signal,
+        );
+      } catch (error) {
+        const correlatedResult = resultHolder.value;
+        if (!correlatedResult) {
+          this.deps.context.bus.emit(this.deps.serviceId, 'action:cancel', {
+            turnId: envelope.turnId,
+            requestId,
+            reason: error instanceof Error ? error.message : 'Action canceled',
+          });
+          throw error;
+        }
+        result = correlatedResult;
+      }
       if (result.ok && action.startsWith('media_')) {
         this.deps.mediaContext.record(action as MediaAction, Date.now(), envelope.turnId);
       }
-      if (action === 'web_search' && result.ok) {
+      if (action === 'web_search' && result.ok && !signal.aborted) {
         if (privateSearch && !this.deps.isIncognitoActive()) {
           this.visibleSearchSession = null;
         } else {
           this.visibleSearchSession = { requestId, ownerTurnId: envelope.turnId };
         }
       }
-      if (result.speak) {
+      if (result.speak && !signal.aborted) {
         const reminderStoreData = action === 'list_reminders' || action === 'cancel_reminder';
-        await this.deps.emitAssistantResponse(
-          envelope.turnId,
-          result.speak,
-          signal,
-          true,
-          action === 'web_search' || action === 'show_browser',
-          action === 'open_program' || reminderStoreData,
-        );
+        try {
+          await this.deps.emitAssistantResponse(
+            envelope.turnId,
+            result.speak,
+            signal,
+            true,
+            action === 'web_search' || action === 'show_browser',
+            action === 'open_program' || reminderStoreData,
+          );
+        } catch (error) {
+          if (!signal.aborted) throw error;
+        }
       }
       return result.ok;
-    } catch (error) {
-      this.deps.context.bus.emit(this.deps.serviceId, 'action:cancel', {
-        turnId: envelope.turnId,
-        requestId,
-        reason: error instanceof Error ? error.message : 'Action canceled',
-      });
-      throw error;
     } finally {
       this.pendingActions.delete(requestId);
       if (privateSearch && !this.deps.isIncognitoActive()) {
@@ -264,7 +290,10 @@ export class RouterActionFlow {
    *
    * @category Validation Authorization
    */
-  preflightPlannedAction(intent: ActionIntent): PlannedActionPreflightResult {
+  preflightPlannedAction(
+    intent: ActionIntent,
+    executionContext?: PlannedActionExecutionContext,
+  ): PlannedActionPreflightResult {
     const actionService = this.deps.context.registry.get('actions');
     if (!actionService || actionService.status !== 'running') {
       return { ok: false, reason: 'action_service_unavailable' };
@@ -279,6 +308,16 @@ export class RouterActionFlow {
     const parsed = ACTION_SCHEMAS[intent.action].safeParse(intent.param);
     if (!parsed.success || String(parsed.data) !== intent.param) {
       return { ok: false, reason: 'invalid_intent' };
+    }
+    if (intent.action === 'set_reminder') {
+      const reminder = parseSetReminderParam(intent.param);
+      const privateContext = executionContext?.privateContext
+        ?? this.deps.getTurnPrivateContext(intent.provenance.sourceTurnId);
+      if (
+        !reminder
+        || privateContext
+        || mustKeepTurnTransient([reminder.text], this.deps.getReminderPersistencePolicy())
+      ) return { ok: false, reason: 'persistence_denied' };
     }
     const trust = this.deps.context.parsedConfig.trust;
     const policy = evaluateActionPolicy(intent.action, {
@@ -298,8 +337,9 @@ export class RouterActionFlow {
     envelope: TurnEnvelope,
     intent: ActionIntent,
     signal: AbortSignal,
+    executionContext?: PlannedActionExecutionContext,
   ): Promise<PlannedActionExecutionResult> {
-    const preflight = this.preflightPlannedAction(intent);
+    const preflight = this.preflightPlannedAction(intent, executionContext);
     if (!preflight.ok || !isValidActionIntent(intent)) {
       const message = preflight.ok
         ? 'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.'
@@ -309,9 +349,11 @@ export class RouterActionFlow {
             ? 'Diese Aktion benötigt zuerst eine einzelne Bestätigung.'
             : preflight.reason === 'policy_denied'
               ? 'Diese Aktion ist durch deine Berechtigungen gesperrt.'
-              : preflight.reason === 'prepare_only'
-                ? 'Ich kann diese Aktion nur vorbereiten, aber nicht verbindlich ausführen.'
-                : 'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.';
+            : preflight.reason === 'prepare_only'
+              ? 'Ich kann diese Aktion nur vorbereiten, aber nicht verbindlich ausführen.'
+              : preflight.reason === 'persistence_denied'
+                ? 'Diese Erinnerung kann ich aus Datenschutzgründen nicht dauerhaft speichern.'
+              : 'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.';
       await this.deps.emitAssistantResponse(envelope.turnId, message, signal);
       return { ok: false };
     }
@@ -329,6 +371,10 @@ export class RouterActionFlow {
         intent,
         getActionAcknowledgement(intent.action, intent.param),
         signal,
+        undefined,
+        undefined,
+        executionContext?.privateContext,
+        executionContext?.originMode,
       ),
     };
   }

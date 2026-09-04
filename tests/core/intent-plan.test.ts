@@ -213,7 +213,7 @@ describe('IntentPlan core contract', () => {
     })).toThrow(/source turn/u);
   });
 
-  it('requires open-program plans to carry their exact local parameter resolution', () => {
+  it('accepts an exact named program without pretending it came from a configured role', () => {
     const provenance = actionIntent().provenance;
     const unresolvedIntent: ActionIntent = {
       action: 'open_program',
@@ -227,10 +227,16 @@ describe('IntentPlan core contract', () => {
       },
     };
 
-    expect(() => createIntentPlan({
+    const plan = createIntentPlan({
       sourceTurnId: SOURCE_TURN_ID,
       intents: [{ kind: 'action', order: 'independent', intent: unresolvedIntent }],
-    })).toThrow(/source turn/u);
+    });
+
+    const action = plan.steps[0];
+    expect(action?.kind).toBe('action');
+    if (action?.kind !== 'action') return;
+    expect(action.intent.param).toBe('spotify');
+    expect(action.intent.provenance.parameterResolution).toBeUndefined();
   });
 
   it('rejects a non-canonical or schema-invalid action parameter', () => {

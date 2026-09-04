@@ -15,6 +15,7 @@ import { RouterActionFlow } from '../../../src/services/llm/router-action-flow.j
 
 const TURN_ID = '11111111-1111-4111-8111-111111111111';
 const TIMER_TEXT = 'Stelle einen Timer auf 10 Minuten';
+const SEARCH_TEXT = 'Suche Fahrräder';
 
 class StubActionService implements SarahService {
   readonly id = 'actions';
@@ -51,10 +52,32 @@ function timerIntent(overrides: Partial<ActionIntent['provenance']> = {}): Actio
   };
 }
 
+function webSearchIntent(): ActionIntent {
+  const baseIntent = timerIntent();
+  return {
+    ...baseIntent,
+    action: 'web_search',
+    param: 'Fahrräder',
+    provenance: {
+      ...baseIntent.provenance,
+      evidenceScope: {
+        kind: 'clause',
+        intentId: 'search-intent',
+        ordinal: 0,
+        startOffset: 0,
+        endOffset: SEARCH_TEXT.length,
+      },
+    },
+  };
+}
+
 function setup(options: {
   actionStatus?: ServiceStatus;
   confirmationLevel?: 'minimal' | 'standard' | 'maximal';
   webAccessAllowed?: boolean;
+  memoryAllowed?: boolean;
+  memoryExclusions?: readonly string[];
+  incognitoActive?: boolean;
 } = {}) {
   const bus = new MessageBus();
   const registry = new ServiceRegistry(bus);
@@ -80,8 +103,12 @@ function setup(options: {
     mediaContext: new MediaContext(),
     reminderClock: createSystemReminderClock(),
     actionResultTimeoutMs: 1_000,
-    isIncognitoActive: () => false,
+    isIncognitoActive: () => options.incognitoActive ?? false,
     getTurnPrivateContext: () => false,
+    getReminderPersistencePolicy: () => ({
+      allowed: options.memoryAllowed ?? true,
+      exclusions: options.memoryExclusions ?? [],
+    }),
     emitAssistantResponse,
     markBrowserSearchIntentTransient: vi.fn(),
   });
@@ -139,6 +166,32 @@ describe('RouterActionFlow planned actions', () => {
     });
   });
 
+  it('rejects reminders that the live persistence policy cannot store', () => {
+    const reminderIntent: ActionIntent = {
+      ...timerIntent(),
+      action: 'set_reminder',
+      param: 'after=30m|text=Arzt anrufen',
+    };
+
+    expect(setup({ actionStatus: 'running', memoryAllowed: false })
+      .flow.preflightPlannedAction(reminderIntent)).toEqual({
+      ok: false,
+      reason: 'persistence_denied',
+    });
+    expect(setup({ actionStatus: 'running', memoryExclusions: ['health'] })
+      .flow.preflightPlannedAction(reminderIntent)).toEqual({
+      ok: false,
+      reason: 'persistence_denied',
+    });
+    expect(setup({ actionStatus: 'running' }).flow.preflightPlannedAction(
+      reminderIntent,
+      { privateContext: true, originMode: 'chat' },
+    )).toEqual({
+      ok: false,
+      reason: 'persistence_denied',
+    });
+  });
+
   it('dispatches the unchanged intent and returns its correlated success', async () => {
     const { bus, emitAssistantResponse, envelope, flow } = setup({ actionStatus: 'running' });
     const intent = timerIntent();
@@ -154,12 +207,19 @@ describe('RouterActionFlow planned actions', () => {
       });
     });
 
-    await expect(flow.executePlannedAction(envelope, intent, new AbortController().signal))
+    await expect(flow.executePlannedAction(
+      envelope,
+      intent,
+      new AbortController().signal,
+      { privateContext: true, originMode: 'voice' },
+    ))
       .resolves.toEqual({ ok: true });
     expect(request).toMatchObject({
       turnId: TURN_ID,
       action: 'set_timer',
       param: '10m',
+      privateContext: true,
+      originMode: 'voice',
     });
     expect(request?.provenance).toBe(intent.provenance);
     expect(emitAssistantResponse.mock.calls.map(([, text]) => text)).toEqual([
@@ -185,6 +245,68 @@ describe('RouterActionFlow planned actions', () => {
     expect(emitAssistantResponse.mock.calls.at(-1)?.[1])
       .toBe('Der Timer konnte nicht gestartet werden.');
   });
+
+  it('keeps a correlated action success when the turn aborts at result delivery', async () => {
+    const { bus, envelope, flow } = setup({ actionStatus: 'running' });
+    const controller = new AbortController();
+    const cancellations: BusEvents['action:cancel'][] = [];
+    bus.on('action:cancel', (message) => cancellations.push(message.data));
+    bus.on('action:request', (message) => {
+      bus.emit('actions', 'action:result', {
+        turnId: message.data.turnId,
+        requestId: message.data.requestId,
+        action: message.data.action,
+        ok: true,
+        speak: 'Der Timer läuft.',
+      });
+      controller.abort();
+    });
+
+    await expect(flow.executePlannedAction(envelope, timerIntent(), controller.signal))
+      .resolves.toEqual({ ok: true });
+    expect(cancellations).toEqual([]);
+  });
+
+  it.each([
+    { privacy: 'public', privateContext: false, incognitoActive: false },
+    { privacy: 'private', privateContext: true, incognitoActive: true },
+  ])(
+    'does not revive $privacy search follow-up state after synchronous result correlation and turn abort',
+    async ({ privateContext, incognitoActive }) => {
+      const { bus, flow } = setup({ actionStatus: 'running', incognitoActive });
+      const controller = new AbortController();
+      const cancellations: BusEvents['action:cancel'][] = [];
+      bus.on('action:cancel', (message) => cancellations.push(message.data));
+      bus.on('action:request', (message) => {
+        bus.emit('actions', 'action:result', {
+          turnId: message.data.turnId,
+          requestId: message.data.requestId,
+          action: message.data.action,
+          ok: true,
+          speak: 'Die Suche ist fertig.',
+        });
+        flow.clearVisibleSearchForTurn(TURN_ID);
+        controller.abort();
+      });
+      const envelope = prepareTurnEnvelope({
+        turnId: TURN_ID,
+        source: 'chat',
+        mode: 'chat',
+        originalText: SEARCH_TEXT,
+        createdAt: '2026-09-04T10:00:00.000Z',
+      }, []);
+
+      await expect(flow.executePlannedAction(
+        envelope,
+        webSearchIntent(),
+        controller.signal,
+        { privateContext, originMode: 'chat' },
+      )).resolves.toEqual({ ok: true });
+      expect(flow.hasVisibleSearchSession).toBe(false);
+      expect(flow.visibleSearchContextTurnId).toBeNull();
+      expect(cancellations).toEqual([]);
+    },
+  );
 
   it('rechecks live policy before dispatch and rejects a changed source turn', async () => {
     const { bus, context, emitAssistantResponse, envelope, flow } = setup({
