@@ -17,7 +17,11 @@ import {
   type ValidatedExplicitIntent,
 } from '../../core/intent-plan.js';
 import type { TurnEnvelope } from '../../core/turn-contract.js';
-import { isActionName, type ActionName } from '../actions/action-schemas.js';
+import {
+  ACTION_HINT_STEMS,
+  isActionName,
+  type ActionName,
+} from '../actions/action-schemas.js';
 import type { ReminderClock } from '../actions/reminder-contract.js';
 import { groundActionRequest } from './router-action-grounding.js';
 import {
@@ -82,6 +86,33 @@ const SEQUENTIAL_CONNECTOR_WORDS: ReadonlySet<string> = new Set([
   'afterwards',
 ]);
 
+const ALTERNATIVE_CONNECTOR_PATTERN = /\b(?:oder|or)\b/u;
+const SEQUENTIAL_CONNECTOR_PATTERN = /\b(?:dann|danach|anschliessend|daraufhin|then|afterwards)\b/gu;
+const COORDINATING_CONNECTOR_PATTERN = /\b(?:und|sowie|and|also)\b/gu;
+const OPTIONAL_INTENT_PREAMBLE = '(?:\\p{L}+\\s*[,;:]?\\s+){0,3}';
+const ANSWER_INTENT_START_PATTERN = new RegExp(
+  `^${OPTIONAL_INTENT_PREAMBLE}(?:erzahl(?:e|st)?|erklar(?:e|st)?|sag(?:e|st)?|finde(?:st)?|beantworte(?:st)?|diskutiere(?:st)?|was|wie|wann|warum|wer|wo|welch)\\b`,
+  'u',
+);
+const HANDOFF_INTENT_START_PATTERN = new RegExp(
+  `^${OPTIONAL_INTENT_PREAMBLE}(?:bau(?:e|st)?|implementiere(?:st)?|pruf(?:e|st)?|ander(?:e|st)?|repariere(?:st)?|schreib(?:e|st)?|analysiere(?:st)?|recherchiere(?:st)?)\\b`,
+  'u',
+);
+const ACTION_INTENT_START_PATTERN = new RegExp(
+  `^${OPTIONAL_INTENT_PREAMBLE}(?:offne(?:n|st)?|starte(?:n|st)?|launche(?:n|st)?|suche(?:n|st)?|google(?:st)?|zeige(?:n|st)?|stell(?:e|st)?|setz(?:e|t)?|mach(?:e|st)?|erinner(?:e|st)?|losch(?:e|st)?|entfern(?:e|st)?|brich|stopp(?:e|st)?|pausier(?:e|st)?|spiel(?:e|st)?|sperr(?:e|st)?|erhoh(?:e|st)?|senk(?:e|st)?|reduziere(?:st)?|dreh(?:e|st)?)\\b`,
+  'u',
+);
+const ACTION_SIGNAL_PATTERN = new RegExp(
+  `(?:^|[\\s,.!?])(?:${ACTION_HINT_STEMS.map((stem) => normalizedSemanticText(stem)).join('|')})`,
+  'u',
+);
+const QUESTION_INTENT_START_PATTERN = new RegExp(
+  `^${OPTIONAL_INTENT_PREAMBLE}(?:was|wie|wann|warum|wer|wo|welch)\\b`,
+  'u',
+);
+const CLAUSE_BOUNDARY_PUNCTUATION = /[,;:.!?&]/u;
+const TIMER_DURATION_CONTINUATION = /^(?:(?:\d+|ein(?:e|en)?|zwei|drei|vier|funf|sechs|sieben|acht|neun|zehn|elf|zwolf)\s+)?(?:sekunden?|minuten?|stunden?)\b/u;
+
 function connectorWords(text: string): readonly string[] {
   return text
     .replace(/[\s,;:.!?&()[\]{}'"„“‚‘\-–—]+/gu, ' ')
@@ -97,6 +128,77 @@ function connectorOrder(text: string): ValidatedExplicitIntent['order'] | null {
   return words.some((word) => SEQUENTIAL_CONNECTOR_WORDS.has(word))
     ? 'after_previous'
     : 'independent';
+}
+
+function normalizedSemanticText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .replace(/ß/gu, 'ss')
+    .toLocaleLowerCase('de-DE');
+}
+
+function hasClauseBoundary(
+  effectiveText: string,
+  previousEndOffset: number,
+  connector: string,
+  nextEvidenceText: string,
+  nextProposal: RouterIntentProposal,
+): boolean {
+  const previousCharacter = effectiveText[previousEndOffset - 1] ?? '';
+  const hasSeparator = CLAUSE_BOUNDARY_PUNCTUATION.test(connector)
+    || CLAUSE_BOUNDARY_PUNCTUATION.test(previousCharacter)
+    || connectorWords(connector).length > 0;
+  if (!hasSeparator) return false;
+  const normalizedNextEvidence = normalizedSemanticText(nextEvidenceText);
+  return startsProposedIntent(normalizedNextEvidence, nextProposal);
+}
+
+function startsProposedIntent(value: string, proposal: RouterIntentProposal): boolean {
+  const wordCount = connectorWords(value).length;
+  if (proposal.kind === 'answer') {
+    return ANSWER_INTENT_START_PATTERN.test(value)
+      && (wordCount >= 2 || QUESTION_INTENT_START_PATTERN.test(value));
+  }
+  if (proposal.kind === 'handoff') {
+    return wordCount >= 2 && HANDOFF_INTENT_START_PATTERN.test(value);
+  }
+  return ACTION_INTENT_START_PATTERN.test(value) || ACTION_SIGNAL_PATTERN.test(value);
+}
+
+function startsEmbeddedIntent(value: string): boolean {
+  return ANSWER_INTENT_START_PATTERN.test(value)
+    || HANDOFF_INTENT_START_PATTERN.test(value)
+    || ACTION_INTENT_START_PATTERN.test(value)
+    || ACTION_SIGNAL_PATTERN.test(value);
+}
+
+function containsEmbeddedIntent(
+  proposal: RouterIntentProposal,
+  evidenceText: string,
+): boolean {
+  const normalized = normalizedSemanticText(evidenceText);
+  if (ALTERNATIVE_CONNECTOR_PATTERN.test(normalized)) return true;
+
+  for (const connector of normalized.matchAll(SEQUENTIAL_CONNECTOR_PATTERN)) {
+    if (connector.index === undefined) continue;
+    const remaining = normalized.slice(connector.index + connector[0].length).trimStart();
+    if (startsEmbeddedIntent(remaining)) return true;
+  }
+
+  for (const connector of normalized.matchAll(COORDINATING_CONNECTOR_PATTERN)) {
+    if (connector.index === undefined) continue;
+    const remaining = normalized.slice(connector.index + connector[0].length).trimStart();
+    if (proposal.kind === 'action' && proposal.action !== 'set_reminder') {
+      if (proposal.action === 'set_timer' && TIMER_DURATION_CONTINUATION.test(remaining)) {
+        continue;
+      }
+      return true;
+    }
+    if (startsEmbeddedIntent(remaining)) return true;
+    if (connectorWords(remaining).length >= 2) return true;
+  }
+  return false;
 }
 
 function intentOrdinal(index: number): 0 | 1 | 2 {
@@ -358,7 +460,19 @@ export function validateRouterPlanProposal(
     const connector = effectiveText.slice(previousEndOffset, resolution.evidence.startOffset);
     const order = connectorOrder(connector);
     if (order === null) return { ok: false, reason: 'incomplete_evidence' };
+    if (index > 0 && !hasClauseBoundary(
+      effectiveText,
+      previousEndOffset,
+      connector,
+      resolution.text,
+      proposedIntent,
+    )) {
+      return { ok: false, reason: 'incomplete_evidence' };
+    }
     if (index === 0 && order === 'after_previous') {
+      return { ok: false, reason: 'incomplete_evidence' };
+    }
+    if (containsEmbeddedIntent(proposedIntent, resolution.text)) {
       return { ok: false, reason: 'incomplete_evidence' };
     }
     previousEndOffset = resolution.evidence.endOffset;

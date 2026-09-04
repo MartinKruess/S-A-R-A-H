@@ -89,12 +89,31 @@ const CAPABILITY_REASONS: ReadonlySet<DecisionCapabilityReason> = new Set([
   'no_adapter',
 ]);
 
+const DECISION_URL_LITERAL = /(?:\b[a-z][a-z\d+.-]*:\/\/|\bwww\.|(?:^|[\s("'`])(?:[a-z\d-]+\.)+[a-z]{2,}(?=$|[\s:\/?#"'`]))/iu;
+const DECISION_NETWORK_LITERAL = /(?:\b(?:[a-z][a-z\d-]*|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5}\b|\b(?:\d{1,3}\.){3}\d{1,3}\b|\[[a-f\d:]+\](?::\d{1,5})?|(?:^|[\s("'`])(?:[a-f\d]{0,4}:){2,}[a-f\d]{0,4}(?=$|[\s)"'`]))/iu;
+const DECISION_PATH_LITERAL = /(?:^|[\s("'`])(?:[a-z]:[\\/]|\\\\|[~.]?[\\/]|(?:[^\s"'`\\/]+[\\/])+)[^\s"'`]*/iu;
+
 function boundedText(value: string, label: string, maxLength: number): string {
   const normalized = value.normalize('NFC').trim();
   if (!normalized || normalized.length > maxLength) {
     throw new Error(`${label} must contain between 1 and ${maxLength} characters`);
   }
   return normalized;
+}
+
+/** Returns whether a semantic planner label contains no URL or filesystem location. */
+export function isSafeDecisionLabel(value: string): boolean {
+  return !DECISION_URL_LITERAL.test(value)
+    && !DECISION_NETWORK_LITERAL.test(value)
+    && !DECISION_PATH_LITERAL.test(value);
+}
+
+function boundedDecisionLabel(value: string, label: string, maxLength: number): string {
+  const bounded = boundedText(value, label, maxLength);
+  if (!isSafeDecisionLabel(bounded)) {
+    throw new Error(`${label} must not contain a URL or filesystem path`);
+  }
+  return bounded;
 }
 
 function copyCapability(capability: DecisionCapability): DecisionCapability {
@@ -205,7 +224,7 @@ export function createDecisionContext(input: DecisionContext): DecisionContext {
     seenRoles.add(binding.role);
     return Object.freeze({
       role: binding.role,
-      programName: boundedText(
+      programName: boundedDecisionLabel(
         binding.programName,
         'Decision program name',
         MAX_DECISION_PROGRAM_NAME_LENGTH,
@@ -215,14 +234,18 @@ export function createDecisionContext(input: DecisionContext): DecisionContext {
 
   const seenSourceIds = new Set<string>();
   const preferredSourceHints = input.preferredSourceHints.map((hint) => {
-    const id = boundedText(hint.id, 'Decision source id', MAX_DECISION_SOURCE_ID_LENGTH);
+    const id = boundedDecisionLabel(
+      hint.id,
+      'Decision source id',
+      MAX_DECISION_SOURCE_ID_LENGTH,
+    );
     if (seenSourceIds.has(id)) {
       throw new Error('Decision context contains a duplicate preferred source id');
     }
     seenSourceIds.add(id);
     return Object.freeze({
       id,
-      description: boundedText(
+      description: boundedDecisionLabel(
         hint.description,
         'Decision source description',
         MAX_DECISION_SOURCE_DESCRIPTION_LENGTH,

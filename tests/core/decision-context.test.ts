@@ -141,6 +141,68 @@ describe('DecisionContext core contract', () => {
   });
 
   it.each([
+    decisionContext({
+      programRoles: [{ role: 'browser', programName: 'Browser C:\\secret\\browser.exe' }],
+    }),
+    decisionContext({
+      programRoles: [{ role: 'code_editor', programName: 'Editor ..\\secret\\Code.exe' }],
+    }),
+    decisionContext({
+      programRoles: [{ role: 'code_editor', programName: 'Editor \\\\private\\Code.exe' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'https://secret.example', description: 'Dokumentation' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'booking.example/private' }],
+    }),
+    decisionContext({
+      programRoles: [{ role: 'code_editor', programName: 'Editor ~/secret/file' }],
+    }),
+    decisionContext({
+      programRoles: [{ role: 'code_editor', programName: 'Editor docs/private/file' }],
+    }),
+    decisionContext({
+      programRoles: [{ role: 'code_editor', programName: 'Editor \\secret\\file' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'localhost:3000/private' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: '127.0.0.1:3000/private' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'localhost:3000' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: '127.0.0.1:3000' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'booking.example:443' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: '[::1]:3000' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'intranet:3000' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'devbox:8080' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: 'fe80::1' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: '2001:db8::1' }],
+    }),
+    decisionContext({
+      preferredSourceHints: [{ id: 'booking', description: '::1' }],
+    }),
+  ])('rejects URL and path literals at the core contract boundary %#', (input) => {
+    expect(() => createDecisionContext(input)).toThrow(/URL or filesystem path/u);
+  });
+
+  it.each([
     {
       state: 'available' as DecisionCapabilityState,
       reason: 'model_unavailable' as DecisionCapabilityReason,

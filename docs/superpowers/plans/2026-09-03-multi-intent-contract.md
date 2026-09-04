@@ -105,8 +105,8 @@ Rules:
 
 - The complete output is `SARAH_PROPOSAL_V1 ` followed by the JSON object, with no prose or Markdown fences.
 - `intents.length` is 2..3.
-- Unknown keys, empty evidence, overlapping or unordered evidence, uncovered meaningful text, and overlong text fail closed.
-- Alternative connectors such as `oder`/`or` fail closed until a separate choice contract exists.
+- Unknown keys, empty evidence, overlapping or unordered evidence, artificial evidence splits without a clause boundary, embedded additional intents, uncovered meaningful text, and overlong text fail closed.
+- Alternative connectors such as `oder`/`or` fail closed everywhere in the proposal evidence until a separate choice contract exists.
 - The router cannot supply IDs, dependencies, priorities, confirmation fields, policies, or provider names.
 - An answer or handoff task is the exact evidence clause; the contract does not accept a second, invented prompt or goal field.
 - Proposal parsing never logs raw output or evidence.
