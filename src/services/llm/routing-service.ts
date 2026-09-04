@@ -4,16 +4,29 @@ import { parseRouteTag, type ParsedRoute } from './route-parser.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
 import { runWithTimeout } from '../../core/abort-utils.js';
 import { buildContextWindow } from './context-window.js';
+import type { DecisionContext } from '../../core/decision-context.js';
+import {
+  parseRouterPlanProposal,
+  ROUTER_PROPOSAL_PREFIX,
+} from './router-proposal-contract.js';
 
-export const ROUTER_NUM_PREDICT = 64;
+// A 4,096-character proposal normally fits comfortably while keeping the
+// small router's generation budget bounded. Legacy tags stop far earlier.
+export const ROUTER_NUM_PREDICT = 1_024;
 export const ROUTER_NUM_CTX = 16_384;
 export const ROUTER_DEADLINE_MS = 15_000;
 
-export interface RoutingResult {
+interface RoutingResultBase {
   parsed: ParsedRoute;
   tookMs: number;
   hadTag: boolean;
 }
+
+export type RoutingResult = RoutingResultBase & (
+  | { readonly outputKind: 'legacy'; readonly proposalOutput?: undefined }
+  | { readonly outputKind: 'proposal'; readonly proposalOutput: string }
+  | { readonly outputKind: 'invalid_proposal'; readonly proposalOutput?: undefined }
+);
 
 export class RoutingService {
   constructor(
@@ -21,9 +34,25 @@ export class RoutingService {
     private now: () => Date = () => new Date(),
   ) {}
 
-  async route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
+  async route(text: string, signal?: AbortSignal): Promise<RoutingResult>;
+  async route(
+    text: string,
+    decisionContext: DecisionContext,
+    signal?: AbortSignal,
+  ): Promise<RoutingResult>;
+  async route(
+    text: string,
+    contextOrSignal?: DecisionContext | AbortSignal,
+    callerSignal?: AbortSignal,
+  ): Promise<RoutingResult> {
+    const decisionContext = contextOrSignal instanceof AbortSignal
+      ? undefined
+      : contextOrSignal;
+    const signal = contextOrSignal instanceof AbortSignal
+      ? contextOrSignal
+      : callerSignal;
     const messages: ChatMessage[] = buildContextWindow({
-      systemPrompt: buildRoutingPrompt(this.now()),
+      systemPrompt: buildRoutingPrompt(this.now(), decisionContext),
       startContext: [],
       history: [{ role: 'user', content: text }],
       numCtx: ROUTER_NUM_CTX,
@@ -44,11 +73,34 @@ export class RoutingService {
     const tookMs = Math.round(performance.now() - start);
     const parsed = parseRouteTag(response);
     const hadTag = /^\s*\[(?:ROUTE:\w+|ACTION:[a-z_]+(?::[^\]]*)?)]\s*$/.test(response);
+    const normalizedOutput = response.normalize('NFC').trim();
+    const proposalCandidate = normalizedOutput.startsWith(ROUTER_PROPOSAL_PREFIX.trimEnd());
+    const proposal = proposalCandidate ? parseRouterPlanProposal(response) : null;
     // Never log raw model output or action parameters: both may contain private
     // user text, including during one-shot or multi-turn incognito requests.
-    const decision = parsed.kind === 'action' ? `ACTION ${parsed.action}` : `ROUTE ${parsed.route}`;
+    const decision = proposal?.ok
+      ? 'PROPOSAL'
+      : proposalCandidate
+        ? 'INVALID_PROPOSAL'
+        : parsed.kind === 'action'
+          ? `ACTION ${parsed.action}`
+          : `ROUTE ${parsed.route}`;
     console.log(`[Router] ${decision} (hadTag=${hadTag})`);
-    return { parsed, tookMs, hadTag };
+    if (proposal?.ok) {
+      return {
+        parsed,
+        tookMs,
+        hadTag,
+        outputKind: 'proposal',
+        proposalOutput: normalizedOutput,
+      };
+    }
+    return {
+      parsed,
+      tookMs,
+      hadTag,
+      outputKind: proposalCandidate ? 'invalid_proposal' : 'legacy',
+    };
   }
 
   async warmup(signal?: AbortSignal): Promise<void> {

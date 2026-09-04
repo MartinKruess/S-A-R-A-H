@@ -603,6 +603,16 @@ describe('compileRouterPlanProposal', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('accepts separate answer clauses divided by a coordinating connector', () => {
+    const text = 'Erkläre Fahrräder und erkläre Rom';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: 'Erkläre Fahrräder' },
+      { kind: 'answer', evidence: 'erkläre Rom' },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
+  });
+
   it('keeps compound reminder text inside one action clause', () => {
     const text = 'Erinnere mich in 20 Minuten an Tee und Milch und erzähl etwas über Fahrräder';
     const result = compileRouterPlanProposal(output([

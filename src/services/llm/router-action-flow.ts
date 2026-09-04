@@ -10,9 +10,10 @@ import type {
   ActionProvenance,
   ActionValidation,
 } from '../../core/action-intent.js';
+import { isValidActionIntent } from '../../core/action-intent.js';
 import type { TurnEnvelope, TurnId, TurnMode } from '../../core/turn-contract.js';
 import type { ActionName } from '../actions/action-schemas.js';
-import { isActionName } from '../actions/action-schemas.js';
+import { ACTION_SCHEMAS, isActionName } from '../actions/action-schemas.js';
 import { evaluateActionPolicy } from '../actions/action-policy.js';
 import type { MediaAction } from '../actions/media-controller.js';
 import type { ReminderClock } from '../actions/reminder-contract.js';
@@ -52,6 +53,21 @@ interface ActionDispatchOptions {
     contextTurnId: TurnId;
   };
   reminderCancelFollowupId?: number;
+}
+
+export type PlannedActionPreflightFailure =
+  | 'action_service_unavailable'
+  | 'invalid_intent'
+  | 'confirmation_required'
+  | 'policy_denied'
+  | 'prepare_only';
+
+export type PlannedActionPreflightResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: PlannedActionPreflightFailure };
+
+export interface PlannedActionExecutionResult {
+  readonly ok: boolean;
 }
 
 function createActionProvenance(
@@ -152,7 +168,7 @@ export class RouterActionFlow {
     confirmedSourceRequestId?: string,
     confirmedPrivateContext?: boolean,
     confirmedOriginMode?: TurnMode,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { action, param } = intent;
     const actionService = this.deps.context.registry.get('actions');
     if (!actionService || actionService.status !== 'running') {
@@ -161,7 +177,7 @@ export class RouterActionFlow {
         'Aktionen sind gerade nicht verfügbar. Bitte versuche es gleich noch einmal.',
         signal,
       );
-      return;
+      return false;
     }
     this.deps.markBrowserSearchIntentTransient(envelope.turnId, action);
     await this.deps.emitAssistantResponse(envelope.turnId, acknowledgement, signal);
@@ -219,6 +235,7 @@ export class RouterActionFlow {
           action === 'open_program' || reminderStoreData,
         );
       }
+      return result.ok;
     } catch (error) {
       this.deps.context.bus.emit(this.deps.serviceId, 'action:cancel', {
         turnId: envelope.turnId,
@@ -234,6 +251,86 @@ export class RouterActionFlow {
         if (this.visibleSearchSession?.requestId === requestId) this.visibleSearchSession = null;
       }
     }
+  }
+
+  /**
+   * Checks whether an immutable, clause-grounded plan action can start now.
+   *
+   * - Reads current ActionService and trust-policy state without emitting output.
+   * - Accepts only immediately allowed actions; confirmation and preparation are explicit failures.
+   * - Does not replace the authoritative ActionService validation at execution time.
+   *
+   * @returns Side-effect-free current preflight decision.
+   *
+   * @category Validation Authorization
+   */
+  preflightPlannedAction(intent: ActionIntent): PlannedActionPreflightResult {
+    const actionService = this.deps.context.registry.get('actions');
+    if (!actionService || actionService.status !== 'running') {
+      return { ok: false, reason: 'action_service_unavailable' };
+    }
+    if (
+      !isValidActionIntent(intent)
+      || intent.provenance.validation !== 'semantic_grounding'
+      || intent.provenance.evidenceScope.kind !== 'clause'
+    ) {
+      return { ok: false, reason: 'invalid_intent' };
+    }
+    const parsed = ACTION_SCHEMAS[intent.action].safeParse(intent.param);
+    if (!parsed.success || String(parsed.data) !== intent.param) {
+      return { ok: false, reason: 'invalid_intent' };
+    }
+    const trust = this.deps.context.parsedConfig.trust;
+    const policy = evaluateActionPolicy(intent.action, {
+      confirmationLevel: trust.confirmationLevel,
+      fileAccess: trust.fileAccess,
+      webAccessAllowed: trust.webAccessAllowed,
+      param: intent.param,
+    });
+    if (policy.effect === 'allow') return { ok: true };
+    if (policy.effect === 'confirm') return { ok: false, reason: 'confirmation_required' };
+    if (policy.effect === 'prepare_only') return { ok: false, reason: 'prepare_only' };
+    return { ok: false, reason: 'policy_denied' };
+  }
+
+  /** Executes one pre-grounded plan action through the existing correlated action path. */
+  async executePlannedAction(
+    envelope: TurnEnvelope,
+    intent: ActionIntent,
+    signal: AbortSignal,
+  ): Promise<PlannedActionExecutionResult> {
+    const preflight = this.preflightPlannedAction(intent);
+    if (!preflight.ok || !isValidActionIntent(intent)) {
+      const message = preflight.ok
+        ? 'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.'
+        : preflight.reason === 'action_service_unavailable'
+          ? 'Aktionen sind gerade nicht verfügbar. Bitte versuche es gleich noch einmal.'
+          : preflight.reason === 'confirmation_required'
+            ? 'Diese Aktion benötigt zuerst eine einzelne Bestätigung.'
+            : preflight.reason === 'policy_denied'
+              ? 'Diese Aktion ist durch deine Berechtigungen gesperrt.'
+              : preflight.reason === 'prepare_only'
+                ? 'Ich kann diese Aktion nur vorbereiten, aber nicht verbindlich ausführen.'
+                : 'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.';
+      await this.deps.emitAssistantResponse(envelope.turnId, message, signal);
+      return { ok: false };
+    }
+    if (intent.provenance.sourceTurnId !== envelope.turnId) {
+      await this.deps.emitAssistantResponse(
+        envelope.turnId,
+        'Diese Planaktion ist nicht eindeutig dem aktuellen Auftrag zugeordnet.',
+        signal,
+      );
+      return { ok: false };
+    }
+    return {
+      ok: await this.dispatchAction(
+        envelope,
+        intent,
+        getActionAcknowledgement(intent.action, intent.param),
+        signal,
+      ),
+    };
   }
 
   async dispatchOrRequestConfirmation(

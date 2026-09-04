@@ -102,6 +102,23 @@ describe('RouterService (routing & commands)', () => {
     return request;
   }
 
+  async function enableProductivePlanCapabilities(): Promise<void> {
+    const readyService = (id: string, acceptingWork?: boolean): SarahService & { acceptingWork?: boolean } => ({
+      id,
+      subscriptions: [],
+      status: 'running',
+      ...(acceptingWork === undefined ? {} : { acceptingWork }),
+      async init(): Promise<void> { this.status = 'running'; },
+      async destroy(): Promise<void> { this.status = 'stopped'; },
+      onMessage(): void {},
+    });
+    ctx.registry.register(readyService('search', true));
+    ctx.registry.register(readyService('reminders'));
+    await ctx.lifecycle.start();
+    ctx.lifecycle.setCapability('router', 'ready');
+    ctx.lifecycle.setCapability('local_worker', 'ready');
+  }
+
   it('never exposes trailing router prose and safely falls back to the worker', async () => {
     const routerP = new ScriptedProvider(
       'ok',
@@ -121,6 +138,90 @@ describe('RouterService (routing & commands)', () => {
     expect(requests).toHaveLength(0);
     expect(done).toEqual(['Antwort vom Worker.']);
     expect(done.join(' ')).not.toContain('vielleicht');
+  });
+
+  it('compiles and executes a bounded action plus clause-only answer in one turn', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'minimal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"Stelle einen Timer auf 10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
+    const routerP = new ScriptedProvider('ok', proposal);
+    const workerP = new ScriptedProvider('Antwort nur über Fahrräder.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const terminals: BusEvents['turn:terminal'][] = [];
+    ctx.bus.on('turn:terminal', (message) => terminals.push(message.data));
+
+    const { request, actionTurn } = await startAction(
+      ctx,
+      router,
+      'Stelle einen Timer auf 10 Minuten und erkläre Fahrräder',
+    );
+    ctx.bus.emit('test', 'action:result', {
+      turnId: request.turnId,
+      requestId: request.requestId,
+      action: request.action,
+      ok: true,
+    });
+    await actionTurn;
+
+    expect(request).toMatchObject({
+      action: 'set_timer',
+      param: '10m',
+      provenance: {
+        validation: 'semantic_grounding',
+        evidenceScope: { kind: 'clause', ordinal: 0 },
+      },
+    });
+    expect(workerP.lastMessages?.at(-1)).toEqual({
+      role: 'user',
+      content: 'erkläre Fahrräder',
+    });
+    expect(terminals).toEqual([
+      expect.objectContaining({ turnId: request.turnId, status: 'done' }),
+    ]);
+  });
+
+  it('rejects a compiler failure without executing any proposal fragment', async () => {
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
+    const routerP = new ScriptedProvider('ok', proposal);
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Timer auf 10 Minuten und erkläre Fahrräder');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.',
+    ]);
+  });
+
+  it('preflights all plan actions before starting any side effect', async () => {
+    ctx.parsedConfig.trust.confirmationLevel = 'maximal';
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"action","action":"set_timer","param":"10m","evidence":"Stelle einen Timer auf 10 Minuten"},{"kind":"answer","evidence":"erkläre Fahrräder"}]}';
+    const routerP = new ScriptedProvider('ok', proposal);
+    const workerP = new ScriptedProvider('darf nicht laufen');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await enableProductivePlanCapabilities();
+    const requests: BusEvents['action:request'][] = [];
+    const done: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Stelle einen Timer auf 10 Minuten und erkläre Fahrräder');
+
+    expect(requests).toEqual([]);
+    expect(workerP.calls).toBe(0);
+    expect(done).toEqual([
+      'Ich kann diesen kombinierten Auftrag so noch nicht sicher ausführen. Bitte teile ihn in einzelne Aufträge auf.',
+    ]);
   });
 
   it('reports a missing worker immediately and keeps deterministic router turns usable', async () => {

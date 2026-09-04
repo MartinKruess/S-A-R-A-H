@@ -2,6 +2,8 @@ import { randomUUID } from 'crypto';
 import type { AppContext } from '../../core/bootstrap.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 import type { TurnEnvelope, TurnId } from '../../core/turn-contract.js';
+import type { DecisionContext } from '../../core/decision-context.js';
+import type { ActionPlanStep, IntentPlan } from '../../core/intent-plan.js';
 import { throwIfAborted } from '../../core/abort-utils.js';
 import { isActionName } from '../actions/action-schemas.js';
 import { getFeedback } from './filler-phrases.js';
@@ -11,6 +13,11 @@ import type { ModelRuntimePort } from './model-runtime.js';
 import type { RouterActionFlow } from './router-action-flow.js';
 import { buildRouterContext, type RouterHistoryEntry } from './router-context-builder.js';
 import type { RouterTurnDraft } from './router-turn-persistence.js';
+import type { ReminderClock } from '../actions/reminder-contract.js';
+import { compileRouterPlanProposal } from './router-plan-validator.js';
+import {
+  IntentPlanExecutor,
+} from './intent-plan-executor.js';
 import {
   isActiveReminderListShortcut,
   reminderCancelFromMisroutedSet,
@@ -32,7 +39,13 @@ interface RouterWorkerFlowOptions {
   emitAssistantResponse: (turnId: TurnId, text: string, signal: AbortSignal) => Promise<void>;
   recordAssistantOutput: (turnId: TurnId, text: string) => void;
   isWorkerUnavailable: () => boolean;
+  buildDecisionContext: (envelope: TurnEnvelope) => DecisionContext | null;
+  reminderClock: ReminderClock;
 }
+
+const PLAN_REJECTED_MESSAGE = 'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.';
+const PLAN_PREFLIGHT_MESSAGE = 'Ich kann diesen kombinierten Auftrag so noch nicht sicher ausführen. Bitte teile ihn in einzelne Aufträge auf.';
+const PLAN_INCOMPLETE_MESSAGE = 'Ich konnte den kombinierten Auftrag nicht vollständig ausführen.';
 
 /** Owns router-model dispatch, worker streaming and model-transition feedback. */
 export class RouterWorkerFlow {
@@ -51,9 +64,33 @@ export class RouterWorkerFlow {
       );
       return;
     }
-    const result = await modelRuntime.route(text, signal);
+    const decisionContext = this.options.buildDecisionContext(envelope);
+    const result = decisionContext
+      ? await modelRuntime.route(text, decisionContext, signal)
+      : await modelRuntime.route(text, signal);
     if (!this.options.isTurnOperational(turnId, signal)) return;
     context.bus.emit(serviceId, 'perf:timing', { turnId, label: 'router', ms: result.tookMs });
+
+    if (result.outputKind === 'invalid_proposal') {
+      await this.options.emitAssistantResponse(turnId, PLAN_REJECTED_MESSAGE, signal);
+      return;
+    }
+    if (result.outputKind === 'proposal') {
+      if (!decisionContext) {
+        await this.options.emitAssistantResponse(turnId, PLAN_REJECTED_MESSAGE, signal);
+        return;
+      }
+      const compiled = compileRouterPlanProposal(result.proposalOutput, envelope, {
+        decisionContext,
+        reminderClock: this.options.reminderClock,
+      });
+      if (!compiled.ok) {
+        await this.options.emitAssistantResponse(turnId, PLAN_REJECTED_MESSAGE, signal);
+        return;
+      }
+      await this.executePlan(envelope, compiled.plan, signal);
+      return;
+    }
 
     if (!result.hadTag) {
       console.warn('[Router] No route tag in 2B response, falling back to self');
@@ -109,9 +146,17 @@ export class RouterWorkerFlow {
   }
 
   async runWorkerWithFallback(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
+    await this.runWorkerTextWithFallback(envelope, envelope.effectiveText, signal);
+  }
+
+  private async runWorkerTextWithFallback(
+    envelope: TurnEnvelope,
+    currentUser: string,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     let outputStarted = false;
     try {
-      await this.runWorker(envelope, signal, () => {
+      await this.runWorker(envelope, currentUser, signal, () => {
         outputStarted = true;
         const draft = this.options.drafts.get(envelope.turnId);
         if (draft) draft.workerOutputStarted = true;
@@ -120,11 +165,14 @@ export class RouterWorkerFlow {
       throwIfAborted(signal);
       if (outputStarted || !this.options.isWorkerUnavailable()) throw error;
       await this.options.emitAssistantResponse(envelope.turnId, WORKER_UNAVAILABLE_MESSAGE, signal);
+      return false;
     }
+    return true;
   }
 
   private async runWorker(
     envelope: TurnEnvelope,
+    currentUser: string,
     signal: AbortSignal,
     onOutputStarted?: () => void,
   ): Promise<void> {
@@ -136,7 +184,7 @@ export class RouterWorkerFlow {
     const { messages, numPredict } = buildRouterContext({
       systemPrompt,
       responseStyle,
-      currentUser: envelope.effectiveText,
+      currentUser,
       memoryAllowed: context.parsedConfig.trust.memoryAllowed,
       numCtx: context.parsedConfig.llm.workerOptions.num_ctx,
       history: this.options.getHistory(),
@@ -184,5 +232,62 @@ export class RouterWorkerFlow {
         fullText: protectedFullText,
       });
     });
+  }
+
+  private async executePlan(
+    envelope: TurnEnvelope,
+    plan: IntentPlan,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const actionSteps = plan.steps.filter(
+      (step): step is ActionPlanStep => step.kind === 'action',
+    );
+    for (const step of actionSteps) {
+      const preflight = this.options.actionFlow.preflightPlannedAction(step.intent);
+      if (!preflight.ok || step.intent.provenance.sourceTurnId !== envelope.turnId) {
+        await this.options.emitAssistantResponse(
+          envelope.turnId,
+          PLAN_PREFLIGHT_MESSAGE,
+          signal,
+        );
+        return;
+      }
+    }
+
+    const executor = new IntentPlanExecutor({
+      executeAction: async (step, _context, stepSignal) => {
+        const result = await this.options.actionFlow.executePlannedAction(
+          envelope,
+          step.intent,
+          stepSignal ?? signal,
+        );
+        return result.ok
+          ? { status: 'succeeded' }
+          : { status: 'failed', reason: 'action_failed' };
+      },
+      executeAnswer: async (step, _context, stepSignal) => {
+        const succeeded = await this.runWorkerTextWithFallback(
+          envelope,
+          step.text,
+          stepSignal ?? signal,
+        );
+        return succeeded
+          ? { status: 'succeeded' }
+          : { status: 'failed', reason: 'answer_failed' };
+      },
+      requestHandoffConfirmation: async () => ({
+        status: 'failed',
+        reason: 'confirmation_failed',
+      }),
+      executeSpecialistHandoff: async () => ({
+        status: 'failed',
+        reason: 'handoff_failed',
+      }),
+    });
+    const state = await executor.execute(plan, signal);
+    throwIfAborted(signal);
+    if (state.status !== 'completed') {
+      await this.options.emitAssistantResponse(envelope.turnId, PLAN_INCOMPLETE_MESSAGE, signal);
+    }
   }
 }

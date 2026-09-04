@@ -13,6 +13,7 @@ import { WorkerService, type WorkerResult } from './worker-service.js';
 import { linkAbortSignals, runWithTimeout, throwIfAborted } from '../../core/abort-utils.js';
 import { chatWithTimeout } from './chat-with-timeout.js';
 import { traceBootPerformance } from '../../core/boot-performance-trace.js';
+import type { DecisionContext } from '../../core/decision-context.js';
 
 export type ModelRole = 'router' | 'local_worker';
 export type ModelAvailability = 'checking' | 'available' | 'unavailable' | 'error';
@@ -40,6 +41,7 @@ export interface ModelRuntimePort extends WorkerTextGenerator {
   readonly snapshot: ModelRuntimeSnapshot;
   init(signal?: AbortSignal): Promise<ModelRuntimeSnapshot>;
   route(text: string, signal?: AbortSignal): Promise<RoutingResult>;
+  route(text: string, decisionContext: DecisionContext, signal?: AbortSignal): Promise<RoutingResult>;
   streamWorker(
     messages: ChatMessage[],
     responseStyle: string,
@@ -324,8 +326,27 @@ export class ModelRuntime implements ModelRuntimePort {
     }
   }
 
-  route(text: string, signal?: AbortSignal): Promise<RoutingResult> {
-    return this.runWithRole('router', (operationSignal) => this.routing.route(text, operationSignal), false, signal);
+  route(text: string, signal?: AbortSignal): Promise<RoutingResult>;
+  route(text: string, decisionContext: DecisionContext, signal?: AbortSignal): Promise<RoutingResult>;
+  route(
+    text: string,
+    contextOrSignal?: DecisionContext | AbortSignal,
+    callerSignal?: AbortSignal,
+  ): Promise<RoutingResult> {
+    const decisionContext = contextOrSignal instanceof AbortSignal
+      ? undefined
+      : contextOrSignal;
+    const signal = contextOrSignal instanceof AbortSignal
+      ? contextOrSignal
+      : callerSignal;
+    return this.runWithRole(
+      'router',
+      (operationSignal) => decisionContext
+        ? this.routing.route(text, decisionContext, operationSignal)
+        : this.routing.route(text, operationSignal),
+      false,
+      signal,
+    );
   }
 
   streamWorker(

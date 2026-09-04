@@ -193,6 +193,27 @@ describe('RouterService (resume & lifecycle)', () => {
     expect(workerP.lastMessages!.some((m) => m.content.includes('Chlorophyll'))).toBe(true);
   });
 
+  it('routes a bounded multi-intent candidate through the planner in the 9B window', async () => {
+    const proposal = 'SARAH_PROPOSAL_V1 {"intents":[{"kind":"answer","evidence":"Erkläre Fahrräder"},{"kind":"answer","evidence":"erkläre Rom"}]}';
+    const routerP = new ScriptedProvider('ok', '[ROUTE:9b]', proposal);
+    const workerP = new ScriptedProvider('Erste Antwort.', 'Fahrräder erklärt.', 'Rom erklärt.');
+    router = new RouterService(ctx, routerP, workerP);
+    await router.init();
+    await ctx.lifecycle.start();
+    ctx.lifecycle.setCapability('router', 'ready');
+    ctx.lifecycle.setCapability('local_worker', 'ready');
+    const done: string[] = [];
+    ctx.bus.on('llm:done', (message) => done.push(message.data.fullText));
+
+    await router.handleChatMessage('Erkläre mir Photosynthese');
+    const routerCallsBeforePlan = routerP.calls;
+    await router.handleChatMessage('Erkläre Fahrräder und erkläre Rom');
+
+    expect(routerP.calls).toBe(routerCallsBeforePlan + 1);
+    expect(done.slice(-2)).toEqual(['Fahrräder erklärt.', 'Rom erklärt.']);
+    expect(workerP.lastMessages!.some((message) => message.content.includes('Erkläre Fahrräder und erkläre Rom'))).toBe(false);
+  });
+
   it('queues two fast turns and keeps worker output and history in order', async () => {
     const worker = new BlockingProvider();
     router = new RouterService(ctx, new ScriptedProvider('ok'), worker);
