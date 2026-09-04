@@ -36,6 +36,11 @@ function actionIntent(
       validation: 'semantic_grounding',
       evidenceScope: { kind: 'clause', ...clause },
       evidenceSource: 'user_text',
+      parameterResolution: {
+        kind: 'program_role',
+        role: 'music_player',
+        programName: 'spotify',
+      },
     },
   };
 }
@@ -75,6 +80,7 @@ describe('IntentPlan core contract', () => {
     expect(plan.revision).toBe(1);
     expect(plan.sourceTurnId).toBe(SOURCE_TURN_ID);
     expect(plan.privateContext).toBe(false);
+    expect(plan.originMode).toBe('chat');
     expect(plan.fingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(plan.steps.map((step) => step.kind)).toEqual([
       'action',
@@ -184,6 +190,69 @@ describe('IntentPlan core contract', () => {
     })).toThrow(/source turn/u);
   });
 
+  it.each([
+    {
+      ...actionIntent(),
+      action: 'delete_everything',
+    },
+    {
+      ...actionIntent(),
+      provenance: { ...actionIntent().provenance, decisionSource: 'forged' },
+    },
+    {
+      ...actionIntent(),
+      provenance: {
+        ...actionIntent().provenance,
+        interactionContext: { kind: 'forged', contextTurnId: 'context-turn' },
+      },
+    },
+  ] as ActionIntent[])('rejects a forged runtime action intent: %#', (forgedIntent) => {
+    expect(() => createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{ kind: 'action', order: 'independent', intent: forgedIntent }],
+    })).toThrow(/source turn/u);
+  });
+
+  it('requires open-program plans to carry their exact local parameter resolution', () => {
+    const provenance = actionIntent().provenance;
+    const unresolvedIntent: ActionIntent = {
+      action: 'open_program',
+      param: 'spotify',
+      provenance: {
+        sourceTurnId: provenance.sourceTurnId,
+        decisionSource: provenance.decisionSource,
+        validation: provenance.validation,
+        evidenceScope: provenance.evidenceScope,
+        evidenceSource: 'user_text',
+      },
+    };
+
+    expect(() => createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{ kind: 'action', order: 'independent', intent: unresolvedIntent }],
+    })).toThrow(/source turn/u);
+  });
+
+  it('rejects a non-canonical or schema-invalid action parameter', () => {
+    const base = actionIntent().provenance;
+    const invalidParamIntent: ActionIntent = {
+      action: 'set_volume',
+      param: '999',
+      provenance: {
+        sourceTurnId: base.sourceTurnId,
+        decisionSource: base.decisionSource,
+        validation: base.validation,
+        evidenceScope: base.evidenceScope,
+        evidenceSource: 'user_text',
+      },
+    };
+
+    expect(() => createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{ kind: 'action', order: 'independent', intent: invalidParamIntent }],
+    })).toThrow(/source turn/u);
+  });
+
   it('freezes program-role resolution and requires it to match the final parameter', () => {
     const resolvedIntent: ActionIntent = {
       ...actionIntent(),
@@ -271,6 +340,7 @@ describe('IntentPlan core contract', () => {
     expect(validateIntentPlan({ ...plan })).toBe(false);
     expect(validateIntentPlan(Object.freeze({ ...plan, revision: 3 }))).toBe(false);
     expect(validateIntentPlan(Object.freeze({ ...plan, privateContext: true }))).toBe(false);
+    expect(validateIntentPlan(Object.freeze({ ...plan, originMode: 'voice' }))).toBe(false);
     expect(validateIntentPlan(Object.freeze({ ...plan, fingerprint: '0'.repeat(64) }))).toBe(false);
     expect(() => createIntentPlan({
       sourceTurnId: SOURCE_TURN_ID,

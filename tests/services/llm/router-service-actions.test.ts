@@ -170,6 +170,45 @@ describe('RouterService (actions & confirmation)', () => {
     expect(requests).toHaveLength(1);
   });
 
+  it('keeps one-shot anonymous privacy bound across a later public confirmation turn', async () => {
+    ctx.parsedConfig.trust.anonymousEnabled = true;
+    ctx.parsedConfig.trust.confirmationLevel = 'maximal';
+    router = new RouterService(
+      ctx,
+      new ScriptedProvider(
+        'ok',
+        '[ACTION:set_reminder:after=10m|text=Geheimnis]',
+      ),
+      new ScriptedProvider(),
+    );
+    await router.init();
+    const requests: BusEvents['action:request'][] = [];
+    const outputs: string[] = [];
+    ctx.bus.on('action:request', (message) => requests.push(message.data));
+    ctx.bus.on('llm:done', (message) => outputs.push(message.data.fullText));
+
+    await router.handleChatMessage('/anonymous Erinnere mich in 10 Minuten an Geheimnis');
+
+    expect(requests).toEqual([]);
+    const confirmationId = outputs[0]?.match(/\/confirm ([0-9a-f-]{36})/)?.[1];
+    if (!confirmationId) throw new Error('expected confirmation id');
+
+    const confirmationTurn = router.handleChatMessage(`/confirm ${confirmationId}`);
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({
+      action: 'set_reminder',
+      privateContext: true,
+    });
+    expect(requests[0]?.param).toMatch(/^at=date:\d{4}-\d{2}-\d{2}@\d{2}:\d{2}\|text=Geheimnis$/u);
+    ctx.bus.emit('test', 'action:result', {
+      turnId: requests[0].turnId,
+      requestId: requests[0].requestId,
+      action: requests[0].action,
+      ok: false,
+    });
+    await confirmationTurn;
+  });
+
   it('fails quickly and honestly before emit when the registered ActionService is unavailable', async () => {
     const routerP = new ScriptedProvider('ok', '[ACTION:open_program:spotify]');
     router = new RouterService(ctx, routerP, new ScriptedProvider());
@@ -238,9 +277,10 @@ describe('RouterService (actions & confirmation)', () => {
 
     const confirmationTurn = router.handleChatMessage(
       'Ja, ich bestätige das.',
-      'voice',
+      'chat',
     );
     await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]?.originMode).toBe('voice');
     ctx.bus.emit('test', 'action:result', {
       turnId: requests[0].turnId,
       requestId: requests[0].requestId,

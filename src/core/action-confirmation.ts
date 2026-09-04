@@ -1,6 +1,10 @@
 import { randomUUID } from 'crypto';
-import type { ActionIntent, ActionProvenance } from './action-intent.js';
-import type { TurnId } from './turn-contract.js';
+import {
+  isValidActionIntent,
+  type ActionIntent,
+  type ActionProvenance,
+} from './action-intent.js';
+import type { TurnId, TurnMode } from './turn-contract.js';
 
 export type ConfirmationLevel = 'minimal' | 'standard' | 'maximal';
 
@@ -13,12 +17,16 @@ export interface ConfirmedAction {
   confirmation: ActionConfirmationReference;
   confirmationTurnId: TurnId;
   intent: ActionIntent;
+  privateContext: boolean;
+  originMode: TurnMode;
   sourceRequestId?: string;
 }
 
 interface PendingAction {
   requestedTurnId: TurnId;
   intent: ActionIntent;
+  privateContext: boolean;
+  originMode: TurnMode;
   sourceRequestId?: string;
   expiresAt: number;
 }
@@ -173,7 +181,8 @@ export function isSpokenActionConfirmationPhrase(value: string): boolean {
 
 /**
  * Verwaltet kurzlebige, einmalig nutzbare Zustimmungen zwischen Router und ActionService.
- * Eine Zustimmung ist an Vorschlags-Turn, Bestätigungs-Turn, Action und Parameter gebunden.
+ * Eine Zustimmung ist an Vorschlags-Turn, Bestätigungs-Turn, Action, Parameter und
+ * den ursprünglichen privaten Turn-Kontext sowie Eingabemodus gebunden.
  *
  * @category Authorization Service
  */
@@ -191,13 +200,20 @@ export class ActionConfirmationGate {
   request(
     requestedTurnId: TurnId,
     intent: ActionIntent,
+    privateContext: boolean,
     sourceRequestId?: string,
+    originMode: TurnMode = 'chat',
   ): string | null {
     this.removeExpired();
-    if (intent.provenance.sourceTurnId !== requestedTurnId) return null;
+    if (!isValidActionIntent(intent)
+      || intent.provenance.sourceTurnId !== requestedTurnId
+      || typeof privateContext !== 'boolean'
+      || (originMode !== 'chat' && originMode !== 'voice')) return null;
     for (const [id, pending] of this.pending) {
       if (
         matchesIntent(pending.intent, intent)
+        && pending.privateContext === privateContext
+        && pending.originMode === originMode
         && pending.sourceRequestId === sourceRequestId
       ) {
         if (pending.requestedTurnId !== requestedTurnId) {
@@ -213,6 +229,8 @@ export class ActionConfirmationGate {
     this.pending.set(confirmationId, {
       requestedTurnId,
       intent: copyIntent(intent),
+      privateContext,
+      originMode,
       ...(sourceRequestId ? { sourceRequestId } : {}),
       expiresAt: this.now() + this.ttlMs,
     });
@@ -232,6 +250,8 @@ export class ActionConfirmationGate {
       },
       confirmationTurnId,
       intent: copyIntent(pending.intent),
+      privateContext: pending.privateContext,
+      originMode: pending.originMode,
       ...(pending.sourceRequestId ? { sourceRequestId: pending.sourceRequestId } : {}),
     };
     this.approvals.set(confirmationId, {
@@ -269,7 +289,9 @@ export class ActionConfirmationGate {
     confirmationTurnId: TurnId,
     intent: ActionIntent,
     reference: ActionConfirmationReference | undefined,
+    privateContext: boolean,
     sourceRequestId?: string,
+    originMode: TurnMode = 'chat',
   ): boolean {
     this.removeExpired();
     if (!reference) return false;
@@ -279,6 +301,8 @@ export class ActionConfirmationGate {
       || approval.confirmationTurnId !== confirmationTurnId
       || approval.confirmation.requestedTurnId !== reference.requestedTurnId
       || !matchesIntent(approval.intent, intent)
+      || approval.privateContext !== privateContext
+      || approval.originMode !== originMode
       || approval.sourceRequestId !== sourceRequestId
     ) return false;
     this.approvals.delete(reference.confirmationId);
@@ -299,6 +323,8 @@ export class ActionConfirmationGate {
     this.pending.set(id, {
       requestedTurnId: confirmed.confirmation.requestedTurnId,
       intent: copyIntent(confirmed.intent),
+      privateContext: confirmed.privateContext,
+      originMode: confirmed.originMode,
       ...(confirmed.sourceRequestId ? { sourceRequestId: confirmed.sourceRequestId } : {}),
       expiresAt: this.now() + this.ttlMs,
     });
@@ -356,6 +382,8 @@ export class ActionConfirmationGate {
       && left.confirmation.requestedTurnId === right.confirmation.requestedTurnId
       && left.confirmationTurnId === right.confirmationTurnId
       && matchesIntent(left.intent, right.intent)
+      && left.privateContext === right.privateContext
+      && left.originMode === right.originMode
       && left.sourceRequestId === right.sourceRequestId;
   }
 }

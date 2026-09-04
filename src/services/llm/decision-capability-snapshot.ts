@@ -17,6 +17,7 @@ export interface BuildDecisionCapabilitySnapshotInput {
   readonly lifecycle: RuntimeSnapshot;
   readonly modelRuntime: ModelRuntimeSnapshot;
   readonly serviceReadiness: DecisionServiceReadiness;
+  readonly searchAcceptingWork: boolean;
   readonly webAccessAllowed: boolean;
   readonly hasVisibleBrowserResult: boolean;
 }
@@ -60,13 +61,15 @@ export function buildDecisionCapabilitySnapshot(
 ): DecisionCapabilitySnapshot {
   const lifecycleReady = lifecycleAcceptsWork(input.lifecycle);
   const modelRuntimeReady = modelRuntimeAcceptsWork(input.modelRuntime);
-  const router = !lifecycleReady
+  const routerLifecycleReady = input.lifecycle.capabilities.router?.state === 'ready';
+  const workerLifecycleReady = input.lifecycle.capabilities.local_worker?.state === 'ready';
+  const router = !lifecycleReady || !routerLifecycleReady
     ? capability('unavailable', 'lifecycle_unavailable')
     : modelRuntimeReady
       && input.modelRuntime.roles.router.availability === 'available'
       ? capability('available', 'ready')
       : capability('unavailable', 'model_unavailable');
-  const localAnswer = !lifecycleReady
+  const localAnswer = !lifecycleReady || !workerLifecycleReady
     ? capability('unavailable', 'lifecycle_unavailable')
     : modelRuntimeReady
       && input.modelRuntime.roles.local_worker.availability === 'available'
@@ -87,7 +90,7 @@ export function buildDecisionCapabilitySnapshot(
     input.lifecycle,
     'search',
     input.serviceReadiness.search,
-  );
+  ) && input.searchAcceptingWork;
   const webSearch = !lifecycleReady
     ? capability('unavailable', 'lifecycle_unavailable')
     : !input.webAccessAllowed

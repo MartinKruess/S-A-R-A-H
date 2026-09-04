@@ -36,7 +36,7 @@ import {
   ActionConfirmationGate,
   type ConfirmationLevel,
 } from '../../core/action-confirmation.js';
-import type { ActionIntent } from '../../core/action-intent.js';
+import { isValidActionIntent, type ActionIntent } from '../../core/action-intent.js';
 
 /** Structural view of SearchService (Task 9) — keeps this task testable standalone. */
 export interface SearchLike {
@@ -366,6 +366,10 @@ export class ActionService implements SarahService {
     signal: AbortSignal,
   ): Promise<ActionExecutionResult> {
     throwIfAborted(signal);
+    if (!isValidActionIntent(intent)) {
+      console.warn('[Actions] invalid action intent refused');
+      return { ok: false, speak: 'Das kann ich noch nicht.' };
+    }
     const { action, param } = intent;
     const expectedSourceTurnId = confirmation?.requestedTurnId ?? turnId;
     if (intent.provenance.sourceTurnId !== expectedSourceTurnId) {
@@ -400,7 +404,14 @@ export class ActionService implements SarahService {
     }
     if (
       policy.effect === 'confirm'
-      && !this.confirmationGate.consume(turnId, intent, confirmation, sourceRequestId)
+      && !this.confirmationGate.consume(
+        turnId,
+        intent,
+        confirmation,
+        privateContext,
+        sourceRequestId,
+        originMode,
+      )
     ) {
       console.warn('[Actions] unconfirmed action refused', { action });
       return { ok: false, speak: 'Diese Aktion wurde nicht bestätigt.' };

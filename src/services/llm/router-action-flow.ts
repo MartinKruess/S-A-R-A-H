@@ -10,7 +10,7 @@ import type {
   ActionProvenance,
   ActionValidation,
 } from '../../core/action-intent.js';
-import type { TurnEnvelope, TurnId } from '../../core/turn-contract.js';
+import type { TurnEnvelope, TurnId, TurnMode } from '../../core/turn-contract.js';
 import type { ActionName } from '../actions/action-schemas.js';
 import { isActionName } from '../actions/action-schemas.js';
 import { evaluateActionPolicy } from '../actions/action-policy.js';
@@ -33,6 +33,7 @@ interface RouterActionFlowDependencies {
   reminderClock: ReminderClock;
   actionResultTimeoutMs: number;
   isIncognitoActive(): boolean;
+  getTurnPrivateContext(turnId: TurnId): boolean;
   emitAssistantResponse(
     turnId: TurnId,
     text: string,
@@ -149,6 +150,8 @@ export class RouterActionFlow {
     signal: AbortSignal,
     confirmation?: ActionConfirmationReference,
     confirmedSourceRequestId?: string,
+    confirmedPrivateContext?: boolean,
+    confirmedOriginMode?: TurnMode,
   ): Promise<void> {
     const { action, param } = intent;
     const actionService = this.deps.context.registry.get('actions');
@@ -179,8 +182,9 @@ export class RouterActionFlow {
       turnId: envelope.turnId,
       requestId,
       ...intent,
-      originMode: envelope.mode,
-      privateContext: this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous',
+      originMode: confirmedOriginMode ?? envelope.mode,
+      privateContext: confirmedPrivateContext
+        ?? (this.deps.isIncognitoActive() || envelope.command.kind === 'anonymous'),
       ...((confirmedSourceRequestId || (action === 'show_browser' && this.visibleSearchSession))
         ? { sourceRequestId: confirmedSourceRequestId ?? this.visibleSearchSession?.requestId }
         : {}),
@@ -290,7 +294,9 @@ export class RouterActionFlow {
       const confirmationId = this.deps.context.actionConfirmations.request(
         envelope.turnId,
         intent,
+        this.deps.getTurnPrivateContext(envelope.turnId),
         sourceRequestId,
+        envelope.mode,
       );
       if (!confirmationId) {
         await this.deps.emitAssistantResponse(
@@ -481,6 +487,8 @@ export class RouterActionFlow {
       signal,
       confirmed.confirmation,
       confirmed.sourceRequestId,
+      confirmed.privateContext,
+      confirmed.originMode,
     );
   }
 

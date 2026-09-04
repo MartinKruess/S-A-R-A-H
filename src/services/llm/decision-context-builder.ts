@@ -4,6 +4,7 @@ import {
   MAX_DECISION_SOURCE_HINTS,
   MAX_DECISION_SOURCE_ID_LENGTH,
   createDecisionContext,
+  isSafeDecisionLabel,
   type DecisionCapabilitySnapshot,
   type DecisionContext,
   type DecisionProgramRole,
@@ -35,6 +36,20 @@ function boundedValue(value: string, maxLength: number): string | null {
   return normalized.length > 0 && normalized.length <= maxLength ? normalized : null;
 }
 
+/**
+ * Rejects planner labels that contain executable location details.
+ *
+ * - Keeps human-readable names and descriptions intact.
+ * - Fails closed for URL, Windows/UNC, and absolute or relative Unix path literals.
+ *
+ * @category Validation
+ */
+function boundedPlannerLabel(value: string, maxLength: number): string | null {
+  const bounded = boundedValue(value, maxLength);
+  if (!bounded) return null;
+  return isSafeDecisionLabel(bounded) ? bounded : null;
+}
+
 function sourceTokens(value: string): readonly string[] {
   return value
     .normalize('NFKD')
@@ -58,7 +73,10 @@ function resolveProgramRoles(resources: DecisionContextBuilderInput['resources']
       program.verified && normalizedIdentity(program.name) === requestedName
     ));
     if (matches.length !== 1) continue;
-    const programName = boundedValue(matches[0]?.name ?? '', MAX_DECISION_PROGRAM_NAME_LENGTH);
+    const programName = boundedPlannerLabel(
+      matches[0]?.name ?? '',
+      MAX_DECISION_PROGRAM_NAME_LENGTH,
+    );
     if (!programName) continue;
     resolved.push({ role: binding.role, programName });
   }
@@ -75,8 +93,8 @@ function selectPreferredSourceHints(
   const seenIds = new Set<string>();
 
   for (const preference of profile.linkPreferences) {
-    const id = boundedValue(preference.id, MAX_DECISION_SOURCE_ID_LENGTH);
-    const description = boundedValue(
+    const id = boundedPlannerLabel(preference.id, MAX_DECISION_SOURCE_ID_LENGTH);
+    const description = boundedPlannerLabel(
       preference.description,
       MAX_DECISION_SOURCE_DESCRIPTION_LENGTH,
     );

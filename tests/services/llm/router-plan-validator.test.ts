@@ -34,6 +34,7 @@ const availableCapabilities: DecisionCapabilitySnapshot = {
 
 interface DependencyOptions {
   readonly turnId?: string;
+  readonly mode?: 'chat' | 'voice';
   readonly privateContext?: boolean;
   readonly customCommand?: string;
   readonly createIntentId?: () => string;
@@ -52,7 +53,7 @@ function dependencies(options: DependencyOptions = {}) {
       version: 1,
       turn: {
         turnId: options.turnId ?? 'source-turn',
-        mode: 'chat',
+        mode: options.mode ?? 'chat',
         privateContext: options.privateContext ?? false,
         inputOrigin: options.customCommand
           ? { kind: 'custom_command_expansion', customCommand: options.customCommand }
@@ -172,6 +173,21 @@ describe('compileRouterPlanProposal', () => {
     expect(incognito.ok && incognito.plan.privateContext).toBe(true);
   });
 
+  it('binds the original voice mode into the immutable plan', () => {
+    const text = 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder';
+    const voiceEnvelope: TurnEnvelope = {
+      ...envelope(text),
+      source: 'voice',
+      mode: 'voice',
+    };
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_timer', param: '10m', evidence: 'Stelle einen Timer auf 10 Minuten' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), voiceEnvelope, dependencies({ mode: 'voice' }));
+
+    expect(result.ok && result.plan.originMode).toBe('voice');
+  });
+
   it('grounds an action only against its own evidence clause', () => {
     const text = 'Starte einen Timer in zehn Minuten und erinnere mich in fünf Minuten an Tee.';
     const result = compileRouterPlanProposal(output([
@@ -257,6 +273,34 @@ describe('compileRouterPlanProposal', () => {
     expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
   });
 
+  it.each([
+    'Öffne meinen Editor nicht',
+    'Öffne niemals meinen Editor',
+    'Starte keinesfalls meinen Editor',
+  ])('does not turn a negated program-role clause into an action: %s', (actionEvidence) => {
+    const text = `${actionEvidence} und erzähl etwas über Fahrräder`;
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'open_program', param: 'role:code_editor', evidence: actionEvidence },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({
+      programRoles: [{ role: 'code_editor', programName: 'Visual Studio Code' }],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+  });
+
+  it('does not resolve a generic video player as the configured music player', () => {
+    const text = 'Starte meinen Videoplayer und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'open_program', param: 'role:music_player', evidence: 'Starte meinen Videoplayer' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({
+      programRoles: [{ role: 'music_player', programName: 'Spotify' }],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'unresolved_program_role' });
+  });
+
   it('fails closed when the context belongs to another turn', () => {
     const text = 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder';
     const result = compileRouterPlanProposal(output([
@@ -278,6 +322,16 @@ describe('compileRouterPlanProposal', () => {
         media: { state: 'unknown', reason: 'no_readiness_source' },
       },
     }));
+
+    expect(result).toEqual({ ok: false, reason: 'capability_unavailable' });
+  });
+
+  it('does not plan a persistent reminder in private context', () => {
+    const text = 'Erinnere mich in 20 Minuten an Geheimnis und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_reminder', param: 'after=20m|text=Geheimnis', evidence: 'Erinnere mich in 20 Minuten an Geheimnis' },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies({ privateContext: true }));
 
     expect(result).toEqual({ ok: false, reason: 'capability_unavailable' });
   });
@@ -312,6 +366,271 @@ describe('compileRouterPlanProposal', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.plan.steps[1]?.dependsOn).toEqual([result.plan.steps[0]?.stepId]);
+  });
+
+  it.each([
+    {
+      text: 'Danach stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder',
+      firstEvidence: 'stelle einen Timer auf 10 Minuten',
+      secondEvidence: 'erzähl etwas über Fahrräder',
+    },
+    {
+      text: 'Stelle einen Timer auf 10 Minuten und erzähl etwas über Fahrräder und',
+      firstEvidence: 'Stelle einen Timer auf 10 Minuten',
+      secondEvidence: 'erzähl etwas über Fahrräder',
+    },
+  ])('rejects a dangling external or trailing dependency connector: $text', ({
+    text,
+    firstEvidence,
+    secondEvidence,
+  }) => {
+    const result = compileRouterPlanProposal(output([
+      { kind: 'action', action: 'set_timer', param: '10m', evidence: firstEvidence },
+      { kind: 'answer', evidence: secondEvidence },
+    ]), envelope(text), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
+  });
+
+  it.each([
+    {
+      name: 'a swallowed coordinated action',
+      text: 'Stelle einen Timer auf 10 Minuten und öffne meinen Editor und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'set_timer',
+          param: '10m',
+          evidence: 'Stelle einen Timer auf 10 Minuten und öffne meinen Editor',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a swallowed alternative',
+      text: 'Stelle einen Timer auf 10 Minuten oder öffne meinen Editor und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'set_timer',
+          param: '10m',
+          evidence: 'Stelle einen Timer auf 10 Minuten oder öffne meinen Editor',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a swallowed action expressed with an unlisted verb',
+      text: 'Stelle einen Timer auf 10 Minuten und erhöhe die Lautstärke auf 30 Prozent und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'set_timer',
+          param: '10m',
+          evidence: 'Stelle einen Timer auf 10 Minuten und erhöhe die Lautstärke auf 30 Prozent',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'two programs hidden in one open action',
+      text: 'Öffne meinen Editor und meinen Browser und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'open_program',
+          param: 'role:code_editor',
+          evidence: 'Öffne meinen Editor und meinen Browser',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a media action swallowed by answer evidence',
+      text: 'Erkläre Tee und schalte die Musik aus und erzähl etwas über Fahrräder',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und schalte die Musik aus' },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a media action swallowed by reminder evidence',
+      text: 'Erinnere mich in 20 Minuten an Tee und schalte die Musik aus und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'set_reminder',
+          param: 'after=20m|text=Tee',
+          evidence: 'Erinnere mich in 20 Minuten an Tee und schalte die Musik aus',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a media action swallowed behind a polite preamble',
+      text: 'Erkläre Tee und wenn es geht, schalte die Musik aus und erzähl etwas über Fahrräder',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und wenn es geht, schalte die Musik aus' },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'a media action swallowed by reminder evidence behind a polite preamble',
+      text: 'Erinnere mich in 20 Minuten an Tee und wenn es geht, schalte die Musik aus und erzähl etwas über Fahrräder',
+      intents: [
+        {
+          kind: 'action',
+          action: 'set_reminder',
+          param: 'after=20m|text=Tee',
+          evidence: 'Erinnere mich in 20 Minuten an Tee und wenn es geht, schalte die Musik aus',
+        },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'another answer swallowed behind a discourse marker',
+      text: 'Erkläre Tee und außerdem warum ist der Himmel blau und erzähl etwas über Fahrräder',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und außerdem warum ist der Himmel blau' },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'another answer swallowed behind an unlisted discourse marker',
+      text: 'Erkläre Tee und übrigens warum ist der Himmel blau und erzähl etwas über Fahrräder',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und übrigens warum ist der Himmel blau' },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'another answer swallowed behind a conditional preamble',
+      text: 'Erkläre Tee und wenn möglich, warum ist der Himmel blau und erzähl etwas über Fahrräder',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und wenn möglich, warum ist der Himmel blau' },
+        { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+      ],
+    },
+    {
+      name: 'another answer swallowed behind an unlisted answer verb',
+      text: 'Erkläre Tee und nenne drei Fahrradtypen und erzähl etwas über Rom',
+      intents: [
+        { kind: 'answer', evidence: 'Erkläre Tee und nenne drei Fahrradtypen' },
+        { kind: 'answer', evidence: 'erzähl etwas über Rom' },
+      ],
+    },
+  ])('rejects $name inside one evidence block', ({ text, intents }) => {
+    const result = compileRouterPlanProposal(output(intents), envelope(text), dependencies({
+      programRoles: [
+        { role: 'code_editor', programName: 'Visual Studio Code' },
+        { role: 'browser', programName: 'Firefox' },
+      ],
+    }));
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
+  });
+
+  it('rejects adjacent evidence fragments without a real clause boundary', () => {
+    const result = compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: 'Hal' },
+      { kind: 'answer', evidence: 'lo' },
+    ]), envelope('Hallo'), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
+  });
+
+  it('rejects a noun phrase split into two answer intents at a conjunction', () => {
+    const result = compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: 'Erkläre Tee' },
+      { kind: 'answer', evidence: 'Milch' },
+    ]), envelope('Erkläre Tee und Milch'), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
+  });
+
+  it.each([
+    {
+      text: 'Erkläre Browser und Editor',
+      firstEvidence: 'Erkläre Browser',
+      secondEvidence: 'Editor',
+    },
+    {
+      text: 'Erkläre Tee, Milch',
+      firstEvidence: 'Erkläre Tee',
+      secondEvidence: 'Milch',
+    },
+    {
+      text: 'Erkläre Tee und Musik',
+      firstEvidence: 'Erkläre Tee',
+      secondEvidence: 'Musik',
+    },
+    {
+      text: 'Erkläre Tee, Musik',
+      firstEvidence: 'Erkläre Tee',
+      secondEvidence: 'Musik',
+    },
+    {
+      text: 'Erkläre Start und Öffnung',
+      firstEvidence: 'Erkläre Start',
+      secondEvidence: 'Öffnung',
+    },
+    {
+      text: 'Erkläre Suche, Finden',
+      firstEvidence: 'Erkläre Suche',
+      secondEvidence: 'Finden',
+    },
+    {
+      text: 'Erkläre Märchen und Sage',
+      firstEvidence: 'Erkläre Märchen',
+      secondEvidence: 'Sage',
+    },
+  ])('rejects an artificial answer split: $text', ({ text, firstEvidence, secondEvidence }) => {
+    const result = compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: firstEvidence },
+      { kind: 'answer', evidence: secondEvidence },
+    ]), envelope(text), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'incomplete_evidence' });
+  });
+
+  it('accepts separate answer clauses divided by punctuation', () => {
+    const text = 'Erkläre Fahrräder. Erkläre Rom';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'answer', evidence: 'Erkläre Fahrräder' },
+      { kind: 'answer', evidence: 'Erkläre Rom' },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps compound reminder text inside one action clause', () => {
+    const text = 'Erinnere mich in 20 Minuten an Tee und Milch und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'set_reminder',
+        param: 'after=20m|text=Tee und Milch',
+        evidence: 'Erinnere mich in 20 Minuten an Tee und Milch',
+      },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('keeps a compound timer duration inside one action clause', () => {
+    const text = 'Stelle einen Timer auf 1 Stunde und 30 Minuten und erzähl etwas über Fahrräder';
+    const result = compileRouterPlanProposal(output([
+      {
+        kind: 'action',
+        action: 'set_timer',
+        param: '1h30m',
+        evidence: 'Stelle einen Timer auf 1 Stunde und 30 Minuten',
+      },
+      { kind: 'answer', evidence: 'erzähl etwas über Fahrräder' },
+    ]), envelope(text), dependencies());
+
+    expect(result.ok).toBe(true);
   });
 
   it('fails closed instead of storing offsets against a normalized copy', () => {

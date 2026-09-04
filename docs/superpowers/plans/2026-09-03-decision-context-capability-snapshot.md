@@ -52,7 +52,8 @@ Add a bounded resource configuration for these roles:
 A role points to a configured program by name. The context builder resolves it
 only when exactly one verified program matches. It publishes the canonical
 program name, never its path or process metadata. Missing, stale or ambiguous
-bindings are omitted and therefore fail closed.
+bindings are omitted and therefore fail closed. Program names containing URL
+or filesystem-path literals are invalid at the core contract boundary.
 
 The MVP may resolve an allowlisted semantic parameter such as
 `role:code_editor` for `open_program`. The final action parameter and its local
@@ -63,7 +64,8 @@ role resolution are bound into action provenance and the plan fingerprint.
 Select at most five link preferences relevant to the current utterance by a
 small deterministic token match. Publish only bounded ids and descriptions.
 URLs stay in the authoritative configuration and are resolved later by the
-search/browser layer.
+search/browser layer. Ids or descriptions containing URL or filesystem-path
+literals are omitted by the builder and rejected by the core contract.
 
 This is preference routing, not proof that a source is reachable or correct.
 
@@ -107,6 +109,7 @@ the previous feature:
 
 - require a matching context for proposal validation;
 - derive plan privacy from that context;
+- bind the original voice/chat mode into the immutable plan;
 - reject intents whose required capability is unavailable or unknown;
 - resolve only allowlisted explicit program roles;
 - keep volatile capability data out of `IntentPlan` and its fingerprint;

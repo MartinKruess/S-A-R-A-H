@@ -26,6 +26,11 @@ export class SearchService implements SarahService {
   private abort: AbortController | null = null;
   private activeSearch: Promise<string> | null = null;
 
+  /** Whether the initialized service can accept a new search right now. */
+  get acceptingWork(): boolean {
+    return this.status === 'running' && !this.searching;
+  }
+
   constructor(
     private provider: SearchProvider,
     private browser: SearchBrowser,

@@ -105,8 +105,8 @@ Rules:
 
 - The complete output is `SARAH_PROPOSAL_V1 ` followed by the JSON object, with no prose or Markdown fences.
 - `intents.length` is 2..3.
-- Unknown keys, empty evidence, overlapping or unordered evidence, uncovered meaningful text, and overlong text fail closed.
-- Alternative connectors such as `oder`/`or` fail closed until a separate choice contract exists.
+- Unknown keys, empty evidence, overlapping or unordered evidence, artificial evidence splits without a clause boundary, embedded additional intents, uncovered meaningful text, and overlong text fail closed.
+- Alternative connectors such as `oder`/`or` fail closed everywhere in the proposal evidence until a separate choice contract exists.
 - The router cannot supply IDs, dependencies, priorities, confirmation fields, policies, or provider names.
 - An answer or handoff task is the exact evidence clause; the contract does not accept a second, invented prompt or goal field.
 - Proposal parsing never logs raw output or evidence.
@@ -121,6 +121,7 @@ interface IntentPlan {
   readonly revision: number;
   readonly sourceTurnId: TurnId;
   readonly privateContext: boolean;
+  readonly originMode: TurnMode;
   readonly steps: readonly PlanStep[];
   readonly fingerprint: string;
 }
@@ -140,7 +141,7 @@ Every step receives an application-generated `stepId`, clause evidence with an o
 - `HandoffConfirmationPlanStep` contains the exact specialist capability and goal shown to the user and performs no external work.
 - `SpecialistHandoffPlanStep` depends on that confirmation step and carries the same immutable capability and goal.
 - Provider names and connection details are resolved only by a future executor after confirmation.
-- The private-context flag is part of the fingerprint so a later handoff cannot lose its disclosure boundary.
+- The private-context flag and original voice/chat mode are part of the fingerprint so a later confirmation cannot lose its disclosure or response-mode boundary.
 - `fingerprint` is computed from the canonical immutable plan payload and excludes runtime status. It is used only as a later confirmation binding, not as provenance.
 
 ### 4. Deterministic validation

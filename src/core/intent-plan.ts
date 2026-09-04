@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ActionIntent, ActionProvenance } from './action-intent.js';
+import {
+  isValidActionIntent,
+  type ActionIntent,
+  type ActionProvenance,
+} from './action-intent.js';
 import { PROGRAM_ROLES } from './config-schema.js';
-import type { TurnId } from './turn-contract.js';
+import type { TurnId, TurnMode } from './turn-contract.js';
+import { ACTION_SCHEMAS } from '../services/actions/action-schemas.js';
 
 export const MAX_EXPLICIT_INTENTS = 3;
 export const MAX_PLAN_STEPS = 6;
@@ -76,6 +81,7 @@ export interface IntentPlan {
   readonly revision: number;
   readonly sourceTurnId: TurnId;
   readonly privateContext: boolean;
+  readonly originMode: TurnMode;
   readonly steps: readonly IntentPlanStep[];
   readonly fingerprint: string;
 }
@@ -85,6 +91,7 @@ export interface CreateIntentPlanInput {
   readonly intents: readonly ValidatedExplicitIntent[];
   readonly revision?: number;
   readonly privateContext?: boolean;
+  readonly originMode?: TurnMode;
 }
 
 const SPECIALIST_CAPABILITIES: ReadonlySet<string> = new Set([
@@ -262,6 +269,7 @@ function fingerprintPlan(
   revision: number,
   sourceTurnId: TurnId,
   privateContext: boolean,
+  originMode: TurnMode,
   steps: readonly IntentPlanStep[],
 ): string {
   const canonical = JSON.stringify({
@@ -269,13 +277,16 @@ function fingerprintPlan(
     revision,
     sourceTurnId,
     privateContext,
+    originMode,
     steps: steps.map(canonicalStep),
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
 function hasValidActionIntent(intent: ActionIntent, sourceTurnId: TurnId): boolean {
-  if (!isNonEmpty(intent.action) || intent.provenance.sourceTurnId !== sourceTurnId) return false;
+  if (!isValidActionIntent(intent) || intent.provenance.sourceTurnId !== sourceTurnId) return false;
+  const parsedParam = ACTION_SCHEMAS[intent.action].safeParse(intent.param);
+  if (!parsedParam.success || String(parsedParam.data) !== intent.param) return false;
   if (intent.provenance.validation !== 'semantic_grounding') return false;
   if (intent.provenance.evidenceScope.kind !== 'clause') return false;
   if (!isValidEvidence(intent.provenance.evidenceScope)) return false;
@@ -292,6 +303,7 @@ function hasValidActionIntent(intent: ActionIntent, sourceTurnId: TurnId): boole
     || !isNonEmpty(intent.provenance.parameterResolution.programName)
     || intent.param !== intent.provenance.parameterResolution.programName
   )) return false;
+  if (intent.action === 'open_program' && !intent.provenance.parameterResolution) return false;
   return true;
 }
 
@@ -523,12 +535,17 @@ export function createIntentPlan(input: CreateIntentPlanInput): IntentPlan {
 
   const planId = randomUUID();
   const privateContext = input.privateContext ?? false;
+  const originMode = input.originMode ?? 'chat';
+  if (originMode !== 'chat' && originMode !== 'voice') {
+    throw new Error('Intent plan origin mode is unsupported');
+  }
   const frozenSteps = Object.freeze(steps.map(freezeStep));
   const fingerprint = fingerprintPlan(
     planId,
     revision,
     input.sourceTurnId,
     privateContext,
+    originMode,
     frozenSteps,
   );
   const plan = Object.freeze({
@@ -536,6 +553,7 @@ export function createIntentPlan(input: CreateIntentPlanInput): IntentPlan {
     revision,
     sourceTurnId: input.sourceTurnId,
     privateContext,
+    originMode,
     steps: frozenSteps,
     fingerprint,
   });
@@ -552,6 +570,7 @@ export function validateIntentPlan(plan: IntentPlan): boolean {
     || !Number.isSafeInteger(plan.revision)
     || plan.revision < 1
     || typeof plan.privateContext !== 'boolean'
+    || (plan.originMode !== 'chat' && plan.originMode !== 'voice')
     || plan.steps.length < 1
     || plan.steps.length > MAX_PLAN_STEPS
     || !/^[a-f0-9]{64}$/u.test(plan.fingerprint)
@@ -564,6 +583,7 @@ export function validateIntentPlan(plan: IntentPlan): boolean {
     plan.revision,
     plan.sourceTurnId,
     plan.privateContext,
+    plan.originMode,
     plan.steps,
   );
 }
