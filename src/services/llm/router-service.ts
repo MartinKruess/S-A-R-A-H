@@ -51,6 +51,10 @@ import {
 import { RouterWorkerFlow } from './router-worker-flow.js';
 import { RouterOutputFlow } from './router-output-flow.js';
 import { RouterPersistenceRuntime } from './router-persistence-runtime.js';
+import { buildDecisionContext } from './decision-context-builder.js';
+import { buildDecisionCapabilitySnapshot } from './decision-capability-snapshot.js';
+import type { DecisionContext } from '../../core/decision-context.js';
+import { looksLikeBoundedMultiIntentCandidate } from './multi-intent-candidate.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -154,6 +158,11 @@ export class RouterService implements SarahService {
       isIncognitoActive: () => this.incognitoActive,
       getTurnPrivateContext: (turnId) => this.turnDrafts.get(turnId)?.privateContext
         ?? this.incognitoActive,
+      getReminderPersistencePolicy: () => ({
+        allowed: this.persistenceRuntime.memoryPolicyReady
+          && this.context.parsedConfig.trust.memoryAllowed,
+        exclusions: [...this.context.parsedConfig.trust.memoryExclusions],
+      }),
       emitAssistantResponse: (...args) => this.outputFlow.emitAssistantResponse(...args),
       markBrowserSearchIntentTransient: (turnId, action) => {
         this.markBrowserSearchIntentTransient(turnId, action);
@@ -227,6 +236,8 @@ export class RouterService implements SarahService {
       emitAssistantResponse: (turnId, text, signal) => this.outputFlow.emitAssistantResponse(turnId, text, signal),
       recordAssistantOutput: (turnId, text) => this.outputFlow.recordAssistantOutput(turnId, text),
       isWorkerUnavailable: () => this.isWorkerUnavailable(),
+      buildDecisionContext: (envelope) => this.buildCurrentDecisionContext(envelope),
+      reminderClock: this.reminderClock,
     });
   }
 
@@ -731,21 +742,52 @@ export class RouterService implements SarahService {
       return;
     }
 
+    const requiresPlan = looksLikeBoundedMultiIntentCandidate(text);
     if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
-      if (looksLikeActionCommand(text)) {
+      if (looksLikeActionCommand(text) || requiresPlan) {
         // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
         // routing target isn't known yet at swap start, so use a short/neutral
         // phrase; the real action announcement follows over the normal path.
         if (mode === 'voice') {
           this.context.bus.emit(this.id, 'llm:filler', { turnId, text: getFeedback('switchingBack') });
         }
-        await this.workerFlow.routeAndRespond(envelope, signal);
+        await this.workerFlow.routeAndRespond(envelope, signal, requiresPlan);
       } else {
         await this.workerFlow.runWorkerWithFallback(envelope, signal);
       }
     } else {
-      await this.workerFlow.routeAndRespond(envelope, signal);
+      await this.workerFlow.routeAndRespond(envelope, signal, requiresPlan);
     }
+  }
+
+  /** Builds one immutable, current capability context for router inference and validation. */
+  private buildCurrentDecisionContext(envelope: TurnEnvelope): DecisionContext | null {
+    if (!this.context.lifecycle) return null;
+    const actions = this.context.registry.get('actions');
+    const search = this.context.registry.get('search') as
+      | { readonly status: ServiceStatus; readonly acceptingWork?: boolean }
+      | undefined;
+    const reminders = this.context.registry.get('reminders');
+    const capabilities = buildDecisionCapabilitySnapshot({
+      lifecycle: this.context.lifecycle.snapshot,
+      modelRuntime: this.modelRuntime.snapshot,
+      serviceReadiness: {
+        actions: actions?.status ?? 'stopped',
+        search: search?.status ?? 'stopped',
+        reminders: reminders?.status ?? 'stopped',
+      },
+      searchAcceptingWork: search?.acceptingWork === true,
+      webAccessAllowed: this.context.parsedConfig.trust.webAccessAllowed,
+      hasVisibleBrowserResult: this.actionFlow.hasVisibleSearchSession,
+    });
+    return buildDecisionContext({
+      envelope,
+      privateContext: this.turnDrafts.get(envelope.turnId)?.privateContext
+        ?? this.incognitoActive,
+      profile: this.context.parsedConfig.profile,
+      resources: this.context.parsedConfig.resources,
+      capabilities,
+    });
   }
 
   /** Keeps the tested single-output boundary stable while delegating ownership. */

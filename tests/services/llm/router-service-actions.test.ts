@@ -92,7 +92,7 @@ describe('RouterService (actions & confirmation)', () => {
       sourceTurnId: requests[0].turnId,
       decisionSource: 'router_model',
       evidenceSource: 'user_text',
-      validation: 'schema_only',
+      validation: 'semantic_grounding',
     });
     expect(requests[0].requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(done).toEqual(['Ich öffne Spotify.']);

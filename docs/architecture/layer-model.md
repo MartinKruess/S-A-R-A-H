@@ -176,7 +176,7 @@ Verbindlicher Detailplan und erstes Audit:
 ## 7. Layer 3 – Intelligence, Decisions und Planning
 
 **Leitfrage:** Wie wird aus einem Nutzerziel ein sinnvoller, überprüfbarer Lösungsweg?
-**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet. Multi-Intent-Vertrag, datensparsamer DecisionContext und aktueller Fähigkeits-Snapshot bestehen als inaktive Grundlage; produktive Zerlegung, Bestätigung, Ausführung und Evaluierung fehlen noch.
+**Aktueller Stand:** 🟡 – die Layer-3-Auditserie und der unabhängige Layer-3→2-Closure-Lauf sind technisch abgeschlossen. Routing, Grounding, Policy-Spiegelung und Kontextbudget sind für den aktuellen Funktionsumfang gehärtet. Der begrenzte Multi-Intent-MVP zerlegt zwei bis drei explizite Absichten produktiv, kompiliert sie gegen einen datensparsamen DecisionContext und führt sofort erlaubte Action-/Answer-Schritte seriell mit deterministischer Ergebnisauswertung aus. Gruppenbestätigung, Spezialistenadapter und kontrollierte Re-Planung fehlen noch.
 
 ### Gehört zu Layer 3
 
@@ -219,24 +219,26 @@ Router, Planner und Evaluator sind fachlich unterschiedliche Rollen. Für den er
 - datensicherer Recall und systemseitige Vertrauensgrenzen für externe beziehungsweise lokale Daten
 - abgesicherte Turn-, Privacy- und Provenienzgrenzen zu Layer 1 und 2
 - verpflichtende, bei Bestätigungen unverändert gebundene Evidence-Scope-Provenienz für Einzel-Actions und klauselscharfe Multi-Intent-Actions
-- inaktiver V1-Proposal-Parser für zwei bis drei explizite Intents mit striktem Fail-Closed-Schema
+- produktiver V1-Proposal-Parser für zwei bis drei explizite Intents mit striktem Fail-Closed-Schema und vollständigem Preflight vor dem ersten Seiteneffekt
 - unveränderlicher, gefingerprinter Multi-Intent-Plan mit höchstens sechs Schritten und gebundenem Privatkontext
 - deterministische Handoff-Grenze `Bestätigung -> Spezialistenübergabe`, noch ohne Executor oder Provider-Aufruf
 - unveränderlicher, turngebundener `DecisionContext` mit ausschließlich expliziten Programmrollen und relevanten Quellenhinweisen ohne Pfade oder URLs
 - fail-closed `DecisionCapabilitySnapshot` aus Lifecycle-, ModelRuntime-, Service- und Web-Policy-Zustand; Media ohne Readiness-Quelle und Spezialisten ohne Adapter bleiben nicht verfügbar
 - lokale Programmrollenauflösung, die den kanonischen Programmnamen und seine Herkunft bis in Bestätigung und Plan-Fingerprint bindet
+- serieller, einmaliger Planexecutor mit unveränderlichem Ergebniszustand, Abhängigkeitsauswertung und klauselscharfen Worker-Antworten
 
 ### Nächste Architekturbausteine
 
 - actionspezifisches fachliches Grounding der bislang nur schema-validierten Parameter
-- produktive Router-Aktivierung des Multi-Intent-Vertrags samt sichtbarer Planbestätigung
-- ausführbarer Planner-/Evaluator-Kreislauf mit Schritten, Erfolgskriterien und kontrollierter Re-Planung
+- turnübergreifend gebundene Gruppenbestätigung für bestätigungspflichtige Multi-Intent-Pläne
+- kontrollierte Re-Planung und semantische Ergebnisqualitätsprüfung über den deterministischen MVP hinaus
 - echte Executor-Verträge oder fail-closed Ablehnung für Backend-, Extern- und Vision-Routen
 
 Verbindlicher Implementierungsplan für den Vertragsstand:
 
 - [`2026-09-03-multi-intent-contract.md`](../superpowers/plans/2026-09-03-multi-intent-contract.md)
 - [`2026-09-03-decision-context-capability-snapshot.md`](../superpowers/plans/2026-09-03-decision-context-capability-snapshot.md)
+- [`2026-09-04-bounded-planner-evaluator-mvp.md`](../superpowers/plans/2026-09-04-bounded-planner-evaluator-mvp.md)
 
 ## 8. Layer 4 – Fähigkeiten und Tools
 
