@@ -27,6 +27,10 @@ export const FINAL_KEY_LOSS_ARCHIVE_FILES = [
   'connections.enc.bak',
 ] as const;
 
+export const FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES = [
+  'ai-credentials',
+] as const;
+
 export type KeyLossResetFaultPoint = 'after-archive-move';
 
 export interface KeyLossResetOptions {
@@ -99,9 +103,13 @@ export function resetAfterFinalKeyLoss(
   }
 
   const presentFiles = FINAL_KEY_LOSS_ARCHIVE_FILES.filter((fileName) => (
-    isArchivableFile(resolvedStorageDir, fileName)
+    isArchivableEntry(resolvedStorageDir, fileName, 'file')
   ));
-  if (presentFiles.length === 0) {
+  const presentDirectories = FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES.filter((directoryName) => (
+    isArchivableEntry(resolvedStorageDir, directoryName, 'directory')
+  ));
+  const presentEntries = [...presentFiles, ...presentDirectories];
+  if (presentEntries.length === 0) {
     throw new KeyLossResetError('No unreadable S.A.R.A.H. encryption state was found to archive');
   }
 
@@ -115,7 +123,7 @@ export function resetAfterFinalKeyLoss(
 
   const movedFiles: string[] = [];
   try {
-    for (const fileName of presentFiles) {
+    for (const fileName of presentEntries) {
       fs.renameSync(
         path.join(resolvedStorageDir, fileName),
         path.join(archivePath, fileName),
@@ -165,12 +173,19 @@ export function resetAfterFinalKeyLoss(
   return { archivePath, archivedFiles: [...movedFiles] };
 }
 
-function isArchivableFile(storageDir: string, fileName: string): boolean {
+function isArchivableEntry(
+  storageDir: string,
+  fileName: string,
+  expected: 'file' | 'directory',
+): boolean {
   const sourcePath = path.join(storageDir, fileName);
   try {
     const stat = fs.lstatSync(sourcePath);
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new KeyLossResetError(`Refusing to archive non-file encryption state: ${fileName}`);
+    const matchesExpected = expected === 'file' ? stat.isFile() : stat.isDirectory();
+    if (!matchesExpected || stat.isSymbolicLink()) {
+      throw new KeyLossResetError(
+        `Refusing to archive invalid encryption state ${expected}: ${fileName}`,
+      );
     }
     return true;
   } catch (error) {

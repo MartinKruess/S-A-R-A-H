@@ -171,6 +171,16 @@ const api: SarahApi = {
     cancel: (id) => ipcRenderer.invoke('connection-cancel', id),
     disconnect: (id) => ipcRenderer.invoke('connection-disconnect', id),
   },
+
+  // AI provider hub API
+  aiProviders: {
+    list: () => ipcRenderer.invoke('ai-provider-hub-list'),
+    saveApiKey: (input) => ipcRenderer.invoke('ai-provider-save-key', input),
+    acknowledgeWarnings: (input) => ipcRenderer.invoke('ai-provider-acknowledge-warnings', input),
+    deleteConnection: (input) => ipcRenderer.invoke('ai-provider-delete', input),
+    replaceBindings: (input) => ipcRenderer.invoke('ai-provider-save-bindings', input),
+    checkHealth: (input) => ipcRenderer.invoke('ai-provider-check-health', input),
+  },
 };
 
 contextBridge.exposeInMainWorld('sarah', api);

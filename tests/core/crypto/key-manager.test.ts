@@ -93,6 +93,22 @@ describe('KeyManager', () => {
     expect(fs.existsSync(path.join(tmpDir, 'sarah.key'))).toBe(false);
   });
 
+  it('refuses to create a replacement key when isolated AI credentials exist', () => {
+    const credentialDir = path.join(tmpDir, 'ai-credentials');
+    fs.mkdirSync(credentialDir);
+    fs.writeFileSync(path.join(credentialDir, 'connection.enc'), 'existing-store', 'utf-8');
+
+    let failure: KeyAccessError | null = null;
+    try {
+      manager.getOrCreateKey();
+    } catch (error) {
+      if (error instanceof KeyAccessError) failure = error;
+    }
+
+    expect(failure?.reason).toBe('encrypted-stores-without-key');
+    expect(fs.existsSync(path.join(tmpDir, 'sarah.key'))).toBe(false);
+  });
+
   it('classifies two unreadable key envelopes as final loss', () => {
     manager.getOrCreateKey();
 
