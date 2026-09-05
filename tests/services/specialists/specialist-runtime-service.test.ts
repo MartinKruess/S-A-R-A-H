@@ -92,6 +92,18 @@ afterEach(() => {
 });
 
 describe('SpecialistRuntimeService', () => {
+  it('rejects late adapter results after task policy is revoked', async () => {
+    let allowed = true;
+    let publish: ((result: {text:string;citations:[]}) => void) | undefined;
+    const harness = setup({start:vi.fn(async (_request, context) => {
+      publish = context.publishResult;
+      return {remoteRef:'remote-1',status:'running' as const};
+    })}, undefined, undefined, {isTaskAllowed:() => allowed});
+    expect((await harness.runtime.start(request())).ok).toBe(true);
+    allowed = false;
+    publish?.({text:'Forbidden late content',citations:[]});
+    expect(harness.runtime.snapshot(TASK_ID)?.result).toBeUndefined();
+  });
   it('drains an in-flight start before cancelling a replaced connection', async () => {
     let accept: (() => void) | undefined;
     const harness = setup({ start: vi.fn(async () => {

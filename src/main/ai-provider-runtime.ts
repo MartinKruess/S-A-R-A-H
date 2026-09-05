@@ -16,6 +16,9 @@ import { CodexTaskAdapter } from '../services/providers/codex/codex-task-adapter
 import { AiUsageStore } from '../services/providers/ai-usage-store.js';
 import { ApiKeyHealthService } from '../services/providers/api-key-health-service.js';
 import { AnthropicTextAdapter } from '../services/providers/anthropic/anthropic-text-adapter.js';
+import { PerplexityHealthService } from '../services/providers/perplexity-health-service.js';
+import { PerplexityResearchAdapter } from '../services/providers/perplexity/perplexity-research-adapter.js';
+import { PERPLEXITY_STORAGE_DISCLOSURE } from '../core/perplexity-policy.js';
 
 /** Composes real provider adapters without exposing provider objects to the local router. */
 export function createAiProviderRuntime(userData: string, store: AiProviderHubStore,
@@ -29,22 +32,27 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
   const usage = new AiUsageStore(userData);
   let codex: CodexConnectionService | undefined;
   const health = new ApiKeyHealthService();
+  const perplexityHealth = new PerplexityHealthService((entry) => { usage.record(entry); });
+  const perplexityResearch = new PerplexityResearchAdapter();
   let runtime: SpecialistRuntimeService | undefined;
   const hub = new AiProviderHubService(store, credentials, {
     isOperationReady: (operation) => textAdapters.has(operation)
-      || (operation === 'openai_deep_research' && webAllowed()),
-    isModelSupported: (operation, model, connection) => health.isModelSupported(operation, model, connection),
+      || (['openai_deep_research', 'perplexity_agent_research'].includes(operation) && webAllowed()),
+    isModelSupported: (operation, model, connection) => operation === 'perplexity_agent_research'
+      ? perplexityHealth.isModelSupported(model, connection) : health.isModelSupported(operation, model, connection),
     beforeConnectionChange: async (id) => {
       health.invalidate(id);
+      perplexityHealth.invalidate(id);
       return runtime ? runtime.cancelConnection(id) : true;
     },
     managedSessionAvailable: (id) => codex?.available(id) === true,
-    healthCheck: async (connection, key) => {
+    healthCheck: async (connection, key, input) => {
       if (connection.authKind === 'codex_managed_chatgpt') return {
         state: codex?.available(connection.connectionId) ? 'healthy' : 'not_configured',
         message: 'Coding ist bis zum Nachweis der Projektbegrenzung gesperrt.',
       };
-      return health.check(connection, key);
+      return connection.providerId === 'perplexity'
+        ? perplexityHealth.check(connection, key, input) : health.check(connection, key);
     },
   });
   const resolve = (role: 'coding' | 'research') => {
@@ -53,7 +61,7 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
     return binding ? {...binding, bindingRevision: binding.revision} : null;
   };
   codex = new CodexConnectionService(userData, hub);
-  runtime = new SpecialistRuntimeService({store: new SpecialistTaskStore(userData), adapters: [research,coding],
+  runtime = new SpecialistRuntimeService({store: new SpecialistTaskStore(userData), adapters: [research,coding,perplexityResearch],
     resolveBinding: resolve,
     isTaskAllowed: (role) => role !== 'research' || webAllowed(),
     resolveCredential: (id, provider, generation) => hub.resolveCredential(id, provider, generation),
@@ -69,7 +77,8 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
   const handoffs = new SpecialistHandoffCoordinator(runtime, (role) => {
     const binding = resolve(role);
     return binding ? {...binding, providerName: binding.providerId, roleName: role === 'coding' ? 'Coding' : 'Recherche',
-      modelName: binding.modelId, backgroundConsent: role === 'research'} : null;
+      modelName: binding.modelId, backgroundConsent: role === 'research',
+      ...(binding.operationId === 'perplexity_agent_research' ? { storageDisclosureVersion: PERPLEXITY_STORAGE_DISCLOSURE.version } : {}) } : null;
   });
   return {hub, runtime, handoffs, codex, selectCloudText: () => selectCloudText(hub, textAdapters, (entry) => { usage.record(entry); }),
     readiness: (): Readonly<Record<SpecialistCapability, DecisionCapability>> => ({

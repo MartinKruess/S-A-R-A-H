@@ -86,10 +86,11 @@ describe('OpenAI research adapter', () => {
     const adapter = new OpenAiResearchAdapter(() => client(fetcher));
     const context = { resolveCredential: () => 'test', emit: vi.fn() };
     expect(await adapter.retrieve(task, context)).toEqual({ eventId: 'research.retrieve_failed', type: 'incomplete', code: 'research_unretrievable' });
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(fetcher.mock.calls[0][1]?.method).toBe('GET');
+    expect(String(fetcher.mock.calls[1][0])).toContain('/responses/resp_test/cancel');
     await expect(adapter.resume()).rejects.toThrow('research_resume_unsupported');
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it('does not claim cancellation succeeded on transport failure', async () => {

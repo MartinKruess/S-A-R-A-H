@@ -19,6 +19,7 @@ import type {
 } from '../../core/ai-provider-contract.js';
 import { IntentPlanExecutor } from '../llm/intent-plan-executor.js';
 import { getAiProviderCatalogEntry } from '../integrations/ai-provider-catalog.js';
+import { PERPLEXITY_STORAGE_DISCLOSURE } from '../../core/perplexity-policy.js';
 import type { SpecialistRuntimeService } from './specialist-runtime-service.js';
 
 export interface SpecialistHandoffSelection {
@@ -35,6 +36,7 @@ export interface SpecialistHandoffSelection {
   readonly authKind?: import('../../core/ai-provider-contract.js').AiAuthKind;
   readonly workspaceReference?: string;
   readonly backgroundConsent?: boolean;
+  readonly storageDisclosureVersion?: string;
 }
 
 export type SpecialistHandoffSelectionResolver = (
@@ -98,8 +100,11 @@ function buildSubject(
     ...(selection.workspaceReference ? { workspaceReference: selection.workspaceReference } : {}),
     ...(selection.modelId ? { modelId: selection.modelId } : {}),
     ...(selection.backgroundConsent !== undefined ? { backgroundConsent: selection.backgroundConsent } : {}),
+    ...(selection.storageDisclosureVersion ? { storageDisclosureVersion: selection.storageDisclosureVersion } : {}),
     budget: { maxTurns: DEFAULT_MAX_TURNS, timeoutMs: DEFAULT_TIMEOUT_MS,
-      ...(selection.modelId ? { maxOutputTokens: 8_192, maxToolCalls: 10 } : {}),
+      ...(selection.modelId ? { maxOutputTokens: 8_192,
+        ...(selection.operationId === 'perplexity_agent_research' ? { maxSteps: 10 } : { maxToolCalls: 10 }),
+      } : {}),
     },
     bindingLease: {
       providerId: selection.providerId,
@@ -143,10 +148,17 @@ export class SpecialistHandoffCoordinator {
     if (!request) return { ok: false, code: 'invalid_plan' };
     const put = this.pendingPlans.put(request.confirmationId, plan, state, request.expiresAt);
     for (const superseded of put.superseded) this.gate.cancel(superseded.confirmationId);
+    const egress = subject.workspaceReference
+      ? 'Übertragen werden Ziel und benötigte Dateien aus dem ausgewählten Projekt (nur lesender Zugriff).'
+      : 'Übertragen wird nur der Zieltext; kein Workspace und kein Gesprächskontext.';
+    const storage = !subject.backgroundConsent ? ''
+      : subject.bindingLease.operationId === 'perplexity_agent_research'
+        ? ` Die Recherche nutzt Websuche. ${PERPLEXITY_STORAGE_DISCLOSURE.text} Maximal ${subject.budget.maxSteps} Modellschritte; kein festes Tool- oder Geldlimit.`
+        : ' Die Recherche nutzt Websuche; der Anbieter speichert die Antwort vorübergehend zur Hintergrundverarbeitung und Statusabfrage.';
     return {
       ok: true,
       confirmationId: request.confirmationId,
-      prompt: `Ziel: ${confirmation.task}\nRolle: ${subject.display.roleName}. Anbieter: ${subject.display.providerName} (${subject.display.modelName}). ${subject.workspaceReference ? 'Übertragen werden Ziel und benötigte Dateien aus dem ausgewählten Projekt (nur lesender Zugriff).' : 'Übertragen wird nur der Zieltext; kein Workspace und kein Gesprächskontext.'}${subject.backgroundConsent ? ' Die Recherche nutzt Websuche; der Anbieter speichert die Antwort vorübergehend zur Hintergrundverarbeitung und Statusabfrage.' : ''} Soll ich den Spezialisten jetzt starten? Im Textchat: /confirm ${request.confirmationId}`,
+      prompt: `Ziel: ${confirmation.task}\nRolle: ${subject.display.roleName}. Anbieter: ${subject.display.providerName} (${subject.display.modelName}). ${egress}${storage} Soll ich den Spezialisten jetzt starten? Im Textchat: /confirm ${request.confirmationId}`,
     };
   }
 
@@ -241,6 +253,7 @@ export class SpecialistHandoffCoordinator {
           authKind: expected.bindingLease.authKind,
           modelId: expected.modelId,
           backgroundConsent: expected.backgroundConsent,
+          storageDisclosureVersion: expected.storageDisclosureVersion,
           privateContext: false,
           originMode: expected.originMode,
           dataEgress: expected.dataEgress,

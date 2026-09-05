@@ -3,10 +3,17 @@
 **Scope:** Provider-neutral AI connection and role hub plus OpenAI, Anthropic,
 and Perplexity adapters.
 
-**Status:** Shared foundation and inert specialist runtime merged into `dev`
-through PRs #54/#55. Productive provider adapters remain unimplemented.
-The OpenAI implementation plan and authentication decision addendum are in
-`2026-09-05-openai-specialist-adapters.md` and the integration decisions spec.
+**Status:** Shared foundation/runtime merged through PRs #54/#55; OpenAI text,
+research and owned Codex login through #56; Anthropic Messages through #57.
+Perplexity native Agent research is implemented on its separate branch, with
+the single implementation audit completed and confirmed findings fixed. Coding
+execution for both families remains unavailable pending proven workspace and
+network containment on native Windows. Login support is not coding readiness.
+Provider plans: `2026-09-05-openai-specialist-adapters.md`,
+`2026-09-05-anthropic-specialist-adapters.md`,
+`2026-09-05-perplexity-research-adapter.md`.
+No live paid-provider acceptance has been performed; the cross-provider audit
+and budgeted smoke tests remain separate from automated fixture validation.
 
 ## Goal
 

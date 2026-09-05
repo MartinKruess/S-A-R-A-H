@@ -74,6 +74,7 @@ export const SpecialistTaskRequestSchema = z.object({
   authKind: AiAuthKindSchema.optional(),
   modelId: z.string().min(1).max(200).optional(),
   backgroundConsent: z.boolean().optional(),
+  storageDisclosureVersion: z.string().min(1).max(100).optional(),
   privateContext: z.literal(false),
   originMode: z.enum(['chat', 'voice']),
   dataEgress: z.array(z.enum(['goal', 'workspace_files', 'conversation_context']))
@@ -85,6 +86,7 @@ export const SpecialistTaskRequestSchema = z.object({
     timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60_000),
     maxOutputTokens: z.number().int().min(1).max(100_000).optional(),
     maxToolCalls: z.number().int().min(1).max(100).optional(),
+    maxSteps: z.number().int().min(1).max(10).optional(),
   }).strict().readonly(),
 }).strict().superRefine((request, context) => {
   if (!isAiOperationCompatible(request.providerId, request.role, request.operationId)) {
