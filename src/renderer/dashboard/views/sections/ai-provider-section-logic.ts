@@ -16,6 +16,7 @@ import {
   type SaveAiApiKeyInput,
 } from '../../../../core/ai-provider-contract.js';
 import type { SarahAiProvidersApi } from '../../../../core/sarah-api.js';
+import { resolveAiAuthPolicy } from '../../../../services/integrations/ai-auth-policy.js';
 
 export type AiProviderBadgeState = 'connected' | 'disconnected' | 'pending' | 'error';
 
@@ -71,7 +72,7 @@ export function toAiProviderCardView(
   snapshot: AiProviderHubSnapshot,
   provider: AiProviderCatalogEntry,
 ): AiProviderCardView {
-  const connection = snapshot.connections.find((candidate) => candidate.providerId === provider.id);
+  const connection = snapshot.connections.find((candidate) => candidate.providerId === provider.id && candidate.authKind === 'api_key');
   if (snapshot.storage.state === 'degraded') {
     return {
       providerId: provider.id,
@@ -147,7 +148,7 @@ export function buildAcknowledgeWarningsInput(
   generalAcknowledged: boolean,
   providerAcknowledged: boolean,
 ): AcknowledgeAiWarningsInput | null {
-  const connection = snapshot.connections.find((candidate) => candidate.providerId === provider.id);
+  const connection = snapshot.connections.find((candidate) => candidate.providerId === provider.id && candidate.authKind === 'api_key');
   if (
     !requiresWarningAcknowledgement(provider, connection)
     || snapshot.storage.state === 'degraded'
@@ -247,25 +248,23 @@ export function compatibleBindingOptions(
   role: AiProviderRole,
 ): readonly AiBindingOption[] {
   return snapshot.catalog.flatMap((provider) => {
-    const connection = snapshot.connections.find((candidate) => (
+    const connections = snapshot.connections.filter((candidate) => (
       candidate.providerId === provider.id
       && candidate.hasCredential
       && candidate.health.state !== 'storage_degraded'
-      && candidate.acknowledgement.generalWarningVersion === provider.generalWarningVersion
-      && candidate.acknowledgement.providerWarningVersion === provider.providerWarning?.version
     ));
-    if (!connection) return [];
-    return provider.operations
+    return connections.flatMap((connection) => provider.operations
       .filter((operation) => (
         operation.role === role
         && isAiOperationCompatible(provider.id, role, operation.id)
+        && hasPolicyAcknowledgement(connection, operation.id)
       ))
       .map((operation) => ({
         key: bindingOptionKey(connection.connectionId, operation.id),
         connectionId: connection.connectionId,
         operationId: operation.id,
-        label: `${provider.displayName} — ${OPERATION_LABELS[operation.id]}`,
-      }));
+        label: `${connection.displayLabel} — ${OPERATION_LABELS[operation.id]}`,
+      })));
   });
 }
 
@@ -320,12 +319,7 @@ export function buildReplaceBindingsInput(
     const connection = snapshot.connections.find((candidate) => (
       candidate.connectionId === binding.connectionId
       && candidate.hasCredential
-      && candidate.acknowledgement.generalWarningVersion
-        === snapshot.catalog.find((provider) => provider.id === candidate.providerId)
-          ?.generalWarningVersion
-      && candidate.acknowledgement.providerWarningVersion
-        === snapshot.catalog.find((provider) => provider.id === candidate.providerId)
-          ?.providerWarning?.version
+      && hasPolicyAcknowledgement(candidate, binding.operationId)
     ));
     const provider = connection
       ? snapshot.catalog.find((candidate) => candidate.id === connection.providerId)
@@ -350,6 +344,13 @@ export function buildReplaceBindingsInput(
     expectedRevision: snapshot.bindingRevision,
   });
   return parsed.success ? parsed.data : null;
+}
+
+function hasPolicyAcknowledgement(connection: AiConnectionSnapshot, operationId: AiProviderOperationId): boolean {
+  const policy = resolveAiAuthPolicy(connection.providerId, operationId, connection.authKind);
+  return policy !== null
+    && connection.acknowledgement.generalWarningVersion === policy.disclosures[0]?.version
+    && connection.acknowledgement.providerWarningVersion === policy.disclosures[1]?.version;
 }
 
 /** Saves a complete, revision-bound binding replacement. */

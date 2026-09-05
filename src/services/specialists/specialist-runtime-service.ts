@@ -3,6 +3,8 @@ import {
   AcceptedSpecialistTaskMetadataSchema,
   SpecialistAdapterEventSchema,
   SpecialistTaskRequestSchema,
+  SpecialistTaskResultSchema,
+  type SpecialistTaskResult,
   MAX_SPECIALIST_EVENT_IDS,
   applySpecialistTaskEvent,
   createSpecialistTaskSnapshot,
@@ -53,6 +55,7 @@ export interface SpecialistRuntimeServiceDependencies {
   readonly adapters: readonly SpecialistTaskAdapter[];
   readonly resolveBinding: SpecialistBindingResolver;
   readonly resolveCredential: SpecialistCredentialResolver;
+  readonly resolveRecoveryCredential?: SpecialistCredentialResolver;
   readonly now?: () => number;
   readonly maxConcurrentTasks?: number;
   readonly maxConcurrentTasksPerProvider?: number;
@@ -61,6 +64,8 @@ export interface SpecialistRuntimeServiceDependencies {
   readonly shutdownDrainMs?: number;
   readonly cleanupTimeoutMs?: number;
   readonly providerOperationTimeoutMs?: number;
+  readonly onTerminal?: (metadata: AcceptedSpecialistTaskMetadata, snapshot: SpecialistTaskSnapshot) => void;
+  readonly isTaskAllowed?: (role: 'coding' | 'research') => boolean;
 }
 
 type Listener = (snapshot: SpecialistTaskSnapshot) => void;
@@ -71,6 +76,7 @@ interface ActiveTask {
   adapter: SpecialistTaskAdapter;
   binding: SpecialistResolvedBinding;
   eventIds: Set<string>;
+  credential?: string | null;
   deadlineTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -198,13 +204,22 @@ export class SpecialistRuntimeService {
       }
 
       const buffered: SpecialistAdapterEvent[] = [];
+      let bufferedResult: SpecialistTaskResult | undefined;
       let published = false;
       let abandoned = false;
+      if (!this.prepare(parsed.data).ok) return { ok: false, code: 'binding_unavailable' };
+      const credential = this.dependencies.resolveCredential(prepared.binding.connectionId,
+        prepared.binding.providerId, prepared.binding.credentialGeneration);
       const context = {
-        resolveCredential: () => this.dependencies.resolveCredential(
-          prepared.binding.connectionId,
-          prepared.binding.providerId,
-        ),
+        isAllowed: () => this.dependencies.isTaskAllowed?.(parsed.data.role) !== false && !this.stopped,
+        resolveCredential: () => credential,
+        publishResult: (result: SpecialistTaskResult): void => {
+          if (abandoned) return;
+          if (!published) {
+            const checked = SpecialistTaskResultSchema.safeParse(result);
+            if (checked.success) bufferedResult = checked.data;
+          } else this.acceptResult(parsed.data.taskId, result);
+        },
         emit: (event: SpecialistAdapterEvent): void => {
           if (abandoned) return;
           if (!published) {
@@ -242,6 +257,9 @@ export class SpecialistRuntimeService {
         connectionId: prepared.binding.connectionId,
         bindingId: prepared.binding.bindingId,
         bindingRevision: prepared.binding.bindingRevision,
+        credentialGeneration: prepared.binding.credentialGeneration,
+        authKind: prepared.binding.authKind,
+        modelId: prepared.binding.modelId,
         remoteRef: acceptance.remoteRef,
         status: acceptance.status,
         sequence: 0,
@@ -272,12 +290,15 @@ export class SpecialistRuntimeService {
         adapter: prepared.adapter,
         binding: prepared.binding,
         eventIds: new Set(),
+        credential,
       };
       this.tasks.set(active.metadata.taskId, active);
       this.scheduleDeadline(active);
       published = true;
       this.publish(active.snapshot);
+      if (bufferedResult) this.acceptResult(active.metadata.taskId, bufferedResult);
       for (const event of buffered) this.acceptEvent(active.metadata.taskId, event);
+      this.activate(active);
       return { ok: true, snapshot: this.snapshot(active.metadata.taskId) ?? undefined };
     });
   }
@@ -347,6 +368,9 @@ export class SpecialistRuntimeService {
           providerId: metadata.providerId,
           operationId: metadata.operationId,
           connectionId: metadata.connectionId,
+          credentialGeneration: metadata.credentialGeneration,
+          authKind: metadata.authKind,
+          modelId: metadata.modelId,
         };
         const active: ActiveTask = {
           metadata,
@@ -362,9 +386,15 @@ export class SpecialistRuntimeService {
           adapter: adapter ?? this.unavailableAdapter(metadata.operationId),
           binding,
           eventIds: new Set(metadata.eventIds),
+          credential: (this.dependencies.resolveRecoveryCredential ?? this.dependencies.resolveCredential)(metadata.connectionId, metadata.providerId, metadata.credentialGeneration),
         };
         this.tasks.set(metadata.taskId, active);
         if (isTerminalSpecialistTaskStatus(metadata.status)) continue;
+        if (this.dependencies.isTaskAllowed?.(metadata.role) === false) {
+          this.acceptEvent(metadata.taskId, {eventId:this.localEventId('policy'),type:'incomplete',code:'policy_revoked'});
+          await this.bestEffortCancel(active.adapter, active.metadata, this.contextFor(active));
+          continue;
+        }
         if (metadata.deadlineAt && Date.parse(metadata.deadlineAt) <= this.now()) {
           this.acceptEvent(metadata.taskId, {
             eventId: this.localEventId('deadline'),
@@ -404,6 +434,7 @@ export class SpecialistRuntimeService {
               code: 'input_request_unavailable',
             });
           }
+          this.activate(active);
         } catch {
           this.acceptEvent(metadata.taskId, {
             eventId: this.localEventId('reconcile'),
@@ -581,6 +612,7 @@ export class SpecialistRuntimeService {
     | { readonly ok: false; readonly result: SpecialistRuntimeResult } {
     const parsed = SpecialistTaskRequestSchema.safeParse(request);
     if (!parsed.success) return { ok: false, result: { ok: false, code: 'invalid_request' } };
+    if (this.dependencies.isTaskAllowed?.(parsed.data.role) === false) return {ok:false,result:{ok:false,code:'preflight_failed'}};
     const binding = this.dependencies.resolveBinding(parsed.data.role);
     if (!binding
       || binding.providerId !== parsed.data.providerId
@@ -588,6 +620,9 @@ export class SpecialistRuntimeService {
       || binding.connectionId !== parsed.data.connectionId
       || binding.bindingId !== parsed.data.bindingId
       || binding.bindingRevision !== parsed.data.bindingRevision
+      || binding.credentialGeneration !== parsed.data.credentialGeneration
+      || binding.authKind !== parsed.data.authKind
+      || binding.modelId !== parsed.data.modelId
       || !isAiOperationCompatible(binding.providerId, parsed.data.role, binding.operationId)) {
       return { ok: false, result: { ok: false, code: 'binding_unavailable' } };
     }
@@ -605,6 +640,39 @@ export class SpecialistRuntimeService {
     return active.length < this.maxConcurrentTasks
       && active.filter((task) => task.binding.providerId === providerId).length
         < this.maxConcurrentTasksPerProvider;
+  }
+
+  /** Stops work before a connection identity is replaced or erased. */
+  async cancelConnection(connectionId: string): Promise<boolean> {
+    // Hub blocks new selection first. Drain queued starts before enumerating accepted jobs.
+    await this.enqueue(async () => undefined);
+    const tasks = [...this.tasks.values()].filter((task) =>
+      task.binding.connectionId === connectionId && !isTerminalSpecialistTaskStatus(task.snapshot.status));
+    for (const task of tasks) await this.cancel(task.metadata.taskId);
+    for (const task of tasks) {
+      if (!isTerminalSpecialistTaskStatus(task.snapshot.status)) this.acceptEvent(task.metadata.taskId, {
+        eventId: this.localEventId('disconnect'), type: 'incomplete', code: 'connection_removed',
+      });
+    }
+    return true;
+  }
+
+  private activate(active: ActiveTask): void {
+    if (!active.adapter.activate || isTerminalSpecialistTaskStatus(active.snapshot.status) || this.stopped) return;
+    void active.adapter.activate(active.metadata, this.contextFor(active)).catch(() => {
+      this.acceptEvent(active.metadata.taskId, {
+        eventId: this.localEventId('activation'), type: 'incomplete', code: 'adapter_activation_failed',
+      });
+    });
+  }
+
+  private acceptResult(taskId: string, result: SpecialistTaskResult): void {
+    const active = this.tasks.get(taskId);
+    if (!active || this.stopped || isTerminalSpecialistTaskStatus(active.snapshot.status)) return;
+    const parsed = SpecialistTaskResultSchema.safeParse(result);
+    if (!parsed.success) return;
+    active.snapshot = createSpecialistTaskSnapshot({ ...active.snapshot, result: parsed.data });
+    this.publish(active.snapshot);
   }
 
   private acceptEvent(taskId: string, event: SpecialistAdapterEvent, consumeTurn = false): void {
@@ -650,6 +718,9 @@ export class SpecialistRuntimeService {
       active.deadlineTimer = undefined;
     }
     this.publish(next);
+    if (isTerminalSpecialistTaskStatus(next.status)) {
+      try { this.dependencies.onTerminal?.(active.metadata, next); } catch { /* Usage cannot retry work. */ }
+    }
     if (eventLimitExceeded) {
       void this.bestEffortCancel(active.adapter, active.metadata, this.contextFor(active));
     }
@@ -768,11 +839,10 @@ export class SpecialistRuntimeService {
 
   private contextFor(active: ActiveTask) {
     return {
-      resolveCredential: () => this.dependencies.resolveCredential(
-        active.binding.connectionId,
-        active.binding.providerId,
-      ),
+      isAllowed: () => this.dependencies.isTaskAllowed?.(active.metadata.role) !== false && !this.stopped,
+      resolveCredential: () => active.credential ?? null,
       emit: (event: SpecialistAdapterEvent): void => this.acceptEvent(active.metadata.taskId, event),
+      publishResult: (result: SpecialistTaskResult): void => this.acceptResult(active.metadata.taskId, result),
     };
   }
 

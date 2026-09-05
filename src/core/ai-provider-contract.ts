@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 export const AI_PROVIDER_IDS = ['openai', 'anthropic', 'perplexity'] as const;
-export const AI_AUTH_KINDS = ['api_key'] as const;
+export const AI_AUTH_KINDS = ['api_key', 'codex_managed_chatgpt'] as const;
+export const AI_MAX_CONNECTIONS = 4;
+export const AiStoredSecretAuthKindSchema = z.literal('api_key');
 export const AI_PROVIDER_ROLES = ['text', 'coding', 'research'] as const;
 export const AI_PROVIDER_OPERATION_IDS = [
   'openai_responses_text',
@@ -125,6 +127,7 @@ export const AiConnectionSnapshotSchema = z.object({
   connectionId: z.uuid(),
   providerId: AiProviderIdSchema,
   authKind: AiAuthKindSchema,
+  credentialGeneration: z.number().int().min(1).optional(),
   displayLabel: z.string().trim().min(1).max(100),
   hasCredential: z.boolean(),
   acknowledgement: AiCostAcknowledgementSchema,
@@ -152,6 +155,8 @@ export const AiRoleBindingSchema = z.object({
   role: AiProviderRoleSchema,
   operationId: AiProviderOperationIdSchema,
   modelProfile: z.literal('provider_default'),
+  modelId: z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u).optional(),
+  cloudTextOptIn: z.boolean().optional(),
   enabled: z.boolean(),
   position: z.number().int().min(0).max(9),
   revision: z.number().int().min(1),
@@ -168,7 +173,7 @@ export const AiRoleBindingSchema = z.object({
 export const AiProviderHubSnapshotSchema = z.object({
   generalWarning: AiCostWarningSchema,
   catalog: z.array(AiProviderCatalogEntrySchema).length(AI_PROVIDER_IDS.length).readonly(),
-  connections: z.array(AiConnectionSnapshotSchema).max(AI_PROVIDER_IDS.length).readonly(),
+  connections: z.array(AiConnectionSnapshotSchema).max(AI_MAX_CONNECTIONS).readonly(),
   bindings: z.array(AiRoleBindingSchema).max(30).readonly(),
   bindingRevision: z.number().int().min(0),
   storage: AiHubStorageStatusSchema,

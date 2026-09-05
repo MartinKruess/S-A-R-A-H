@@ -80,9 +80,9 @@ describe('AI authentication policy', () => {
     expect(CODEX_MANAGED_CHATGPT_NOTICE.text).toContain('bestätige diesen Hinweis vor der Verbindung');
   });
 
-  it('does not advertise or activate managed authentication in existing public contracts', () => {
-    expect(AI_AUTH_KINDS).toEqual(['api_key']);
-    expect(AI_PROVIDER_CATALOG.every((provider) => (
+  it('advertises managed authentication only for OpenAI without implying readiness', () => {
+    expect(AI_AUTH_KINDS).toEqual(['api_key', 'codex_managed_chatgpt']);
+    expect(AI_PROVIDER_CATALOG.filter((provider) => provider.id !== 'openai').every((provider) => (
       provider.authKinds.length === 1 && provider.authKinds[0] === 'api_key'
     ))).toBe(true);
     const policy = resolveAiAuthPolicy('openai', 'openai_codex', 'codex_managed_chatgpt');

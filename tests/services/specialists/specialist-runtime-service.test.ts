@@ -52,6 +52,8 @@ function setup(
     readonly providerOperationTimeoutMs?: number;
     readonly cleanupTimeoutMs?: number;
     readonly shutdownDrainMs?: number;
+    readonly resolveRecoveryCredential?: (connectionId: string, providerId: 'openai' | 'anthropic' | 'perplexity', generation?: number) => string | null;
+    readonly isTaskAllowed?: (role: 'coding' | 'research') => boolean;
   } = {},
 ) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sarah-specialist-runtime-'));
@@ -90,6 +92,72 @@ afterEach(() => {
 });
 
 describe('SpecialistRuntimeService', () => {
+  it('drains an in-flight start before cancelling a replaced connection', async () => {
+    let accept: (() => void) | undefined;
+    const harness = setup({ start: vi.fn(async () => {
+      await new Promise<void>((resolve) => { accept = resolve; });
+      return { remoteRef: 'late-accepted', status: 'running' as const };
+    }) });
+    const started = harness.runtime.start(request());
+    await vi.waitFor(() => expect(accept).toBeDefined());
+    let drained = false;
+    const cancellation = harness.runtime.cancelConnection(request().connectionId).then((result) => { drained = true; return result; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(harness.adapter.cancel).not.toHaveBeenCalled();
+    accept!();
+    expect((await started).ok).toBe(true);
+    expect(await cancellation).toBe(true);
+    expect(harness.adapter.cancel).toHaveBeenCalledWith(expect.objectContaining({ remoteRef: 'late-accepted' }), expect.anything(), expect.anything());
+    expect(harness.runtime.snapshot(TASK_ID)?.status).toBe('incomplete');
+    await harness.runtime.destroy();
+  });
+
+  it('retrieves a restarted task with its exact recovery identity without selection health', async () => {
+    const acceptedRequest = { ...request(), credentialGeneration: 7 };
+    const first = setup({}, undefined, () => ({ bindingId: BINDING_ID, bindingRevision: 2,
+      providerId: 'openai', operationId: 'openai_codex', connectionId: request().connectionId, credentialGeneration: 7 }));
+    expect((await first.runtime.start(acceptedRequest)).ok).toBe(true);
+    const recovery = vi.fn(() => 'original-recovery-key');
+    const second = setup({ retrieve: vi.fn(async (_task, context) => {
+      expect(context.resolveCredential()).toBe('original-recovery-key');
+      return { eventId: 'recovered-complete', type: 'completed' as const };
+    }) }, new SpecialistTaskStore(first.dir), () => null, { resolveRecoveryCredential: recovery });
+    await second.runtime.reconcile();
+    expect(recovery).toHaveBeenCalledWith(request().connectionId, 'openai', 7);
+    expect(second.credentialResolver).not.toHaveBeenCalled();
+    expect(second.adapter.retrieve).toHaveBeenCalledOnce();
+    expect(second.adapter.start).not.toHaveBeenCalled();
+    expect(second.runtime.snapshot(TASK_ID)?.status).toBe('completed');
+  });
+
+  it('cancels recovery under revoked policy without retrieving or resubmitting', async () => {
+    const first = setup();
+    await first.runtime.start(request());
+    const second = setup({ cancel: vi.fn(async (_task, context) => {
+      expect(context.resolveCredential()).toBe('cancellation-only-key');
+    }) }, new SpecialistTaskStore(first.dir), () => null, {
+      resolveRecoveryCredential: () => 'cancellation-only-key', isTaskAllowed: () => false,
+    });
+    await second.runtime.reconcile();
+    expect(second.adapter.cancel).toHaveBeenCalledOnce();
+    expect(second.adapter.retrieve).not.toHaveBeenCalled();
+    expect(second.adapter.start).not.toHaveBeenCalled();
+    expect(second.runtime.snapshot(TASK_ID)).toMatchObject({ status: 'incomplete', terminal: { code: 'policy_revoked' } });
+  });
+  it('activates only after durable acceptance and keeps result content out of disk metadata', async () => {
+    let harness: ReturnType<typeof setup>;
+    harness = setup({ activate: async (task, context) => {
+      expect(fs.readFileSync(path.join(harness.dir, 'specialist-tasks.json'),'utf8')).toContain(task.remoteRef);
+      context.publishResult?.({text:'private research answer',citations:[{url:'https://example.com/source',title:'Source'}]});
+      context.emit({eventId:'done-result',type:'completed'});
+    }});
+    expect((await harness.runtime.start(request())).ok).toBe(true);
+    expect(harness.runtime.snapshot(TASK_ID)?.result?.text).toBe('private research answer');
+    expect(harness.runtime.snapshot(TASK_ID)?.status).toBe('completed');
+    expect(fs.readFileSync(path.join(harness.dir,'specialist-tasks.json'),'utf8')).not.toContain('private research answer');
+    await harness.runtime.destroy();
+  });
   it('preflights without exposing goal or credential and persists acceptance before publishing events', async () => {
     const seen: string[] = [];
     const harness = setup({

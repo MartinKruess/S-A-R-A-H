@@ -111,6 +111,11 @@ export interface SarahSpecialistsApi {
 
 /** Full API exposed to renderers via contextBridge as `sarah` global */
 export interface SarahApi {
+  codexConnection: {
+    start(input: import('./codex-connection.js').CodexLoginInput): Promise<import('./codex-connection.js').CodexConnectionState>;
+    status(): Promise<import('./codex-connection.js').CodexConnectionState>;
+    logout(): Promise<import('./codex-connection.js').CodexConnectionState>;
+  };
   version: string;
   splashDone(): void;
   wizardDone(): void;

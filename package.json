@@ -41,8 +41,10 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "@openai/codex": "0.153.4",
     "@picovoice/porcupine-node": "^4.0.2",
     "better-sqlite3": "^12.8.0",
+    "openai": "7.10.0",
     "systeminformation": "^5.31.5",
     "three": "^0.183.2",
     "uiohook-napi": "^1.5.5",

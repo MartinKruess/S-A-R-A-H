@@ -5,9 +5,8 @@ import { z } from 'zod';
 import type { KeyManager } from '../../core/crypto/key-manager.js';
 import { decrypt, encrypt } from '../../core/crypto/crypto.js';
 import {
-  AiAuthKindSchema,
+  AiStoredSecretAuthKindSchema as AiAuthKindSchema,
   AiProviderIdSchema,
-  type AiAuthKind,
   type AiProviderId,
 } from '../../core/ai-provider-contract.js';
 
@@ -18,7 +17,7 @@ const ConnectionIdSchema = z.uuid();
 export interface AiCredentialIdentity {
   connectionId: string;
   providerId: AiProviderId;
-  authKind: AiAuthKind;
+  authKind: 'api_key';
 }
 
 interface AiCredentialData {

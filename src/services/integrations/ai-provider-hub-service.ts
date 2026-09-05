@@ -14,7 +14,13 @@ import {
   type DeleteAiConnectionInput,
   type ReplaceAiBindingsInput,
   type SaveAiApiKeyInput,
+  type AiRoleBinding,
+  type AiProviderRole,
+  type AiProviderId,
+  type AiProviderOperationId,
+  type AiConnectionHealth,
 } from '../../core/ai-provider-contract.js';
+import { CODEX_MANAGED_CHATGPT_NOTICE, resolveAiAuthPolicy } from './ai-auth-policy.js';
 import {
   AiCredentialStore,
   type AiCredentialIdentity,
@@ -48,6 +54,18 @@ const SAFE_MESSAGES: Readonly<Record<AiHubErrorCode, string>> = Object.freeze({
 export interface AiProviderHubServiceOptions {
   now?: () => number;
   createId?: () => string;
+  healthCheck?: (connection: AiProviderConnectionMetadata, credential: string | null) => Promise<AiConnectionHealth>;
+  isOperationReady?: (operationId: AiProviderOperationId) => boolean;
+  isModelSupported?: (operationId: AiProviderOperationId, modelId: string) => boolean;
+  beforeConnectionChange?: (connectionId: string, credentialGeneration: number) => Promise<boolean>;
+  managedSessionAvailable?: (connectionId: string) => boolean;
+}
+
+export interface AiResolvedBinding extends AiRoleBinding {
+  readonly providerId: AiProviderId;
+  readonly authKind: 'api_key' | 'codex_managed_chatgpt';
+  readonly credentialGeneration: number;
+  readonly modelId: string;
 }
 
 /**
@@ -64,11 +82,13 @@ export class AiProviderHubService {
   private readonly createId: () => string;
   private mutationQueue: Promise<void> = Promise.resolve();
   private destroyed = false;
+  private readonly health = new Map<string, AiConnectionHealth>();
+  private readonly blocked = new Set<string>();
 
   constructor(
     private readonly metadataStore: AiProviderHubStore,
     private readonly credentialStore: AiCredentialStore,
-    options: AiProviderHubServiceOptions = {},
+    private readonly options: AiProviderHubServiceOptions = {},
   ) {
     this.now = options.now ?? (() => Date.now());
     this.createId = options.createId ?? randomUUID;
@@ -78,12 +98,13 @@ export class AiProviderHubService {
     const stored = this.metadataStore.snapshot();
     const storageStatus = this.metadataStore.getStatus();
       const connections = stored.connections.map((connection) => {
-      const identity = this.identity(connection);
       try {
-        const credentialStatus = this.credentialStore.status(identity);
+        const identity = connection.authKind === 'api_key' ? this.identity(connection) : null;
+        const credentialStatus = identity ? this.credentialStore.status(identity) : { state: 'ready' as const };
         const hasCredential = credentialStatus.state === 'degraded'
           ? false
-          : this.credentialStore.has(identity);
+          : identity ? this.credentialStore.has(identity)
+          : this.options.managedSessionAvailable?.(connection.connectionId) === true;
         const acknowledgementIsCurrent = this.hasCurrentAcknowledgement(connection);
         return {
           ...connection,
@@ -94,8 +115,11 @@ export class AiProviderHubService {
                 message: SAFE_MESSAGES.storage_degraded,
               }
             : {
+                ...(hasCredential && acknowledgementIsCurrent && !this.blocked.has(connection.connectionId)
+                  ? this.health.get(connection.connectionId) : undefined),
                 state: hasCredential
-                  ? 'credential_saved_unverified' as const
+                  ? (acknowledgementIsCurrent && !this.blocked.has(connection.connectionId)
+                    ? this.health.get(connection.connectionId)?.state : undefined) ?? 'credential_saved_unverified' as const
                   : 'not_configured' as const,
                 ...(!acknowledgementIsCurrent
                   ? { message: SAFE_MESSAGES.stale_acknowledgement }
@@ -160,6 +184,7 @@ export class AiProviderHubService {
       const metadata: AiProviderConnectionMetadata = existing
         ? {
             ...existing,
+            credentialGeneration: (existing.credentialGeneration ?? 1) + 1,
             acknowledgement,
             updatedAt: timestamp,
           }
@@ -167,6 +192,7 @@ export class AiProviderHubService {
             connectionId: this.createId(),
             providerId: parsed.data.providerId,
             authKind: 'api_key',
+            credentialGeneration: 1,
             displayLabel: `${catalog.displayName} API`,
             acknowledgement,
             createdAt: timestamp,
@@ -175,11 +201,13 @@ export class AiProviderHubService {
       const identity = this.identity(metadata);
       let previousKey: string | undefined;
       try {
+        if (existing && !await this.prepareConnectionChange(existing)) return this.failure('operation_failed');
         const credentialStatus = this.credentialStore.status(identity);
         if (credentialStatus.state === 'degraded') return this.failure('storage_degraded');
         previousKey = this.credentialStore.read(identity);
         this.credentialStore.write(identity, parsed.data.apiKey);
         this.metadataStore.upsertConnection(metadata, stored.generation);
+        this.blocked.delete(metadata.connectionId);
         return { ok: true, snapshot: this.snapshot() };
       } catch (error) {
         const published = this.connectionMatchesPublishedMetadata(metadata);
@@ -213,7 +241,9 @@ export class AiProviderHubService {
       if (!acknowledgement.generalWarningVersion) {
         return this.failure('acknowledgement_required');
       }
-      if (acknowledgement.generalWarningVersion !== catalog.generalWarningVersion) {
+      const requiredVersion = connection.authKind === 'codex_managed_chatgpt'
+        ? CODEX_MANAGED_CHATGPT_NOTICE.version : catalog.generalWarningVersion;
+      if (acknowledgement.generalWarningVersion !== requiredVersion) {
         return this.failure('stale_acknowledgement');
       }
       if (catalog.providerWarning) {
@@ -254,11 +284,12 @@ export class AiProviderHubService {
       }
       const connection = stored.connections.find((candidate) => candidate.connectionId === parsedId);
       if (!connection) return this.failure('connection_not_found');
-      const identity = this.identity(connection);
+      if (!await this.prepareConnectionChange(connection)) return this.failure('operation_failed');
+      const identity = connection.authKind === 'api_key' ? this.identity(connection) : null;
       let previousKey: string | undefined;
       try {
-        previousKey = this.credentialStore.read(identity);
-        this.credentialStore.delete(identity);
+        previousKey = identity ? this.credentialStore.read(identity) : undefined;
+        if (identity) this.credentialStore.delete(identity);
         this.metadataStore.deleteConnection(connection.connectionId, stored.generation);
         return { ok: true, snapshot: this.snapshot() };
       } catch (error) {
@@ -268,12 +299,9 @@ export class AiProviderHubService {
         if (connectionStillExists === false) {
           return { ok: true, snapshot: this.snapshot() };
         }
-        if (connectionStillExists === true && previousKey) {
-          try {
-            this.credentialStore.write(identity, previousKey);
-          } catch {
-            return this.failure('storage_degraded');
-          }
+      if (connectionStillExists === true && previousKey && identity) {
+          // Revoked keys are never restored after an ambiguous metadata failure.
+          return this.failure('storage_degraded');
         }
         return this.failure(this.mapStoreError(error));
       }
@@ -290,6 +318,10 @@ export class AiProviderHubService {
         return this.failure('storage_degraded');
       }
       try {
+        if (parsed.data.bindings.some((binding) => binding.modelId
+          && this.options.isModelSupported?.(binding.operationId, binding.modelId) === false)) {
+          return this.failure('invalid_input');
+        }
         const hasStaleAcknowledgement = parsed.data.bindings.some((binding) => {
           const connection = stored.connections.find(
             (candidate) => candidate.connectionId === binding.connectionId,
@@ -314,17 +346,124 @@ export class AiProviderHubService {
       if (this.destroyed) return this.failure('operation_failed');
       const parsedId = this.parseConnectionId(input);
       if (!parsedId) return this.failure('invalid_input');
-      const exists = this.metadataStore.snapshot().connections.some(
+      const connection = this.metadataStore.snapshot().connections.find(
         (connection) => connection.connectionId === parsedId,
       );
-      return exists
-        ? this.failure('health_adapter_unavailable')
-        : this.failure('connection_not_found');
+      if (!connection) return this.failure('connection_not_found');
+      if (!this.hasCurrentAcknowledgement(connection)) return this.failure('stale_acknowledgement');
+      if (!this.options.healthCheck) return this.failure('health_adapter_unavailable');
+      if (this.blocked.has(parsedId)) return this.failure('operation_failed');
+      this.health.set(parsedId, { state: 'checking' });
+      try {
+        const credential = connection.authKind === 'api_key'
+          ? this.credentialStore.read(this.identity(connection)) ?? null : null;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const result = await Promise.race([
+            this.options.healthCheck(connection, credential),
+            new Promise<AiConnectionHealth>((resolve) => {
+              timeout = setTimeout(() => resolve({ state: 'temporarily_unavailable' }), 10_000);
+            }),
+          ]);
+          if (!this.destroyed && !this.blocked.has(parsedId)) {
+            this.health.set(parsedId, { state: result.state, lastCheckedAt: new Date(this.now()).toISOString() });
+          }
+        } finally { if (timeout) clearTimeout(timeout); }
+      } catch {
+        this.health.set(parsedId, { state: 'temporarily_unavailable', lastCheckedAt: new Date(this.now()).toISOString() });
+      }
+      return { ok: true, snapshot: this.snapshot() };
     });
   }
 
   destroy(): void {
     this.destroyed = true;
+  }
+
+  /** Publishes metadata only after the owned Codex login confirms its session. */
+  saveManagedConnection(input: { acknowledgement: AcknowledgeAiWarningsInput['acknowledgement'] }): Promise<AiHubMutationResult> {
+    return this.enqueue(async () => {
+      if (this.destroyed) return this.failure('operation_failed');
+      if (input.acknowledgement.generalWarningVersion !== CODEX_MANAGED_CHATGPT_NOTICE.version
+        || input.acknowledgement.providerWarningVersion !== undefined) return this.failure('stale_acknowledgement');
+      const stored = this.metadataStore.snapshot();
+      if (this.metadataStore.getStatus().state === 'degraded') return this.failure('storage_degraded');
+      const existing = stored.connections.find((entry) => entry.authKind === 'codex_managed_chatgpt');
+      if (existing && !await this.prepareConnectionChange(existing)) return this.failure('operation_failed');
+      const timestamp = new Date(this.now()).toISOString();
+      const connection: AiProviderConnectionMetadata = {
+        connectionId: existing?.connectionId ?? this.createId(), providerId: 'openai',
+        authKind: 'codex_managed_chatgpt', displayLabel: 'Codex – ChatGPT-Anmeldung',
+        credentialGeneration: existing ? (existing.credentialGeneration ?? 1) + 1 : 1,
+        acknowledgement: input.acknowledgement, createdAt: existing?.createdAt ?? timestamp, updatedAt: timestamp,
+      };
+      try {
+        this.metadataStore.upsertConnection(connection, stored.generation);
+        this.blocked.delete(connection.connectionId);
+        return { ok: true, snapshot: this.snapshot() };
+      } catch (error) {
+        return this.failure(this.mapStoreError(error));
+      }
+    });
+  }
+
+  /** Returns only an explicitly enabled, verified, configured operation lease. */
+  resolveBinding(role: AiProviderRole): AiResolvedBinding | null {
+    if (this.destroyed) return null;
+    const snapshot = this.snapshot();
+    if (snapshot.storage.state === 'degraded') return null;
+    const candidates = snapshot.bindings.filter((binding) => binding.role === role)
+      .sort((a, b) => a.position - b.position);
+    // A disabled/unavailable primary may use the same billing mode, never switch paid paths.
+    const primaryAuth = snapshot.connections.find((entry) => entry.connectionId === candidates[0]?.connectionId)?.authKind;
+    for (const binding of candidates) {
+      const connection = snapshot.connections.find((entry) => entry.connectionId === binding.connectionId);
+      if (!binding.enabled || !binding.modelId || (role === 'text' && binding.cloudTextOptIn !== true)
+        || !connection || connection.authKind !== primaryAuth || connection.health.state !== 'healthy'
+        || !connection.hasCredential || this.blocked.has(connection.connectionId)
+        || !this.hasCurrentAcknowledgement(connection)
+        || !resolveAiAuthPolicy(connection.providerId, binding.operationId, connection.authKind)
+        || this.options.isOperationReady?.(binding.operationId) !== true
+        || this.options.isModelSupported?.(binding.operationId, binding.modelId) !== true) continue;
+      return { ...binding, modelId: binding.modelId, providerId: connection.providerId,
+        authKind: connection.authKind, credentialGeneration: connection.credentialGeneration ?? 1 };
+    }
+    return null;
+  }
+
+  /** Resolves API secrets only for the exact still-current connection generation. */
+  resolveCredential(connectionId: string, providerId: AiProviderId, expectedGeneration?: number): string | null {
+    if (this.destroyed || this.blocked.has(connectionId) || this.metadataStore.getStatus().state === 'degraded') return null;
+    const connection = this.metadataStore.snapshot().connections.find((entry) => entry.connectionId === connectionId);
+    if (!connection || connection.providerId !== providerId || connection.authKind !== 'api_key'
+      || !this.hasCurrentAcknowledgement(connection)
+      || (expectedGeneration !== undefined && expectedGeneration !== (connection.credentialGeneration ?? 1))
+      || this.health.get(connectionId)?.state !== 'healthy') return null;
+    try { return this.credentialStore.read(this.identity(connection)) ?? null; } catch { return null; }
+  }
+
+  /** Retrieves only an accepted job's original API identity after restart; never enables new work. */
+  resolveRecoveryCredential(connectionId: string, providerId: AiProviderId, expectedGeneration?: number): string | null {
+    if (expectedGeneration === undefined || this.destroyed || this.blocked.has(connectionId)
+      || this.metadataStore.getStatus().state === 'degraded') return null;
+    const connection = this.metadataStore.snapshot().connections.find((entry) => entry.connectionId === connectionId);
+    if (!connection || connection.providerId !== providerId || connection.authKind !== 'api_key'
+      || !this.hasCurrentAcknowledgement(connection)
+      || expectedGeneration !== (connection.credentialGeneration ?? 1)) return null;
+    try { return this.credentialStore.read(this.identity(connection)) ?? null; } catch { return null; }
+  }
+
+  /** Immediately prevents new selections; a subsequent health check cannot clear revocation. */
+  invalidateConnection(connectionId: string): void {
+    this.blocked.add(connectionId);
+    this.health.delete(connectionId);
+  }
+
+  private async prepareConnectionChange(connection: AiProviderConnectionMetadata): Promise<boolean> {
+    this.invalidateConnection(connection.connectionId);
+    try {
+      return await this.options.beforeConnectionChange?.(connection.connectionId, connection.credentialGeneration ?? 1) ?? true;
+    } catch { return false; }
   }
 
   private parseConnectionId(
@@ -337,6 +476,7 @@ export class AiProviderHubService {
   }
 
   private identity(connection: AiProviderConnectionMetadata): AiCredentialIdentity {
+    if (connection.authKind !== 'api_key') throw new Error('Not an API credential');
     return {
       connectionId: connection.connectionId,
       providerId: connection.providerId,
@@ -345,6 +485,11 @@ export class AiProviderHubService {
   }
 
   private hasCurrentAcknowledgement(connection: AiProviderConnectionMetadata): boolean {
+    if (connection.authKind === 'codex_managed_chatgpt') {
+      return connection.providerId === 'openai'
+        && connection.acknowledgement.generalWarningVersion === CODEX_MANAGED_CHATGPT_NOTICE.version
+        && connection.acknowledgement.providerWarningVersion === undefined;
+    }
     const catalog = getAiProviderCatalogEntry(connection.providerId);
     return connection.acknowledgement.generalWarningVersion === catalog.generalWarningVersion
       && connection.acknowledgement.providerWarningVersion
@@ -361,6 +506,7 @@ export class AiProviderHubService {
       return published !== undefined
         && published.providerId === expected.providerId
         && published.authKind === expected.authKind
+        && published.credentialGeneration === expected.credentialGeneration
         && published.updatedAt === expected.updatedAt
         && published.acknowledgement.generalWarningVersion
           === expected.acknowledgement.generalWarningVersion

@@ -9,6 +9,7 @@ import type {
   SaveAiApiKeyInput,
 } from '../../../../../src/core/ai-provider-contract.js';
 import type { SarahAiProvidersApi } from '../../../../../src/core/sarah-api.js';
+import { CODEX_MANAGED_CHATGPT_NOTICE } from '../../../../../src/services/integrations/ai-auth-policy.js';
 import {
   AI_GENERAL_COST_WARNING,
   AI_PROVIDER_CATALOG,
@@ -99,6 +100,17 @@ function apiWith(
 }
 
 describe('AI provider card view', () => {
+  it('keeps API cards separate from managed sessions and managed bindings coding-only', () => {
+    const managed: AiConnectionSnapshot = { ...connection('openai', BINDING_THREE),
+      authKind: 'codex_managed_chatgpt', displayLabel: 'Codex Abo',
+      acknowledgement: { generalWarningVersion: CODEX_MANAGED_CHATGPT_NOTICE.version } };
+    const api = connection('openai', OPENAI_ID);
+    const current = snapshot({ connections: [managed, api] });
+    expect(toAiProviderCardView(current, AI_PROVIDER_CATALOG[0]!).connection?.connectionId).toBe(OPENAI_ID);
+    expect(compatibleBindingOptions(current, 'coding').map((option) => option.connectionId)).toContain(BINDING_THREE);
+    expect(compatibleBindingOptions(current, 'text').map((option) => option.connectionId)).not.toContain(BINDING_THREE);
+    expect(compatibleBindingOptions(current, 'research').map((option) => option.connectionId)).not.toContain(BINDING_THREE);
+  });
   it('distinguishes absent, unverified, healthy, and invalid credentials truthfully', () => {
     const base = snapshot();
     const openai = base.catalog[0];

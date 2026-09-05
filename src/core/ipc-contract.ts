@@ -73,6 +73,9 @@ export interface IpcCommands {
   'connection-cancel':          { input: string; output: void };
   'connection-disconnect':      { input: string; output: void };
   'ai-provider-hub-list':        { input: void; output: AiProviderHubSnapshot };
+  'codex-connection-start': { input: import('./codex-connection.js').CodexLoginInput; output: import('./codex-connection.js').CodexConnectionState };
+  'codex-connection-status': { input: void; output: import('./codex-connection.js').CodexConnectionState };
+  'codex-connection-logout': { input: void; output: import('./codex-connection.js').CodexConnectionState };
   'ai-provider-save-key':        { input: SaveAiApiKeyInput; output: AiHubMutationResult };
   'ai-provider-acknowledge-warnings': { input: AcknowledgeAiWarningsInput; output: AiHubMutationResult };
   'ai-provider-delete':          { input: DeleteAiConnectionInput; output: AiHubMutationResult };
@@ -150,6 +153,9 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'connection-cancel': true,
   'connection-disconnect': true,
   'ai-provider-hub-list': true,
+  'codex-connection-start': true,
+  'codex-connection-status': true,
+  'codex-connection-logout': true,
   'ai-provider-save-key': true,
   'ai-provider-acknowledge-warnings': true,
   'ai-provider-delete': true,

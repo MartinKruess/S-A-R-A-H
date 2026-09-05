@@ -6,6 +6,8 @@ import type {
   AiRoleBinding,
 } from '../../../../core/ai-provider-contract.js';
 import { getSarah } from '../../../shared/window-global.js';
+import { createSpecialistTaskSection } from './specialist-task-section.js';
+import { createCodexConnectionSection } from './codex-connection-section.js';
 import {
   AI_ROLE_LABELS,
   bindingOptionKey,
@@ -41,7 +43,7 @@ export function createAiProviderSection(): HTMLElement {
 
   const intro = document.createElement('div');
   intro.className = 'settings-hint';
-  intro.textContent = 'Hinterlege API-Schlüssel und bereite die spätere Auswahl externer KI-Funktionen vor.';
+  intro.textContent = 'Verbinde externe KI-Anbieter und wähle ihre Aufgaben. Aktivierung erfordert eine erfolgreiche technische Prüfung.';
   root.appendChild(intro);
 
   const feedback = document.createElement('div');
@@ -72,7 +74,14 @@ export function createAiProviderSection(): HTMLElement {
       cards.appendChild(createProviderCard(snapshot, provider));
     }
     content.appendChild(cards);
+    content.appendChild(createCodexConnectionSection(api, (message) => {
+      void api.aiProviders.list().then((updated) => {
+        render(updated);
+        showFeedback(message, true);
+      }).catch(() => showFeedback('Die KI-Anbieter konnten nicht neu geladen werden.'));
+    }));
     content.appendChild(createBindingsEditor(snapshot));
+    content.appendChild(createSpecialistTaskSection(api));
   }
 
   function createProviderCard(
@@ -220,9 +229,18 @@ export function createAiProviderSection(): HTMLElement {
     }
 
     const healthButton = sarahButton({
-      label: 'Prüfung noch nicht verfügbar',
+      label: 'Verbindung prüfen',
       variant: 'secondary',
-      disabled: true,
+      disabled: !view.connection || view.mutationsDisabled,
+      onClick: () => {
+        if (!view.connection || busy) return;
+        busy = true;
+        toggleDisabled(healthButton, true);
+        void api.aiProviders.checkHealth({ connectionId: view.connection.connectionId }).then((result) => {
+          if (result.ok) { render(result.snapshot); showFeedback('Verbindungsprüfung abgeschlossen. Modellzugriff wird bei der Aufgabe geprüft.', true); }
+          else showFeedback(result.message);
+        }).catch(() => showFeedback('Die Verbindung konnte nicht geprüft werden.')).finally(() => { busy = false; toggleDisabled(healthButton, false); });
+      },
     });
     actions.appendChild(healthButton);
     card.appendChild(actions);
@@ -342,7 +360,7 @@ export function createAiProviderSection(): HTMLElement {
 
     const inactiveHint = document.createElement('div');
     inactiveHint.className = 'ai-role-bindings-inactive';
-    inactiveHint.textContent = 'Noch nicht aktiv: Die Anbieteradapter folgen in einem späteren Schritt.';
+    inactiveHint.textContent = 'Nur verfügbare Adapter mit geprüftem Zugang und unterstütztem Modell werden verwendet. Ein Abo wird nicht automatisch durch eine kostenpflichtige API ersetzt.';
     editor.appendChild(inactiveHint);
 
     const rows = document.createElement('div');
@@ -424,6 +442,8 @@ export function createAiProviderSection(): HTMLElement {
               role,
               operationId: nextOption.operationId,
               modelProfile: 'provider_default',
+              modelId: undefined,
+              cloudTextOptIn: false,
               enabled: true,
               position: entries.length,
               revision: Math.max(1, snapshot.bindingRevision + 1),
@@ -472,17 +492,36 @@ export function createAiProviderSection(): HTMLElement {
               connectionId: selected.connectionId,
               operationId: selected.operationId,
               modelProfile: 'provider_default',
+              modelId: undefined,
+              cloudTextOptIn: false,
             }
           : candidate);
         renderRows();
       });
       entry.appendChild(select);
 
-      const profile = document.createElement('span');
+      const profile = document.createElement('input');
       profile.className = 'ai-role-binding-profile';
-      profile.textContent = 'Anbieterstandard';
-      profile.title = 'provider_default';
+      profile.type = 'text';
+      profile.placeholder = 'Unterstützte Modell-ID';
+      profile.setAttribute('aria-label', 'Modell-ID');
+      profile.maxLength = 100;
+      profile.value = binding.modelId ?? '';
+      profile.disabled = snapshot.storage.state === 'degraded';
+      profile.addEventListener('input', () => {
+        draftBindings = draftBindings.map((candidate) => candidate.bindingId === binding.bindingId
+          ? { ...candidate, modelId: profile.value.trim() || undefined } : candidate);
+      });
       entry.appendChild(profile);
+      if (binding.role === 'text') {
+        const cloud = createCheckbox(`ai-cloud-text-${binding.bindingId}`,
+          'Cloud-Text ausdrücklich verwenden: Nur meine aktuelle Nachricht wird gesendet, kein Verlauf und keine Erinnerungen. Private Nachrichten bleiben lokal.',
+          (checked) => { draftBindings = draftBindings.map((candidate) => candidate.bindingId === binding.bindingId
+            ? { ...candidate, cloudTextOptIn: checked } : candidate); });
+        cloud.input.checked = binding.cloudTextOptIn === true;
+        cloud.input.disabled = snapshot.storage.state === 'degraded';
+        entry.appendChild(cloud.row);
+      }
 
       const enabled = createCheckbox(
         `ai-binding-enabled-${binding.bindingId}`,

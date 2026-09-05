@@ -3,9 +3,11 @@ import type {
   SpecialistAdapterEvent,
   SpecialistTaskRequest,
   SpecialistTaskStatus,
+  SpecialistTaskResult,
 } from '../../core/specialist-task.js';
 import type {
   AiProviderId,
+  AiAuthKind,
   AiProviderOperationId,
 } from '../../core/ai-provider-contract.js';
 
@@ -15,6 +17,9 @@ export interface SpecialistResolvedBinding {
   readonly providerId: AiProviderId;
   readonly operationId: AiProviderOperationId;
   readonly connectionId: string;
+  readonly credentialGeneration?: number;
+  readonly authKind?: AiAuthKind;
+  readonly modelId?: string;
 }
 
 export type SpecialistBindingResolver = (
@@ -24,11 +29,14 @@ export type SpecialistBindingResolver = (
 export type SpecialistCredentialResolver = (
   connectionId: string,
   providerId: AiProviderId,
+  expectedGeneration?: number,
 ) => string | null;
 
 export interface SpecialistAdapterContext {
   readonly resolveCredential: () => string | null;
   readonly emit: (event: SpecialistAdapterEvent) => void;
+  readonly publishResult?: (result: SpecialistTaskResult) => void;
+  readonly isAllowed?: () => boolean;
 }
 
 export type SpecialistAdapterPreflightResult =
@@ -43,6 +51,10 @@ export interface SpecialistAdapterAcceptance {
 export interface SpecialistTaskAdapter {
   readonly operationId: AiProviderOperationId;
   isReady(): boolean;
+  activate?(
+    task: AcceptedSpecialistTaskMetadata,
+    context: SpecialistAdapterContext,
+  ): Promise<void>;
   preflight(
     binding: SpecialistResolvedBinding,
     signal?: AbortSignal,

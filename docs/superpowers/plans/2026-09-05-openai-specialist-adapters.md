@@ -1,7 +1,8 @@
 # OpenAI adapters implementation plan
 
-Status: Independent reviews incorporated; first authentication-policy slice implemented.
-Productive provider adapters and managed login remain unimplemented.
+Status: Responses text/research and Sarah-owned managed Codex login implemented.
+Coding execution remains deliberately unavailable: the pinned native read-only
+sandbox does not enforce the promised selected-project-only read boundary.
 Baseline: dev `47ed1cc`, including merged foundation #54 and runtime #55.
 Branch: `feat/openai-specialist-adapters`.
 
@@ -14,7 +15,7 @@ API key and official Codex-managed ChatGPT login for coding. Responses text and
 research remain API-key-only. See the authentication compliance addendum below.
 No paid smoke tests without user-supplied credentials and explicit budget.
 
-## Verified code gaps
+## Original code gaps (baseline before implementation)
 
 - `main.ts` registers no adapters and null selection/credential resolvers.
 - `ai-provider-hub-service.ts` has no real health adapter; saved keys are unverified.
@@ -241,8 +242,9 @@ Sources checked 2026-09-05:
 Authentication addendum independently reviewed by `auth_policy_review`:
 no blocker for the isolated policy slice. Both P2 findings (four-connection
 migration and managed-session identity) incorporated above before activation.
-The implementation of this first policy slice leaves stored auth schemas and
-runtime readiness unchanged; remaining adapter work is still required.
+The original policy-only commit left runtime readiness unchanged. The following
+implementation now extends that foundation; the historical slice notes below
+do not describe current adapter readiness.
 
 First slice completed:
 
@@ -255,3 +257,27 @@ First slice completed:
 - Validation: 127 tests across seven affected contract/store/service/IPC/UI-logic
   suites, main and renderer typecheck, and build passed. No network generation,
   live account login, paid request or packaged Electron acceptance performed.
+
+## Implementation and single independent audit — 2026-09-05
+
+- Real Responses streaming text and ID-pinned background research are composed
+  in Main, including key health checks, explicit models, consent, results,
+  citations, cancellation, metadata-only usage and private-mode exclusion.
+- Codex App Server is pinned to 0.153.4 and uses Sarah-owned state and OS keyring.
+  Device login/logout/status and the protocol transport are implemented. Native
+  initialize/account-read smoke passed without login or generation. Execution
+  is NOT advertised: see `src/services/providers/codex/PROTOCOL-NOTES.md`.
+- Connection generation is pinned across confirmation/start/control/recovery.
+  Recovery can use the exact current acknowledged identity without volatile
+  health state; this resolver cannot authorize new generation.
+- The user superseded the earlier five-pass proposal with exactly one independent
+  implementation audit per provider. `openai_independent_audit` completed that
+  audit. Confirmed P1 start/deletion race and restart credential recovery, plus
+  P2 non-success usage loss and hidden cancellation uncertainty, were corrected.
+- Regression tests cover the fixes. Initial full suite: 2,255 passing tests,
+  one opt-in native test skipped. Final post-fix validation is recorded in the PR.
+- No paid requests, real account login, actual provider billing comparison, or
+  packaged Electron acceptance have been performed. These remain explicit live
+  acceptance work, not inferred from fixture tests.
+- Dependency audit: new OpenAI dependencies introduced no reported production
+  advisory; the existing `systeminformation` high advisory remains out of scope.

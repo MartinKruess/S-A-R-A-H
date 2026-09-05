@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   AiProviderIdSchema,
+  AiAuthKindSchema,
   AiProviderOperationIdSchema,
   isAiOperationCompatible,
 } from './ai-provider-contract.js';
@@ -24,6 +25,17 @@ const SAFE_TEXT = z.string().trim().min(1).max(1_000).refine(
   'Control characters are not allowed',
 );
 const ISO_TIMESTAMP = z.iso.datetime({ offset: true });
+export const SpecialistTaskResultSchema = z.object({
+  text: z.string().max(200_000),
+  citations: z.array(z.object({
+    url: z.url().max(4_096).refine((value) => {
+      const url = new URL(value);
+      return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password;
+    }),
+    title: z.string().max(500),
+  }).strict().readonly()).max(100).readonly(),
+}).strict().readonly();
+export type SpecialistTaskResult = z.infer<typeof SpecialistTaskResultSchema>;
 // Covers the maximum 100-turn task plus provider progress while keeping metadata bounded.
 export const MAX_SPECIALIST_EVENT_IDS = 256;
 
@@ -56,6 +68,10 @@ export const SpecialistTaskRequestSchema = z.object({
   connectionId: z.uuid(),
   bindingId: z.uuid(),
   bindingRevision: z.number().int().min(1),
+  credentialGeneration: z.number().int().min(1).optional(),
+  authKind: AiAuthKindSchema.optional(),
+  modelId: z.string().min(1).max(200).optional(),
+  backgroundConsent: z.boolean().optional(),
   privateContext: z.literal(false),
   originMode: z.enum(['chat', 'voice']),
   dataEgress: z.array(z.enum(['goal', 'workspace_files', 'conversation_context']))
@@ -65,6 +81,8 @@ export const SpecialistTaskRequestSchema = z.object({
   budget: z.object({
     maxTurns: z.number().int().min(1).max(100),
     timeoutMs: z.number().int().min(1_000).max(24 * 60 * 60_000),
+    maxOutputTokens: z.number().int().min(1).max(100_000).optional(),
+    maxToolCalls: z.number().int().min(1).max(100).optional(),
   }).strict().readonly(),
 }).strict().superRefine((request, context) => {
   if (!isAiOperationCompatible(request.providerId, request.role, request.operationId)) {
@@ -112,6 +130,7 @@ export const SpecialistTaskSnapshotSchema = z.object({
   createdAt: ISO_TIMESTAMP,
   updatedAt: ISO_TIMESTAMP,
   progressMessage: SAFE_TEXT.optional(),
+  result: SpecialistTaskResultSchema.optional(),
   inputRequest: z.object({
     requestId: SAFE_ID,
     prompt: SAFE_TEXT,
@@ -148,15 +167,15 @@ export const SpecialistAdapterEventSchema = z.discriminatedUnion('type', [
   }).strict().readonly(),
   z.object({ eventId: SAFE_ID, type: z.literal('running') }).strict().readonly(),
   z.object({ eventId: SAFE_ID, type: z.literal('cancel_requested') }).strict().readonly(),
-  z.object({ eventId: SAFE_ID, type: z.literal('canceled') }).strict().readonly(),
+  z.object({ eventId: SAFE_ID, type: z.literal('canceled'), usage: SpecialistTaskUsageSchema.optional() }).strict().readonly(),
   z.object({
     eventId: SAFE_ID,
     type: z.literal('completed'),
     summary: SAFE_TEXT.optional(),
     usage: SpecialistTaskUsageSchema.optional(),
   }).strict().readonly(),
-  z.object({ eventId: SAFE_ID, type: z.literal('failed'), code: SAFE_ID }).strict().readonly(),
-  z.object({ eventId: SAFE_ID, type: z.literal('incomplete'), code: SAFE_ID }).strict().readonly(),
+  z.object({ eventId: SAFE_ID, type: z.literal('failed'), code: SAFE_ID, usage: SpecialistTaskUsageSchema.optional() }).strict().readonly(),
+  z.object({ eventId: SAFE_ID, type: z.literal('incomplete'), code: SAFE_ID, usage: SpecialistTaskUsageSchema.optional() }).strict().readonly(),
 ]);
 
 const ACCEPTED_STATUSES = [
@@ -172,6 +191,9 @@ export const AcceptedSpecialistTaskMetadataSchema = z.object({
   connectionId: z.uuid(),
   bindingId: z.uuid(),
   bindingRevision: z.number().int().min(1),
+  credentialGeneration: z.number().int().min(1).optional(),
+  authKind: AiAuthKindSchema.optional(),
+  modelId: z.string().min(1).max(200).optional(),
   remoteRef: SAFE_ID,
   status: z.enum(ACCEPTED_STATUSES),
   sequence: z.number().int().min(0),
@@ -209,6 +231,9 @@ const TERMINAL: ReadonlySet<SpecialistTaskStatus> = new Set([
 function freezeSnapshot(snapshot: SpecialistTaskSnapshot): SpecialistTaskSnapshot {
   return Object.freeze({
     ...snapshot,
+    ...(snapshot.result ? { result: Object.freeze({ ...snapshot.result,
+      citations: Object.freeze(snapshot.result.citations.map((citation) => Object.freeze({ ...citation }))),
+    }) } : {}),
     ...(snapshot.inputRequest ? { inputRequest: Object.freeze({ ...snapshot.inputRequest }) } : {}),
     ...(snapshot.terminal ? {
       terminal: Object.freeze({
@@ -275,6 +300,7 @@ export function applySpecialistTaskEvent(
     sequence: snapshot.sequence + 1,
     createdAt: snapshot.createdAt,
     updatedAt,
+    ...(snapshot.result ? { result: snapshot.result } : {}),
     ...(parsedEvent.type === 'progress' ? { progressMessage: parsedEvent.message } : {}),
     ...(parsedEvent.type === 'progress' && snapshot.inputRequest
       ? { inputRequest: snapshot.inputRequest }
@@ -289,8 +315,9 @@ export function applySpecialistTaskEvent(
       },
     } : {}),
     ...(parsedEvent.type === 'failed' || parsedEvent.type === 'incomplete'
-      ? { terminal: { code: parsedEvent.code } }
+      ? { terminal: { code: parsedEvent.code, ...(parsedEvent.usage ? {usage: parsedEvent.usage} : {}) } }
       : {}),
+    ...(parsedEvent.type === 'canceled' && parsedEvent.usage ? { terminal: {usage:parsedEvent.usage} } : {}),
   };
   return freezeSnapshot(SpecialistTaskSnapshotSchema.parse(next));
 }
