@@ -8,6 +8,7 @@ import type {
 import { getSarah } from '../../../shared/window-global.js';
 import { createSpecialistTaskSection } from './specialist-task-section.js';
 import { createCodexConnectionSection } from './codex-connection-section.js';
+import { PERPLEXITY_PAID_PROBE } from '../../../../core/perplexity-policy.js';
 import {
   AI_ROLE_LABELS,
   bindingOptionKey,
@@ -228,16 +229,33 @@ export function createAiProviderSection(): HTMLElement {
       actions.appendChild(button);
     }
 
+    const paidProbe = provider.id === 'perplexity'
+      ? createCheckbox('perplexity-paid-probe', PERPLEXITY_PAID_PROBE.text, () => {}) : undefined;
+    if (paidProbe) card.appendChild(paidProbe.row);
     const healthButton = sarahButton({
-      label: 'Verbindung prüfen',
+      label: paidProbe ? 'Kostenpflichtig prüfen' : 'Verbindung prüfen',
       variant: 'secondary',
       disabled: !view.connection || view.mutationsDisabled,
       onClick: () => {
         if (!view.connection || busy) return;
+        if (paidProbe && !paidProbe.input.checked) {
+          showFeedback('Bitte bestätige zuerst den kostenpflichtigen Verbindungstest.');
+          return;
+        }
+        if (paidProbe) paidProbe.input.checked = false;
         busy = true;
         toggleDisabled(healthButton, true);
-        void api.aiProviders.checkHealth({ connectionId: view.connection.connectionId }).then((result) => {
-          if (result.ok) { render(result.snapshot); showFeedback('Verbindungsprüfung abgeschlossen. Modellzugriff wird bei der Aufgabe geprüft.', true); }
+        void api.aiProviders.checkHealth({ connectionId: view.connection.connectionId,
+          ...(paidProbe ? { paidProbeConsentVersion: PERPLEXITY_PAID_PROBE.version,
+            expectedCredentialGeneration: view.connection.credentialGeneration ?? 1 } : {}),
+        }).then((result) => {
+          if (result.ok) {
+            const checked = result.snapshot.connections.find((entry) => entry.connectionId === view.connection!.connectionId);
+            render(result.snapshot);
+            showFeedback(checked?.health.message ?? (checked?.health.state === 'healthy'
+              ? 'Verbindung geprüft. Modellzugriff wird bei der Aufgabe geprüft.'
+              : 'Verbindung nicht bestätigt.'), checked?.health.state === 'healthy');
+          }
           else showFeedback(result.message);
         }).catch(() => showFeedback('Die Verbindung konnte nicht geprüft werden.')).finally(() => { busy = false; toggleDisabled(healthButton, false); });
       },

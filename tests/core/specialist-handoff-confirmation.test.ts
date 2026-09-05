@@ -40,13 +40,15 @@ function subject(
 describe('SpecialistHandoffConfirmationGate', () => {
   it('pins model, credential generation, billing path, retention consent and provider budgets', () => {
     const gate = new SpecialistHandoffConfirmationGate(5_000, () => 1_000, () => 'grant-new');
-    const original = subject({modelId:'example-model',backgroundConsent:true,
+    const original = subject({modelId:'example-model',backgroundConsent:true,storageDisclosureVersion:'storage-v1',
       bindingLease:{...subject().bindingLease,credentialGeneration:2,authKind:'api_key'},
-      budget:{maxTurns:25,timeoutMs:60_000,maxOutputTokens:4096,maxToolCalls:10}});
+      budget:{maxTurns:25,timeoutMs:60_000,maxOutputTokens:4096,maxToolCalls:10,maxSteps:5}});
     gate.request(original);
     const grant = gate.approve('grant-new',CONFIRMATION_TURN)!;
     const changes: Partial<SpecialistHandoffConfirmationSubject>[] = [
       {modelId:'other-model'}, {backgroundConsent:false},
+      {storageDisclosureVersion:'storage-v2'},
+      {budget:{...original.budget,maxSteps:6}},
       {bindingLease:{...original.bindingLease,credentialGeneration:3}},
       {bindingLease:{...original.bindingLease,authKind:'codex_managed_chatgpt'}},
       {budget:{...original.budget,maxOutputTokens:8192}},

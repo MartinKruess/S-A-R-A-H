@@ -70,6 +70,10 @@ export class OpenAiResearchAdapter implements SpecialistTaskAdapter {
       const client = this.active.get(task.remoteRef)?.client ?? this.clientFactory(key);
       const response = await client.responses.retrieve(task.remoteRef, {}, { signal });
       if (response.id !== task.remoteRef) throw new Error('reference_mismatch');
+      if (context.isAllowed?.() === false) {
+        try { await client.responses.cancel(task.remoteRef, { signal: AbortSignal.timeout(5_000) }); } catch { /* Remote stop remains uncertain. */ }
+        return { eventId: 'research.policy_revoked', type: 'incomplete', code: 'policy_revoked' };
+      }
       if (!this.active.has(task.remoteRef) && ['queued', 'in_progress'].includes(response.status ?? '')) {
         this.active.set(task.remoteRef, { client, response, controller: new AbortController() });
         this.schedule(task, context, this.active.get(task.remoteRef)!);
@@ -81,7 +85,11 @@ export class OpenAiResearchAdapter implements SpecialistTaskAdapter {
         context.emit({ eventId: 'research.remote_cancel_requested', type: 'cancel_requested' });
       }
       return event;
-    } catch { return { eventId: 'research.retrieve_failed', type: 'incomplete', code: 'research_unretrievable' }; }
+    } catch {
+      try { await this.cancel(task, { ...context, emit: () => {}, publishResult: () => {} }, AbortSignal.timeout(5_000)); }
+      catch { /* A lost recovery response does not prove the remote job stopped. */ }
+      return { eventId: 'research.retrieve_failed', type: 'incomplete', code: 'research_unretrievable' };
+    }
   }
 
   async resume(): Promise<void> { throw new Error('research_resume_unsupported'); }
@@ -124,6 +132,7 @@ export class OpenAiResearchAdapter implements SpecialistTaskAdapter {
       const response = await active.client.responses.retrieve(task.remoteRef, {}, { signal: active.controller.signal });
       if (active.controller.signal.aborted) return;
       if (response.id !== task.remoteRef) throw new Error('reference_mismatch');
+      if (context.isAllowed?.() === false) throw new Error('policy_revoked');
       const event = this.event(response, context);
       if (event && (event.type !== 'running' || active.response.status !== response.status)) this.emit(task, context, event);
       active.response = response;

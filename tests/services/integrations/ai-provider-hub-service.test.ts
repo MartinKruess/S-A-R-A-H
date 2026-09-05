@@ -12,6 +12,7 @@ import {
 import { AiProviderHubService } from '../../../src/services/integrations/ai-provider-hub-service.js';
 import { AiProviderHubStore } from '../../../src/services/integrations/ai-provider-hub-store.js';
 import { CODEX_MANAGED_CHATGPT_NOTICE } from '../../../src/services/integrations/ai-auth-policy.js';
+import { PERPLEXITY_PAID_PROBE } from '../../../src/core/perplexity-policy.js';
 
 describe('AiProviderHubService', () => {
   let tmpDir: string;
@@ -47,6 +48,26 @@ describe('AiProviderHubService', () => {
     expect(snapshot.connections).toEqual([]);
     expect(snapshot.bindings).toEqual([]);
     expect(snapshot.storage).toEqual({ state: 'ready' });
+  });
+
+  it('pins explicit paid health consent to provider and credential generation', async () => {
+    const check = vi.fn(async () => ({ state: 'healthy' as const }));
+    const hub = new AiProviderHubService(new AiProviderHubStore(tmpDir), credentials, { healthCheck: check });
+    const save = () => hub.saveApiKey({providerId:'perplexity', apiKey:'pplx-fixture',
+      acknowledgement:{generalWarningVersion:AI_GENERAL_COST_WARNING.version}});
+    const saved = await save();
+    if (!saved.ok) throw new Error('save failed');
+    const connection = saved.snapshot.connections[0]!;
+    const consent = {connectionId:connection.connectionId, paidProbeConsentVersion:PERPLEXITY_PAID_PROBE.version,
+      expectedCredentialGeneration:connection.credentialGeneration ?? 1};
+    expect((await hub.checkHealth({...consent,paidProbeConsentVersion:'old'})).ok).toBe(false);
+    expect(check).not.toHaveBeenCalled();
+    expect((await hub.checkHealth(consent)).ok).toBe(true);
+    expect(check).toHaveBeenCalledWith(expect.objectContaining({connectionId:connection.connectionId}), 'pplx-fixture', consent);
+    await save();
+    check.mockClear();
+    expect((await hub.checkHealth(consent)).ok).toBe(false);
+    expect(check).not.toHaveBeenCalled();
   });
 
   it('recovers only an exact accepted API identity without enabling unhealthy new dispatch', async () => {

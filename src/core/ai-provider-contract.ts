@@ -254,7 +254,13 @@ export const ReplaceAiBindingsInputSchema = z.object({
 
 export const CheckAiConnectionHealthInputSchema = z.object({
   connectionId: z.uuid(),
-}).strict().readonly();
+  paidProbeConsentVersion: z.string().min(1).max(100).optional(),
+  expectedCredentialGeneration: z.number().int().min(1).optional(),
+}).strict().superRefine((input, context) => {
+  if ((input.paidProbeConsentVersion !== undefined) !== (input.expectedCredentialGeneration !== undefined)) {
+    context.addIssue({ code: 'custom', message: 'Paid probe consent requires an exact credential generation' });
+  }
+}).readonly();
 
 export type AiProviderOperation = z.infer<typeof AiProviderOperationSchema>;
 export type AiCostWarning = z.infer<typeof AiCostWarningSchema>;

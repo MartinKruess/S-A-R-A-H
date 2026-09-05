@@ -41,12 +41,14 @@ export interface SpecialistHandoffConfirmationSubject {
   readonly workspaceReference?: string;
   readonly modelId?: string;
   readonly backgroundConsent?: boolean;
+  readonly storageDisclosureVersion?: string;
   readonly accessMode: 'none' | 'read_only' | 'workspace_write';
   readonly budget: {
     readonly maxTurns: number;
     readonly timeoutMs: number;
     readonly maxOutputTokens?: number;
     readonly maxToolCalls?: number;
+    readonly maxSteps?: number;
   };
   readonly bindingLease: SpecialistBindingLease;
   readonly display: SpecialistHandoffDisplay;
@@ -119,6 +121,9 @@ function isValidSubject(subject: SpecialistHandoffConfirmationSubject): boolean 
     && validText(subject.display.roleName, 100)
     && (subject.modelId === undefined || validText(subject.modelId, 200))
     && (subject.backgroundConsent === undefined || typeof subject.backgroundConsent === 'boolean')
+    && (subject.storageDisclosureVersion === undefined || validText(subject.storageDisclosureVersion, 100))
+    && (subject.budget.maxSteps === undefined
+      || (Number.isSafeInteger(subject.budget.maxSteps) && subject.budget.maxSteps > 0 && subject.budget.maxSteps <= 10))
     && (subject.bindingLease.credentialGeneration === undefined
       || (Number.isSafeInteger(subject.bindingLease.credentialGeneration) && subject.bindingLease.credentialGeneration > 0))
     && (subject.budget.maxOutputTokens === undefined
@@ -145,6 +150,7 @@ function copySubject(
     ...(subject.workspaceReference ? { workspaceReference: subject.workspaceReference } : {}),
     ...(subject.modelId ? { modelId: subject.modelId } : {}),
     ...(subject.backgroundConsent !== undefined ? { backgroundConsent: subject.backgroundConsent } : {}),
+    ...(subject.storageDisclosureVersion ? { storageDisclosureVersion: subject.storageDisclosureVersion } : {}),
     accessMode: subject.accessMode,
     budget: Object.freeze({ ...subject.budget }),
     bindingLease: Object.freeze({ ...subject.bindingLease }),
@@ -170,6 +176,8 @@ function subjectsMatch(
     && left.workspaceReference === right.workspaceReference
     && left.modelId === right.modelId
     && left.backgroundConsent === right.backgroundConsent
+    && left.storageDisclosureVersion === right.storageDisclosureVersion
+    && left.budget.maxSteps === right.budget.maxSteps
     && left.accessMode === right.accessMode
     && left.budget.maxTurns === right.budget.maxTurns
     && left.budget.timeoutMs === right.budget.timeoutMs

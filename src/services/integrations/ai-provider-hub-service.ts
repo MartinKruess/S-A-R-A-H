@@ -21,6 +21,7 @@ import {
   type AiConnectionHealth,
 } from '../../core/ai-provider-contract.js';
 import { CODEX_MANAGED_CHATGPT_NOTICE, resolveAiAuthPolicy } from './ai-auth-policy.js';
+import { PERPLEXITY_PAID_PROBE } from '../../core/perplexity-policy.js';
 import {
   AiCredentialStore,
   type AiCredentialIdentity,
@@ -54,7 +55,8 @@ const SAFE_MESSAGES: Readonly<Record<AiHubErrorCode, string>> = Object.freeze({
 export interface AiProviderHubServiceOptions {
   now?: () => number;
   createId?: () => string;
-  healthCheck?: (connection: AiProviderConnectionMetadata, credential: string | null) => Promise<AiConnectionHealth>;
+  healthCheck?: (connection: AiProviderConnectionMetadata, credential: string | null,
+    input: CheckAiConnectionHealthInput) => Promise<AiConnectionHealth>;
   isOperationReady?: (operationId: AiProviderOperationId) => boolean;
   isModelSupported?: (operationId: AiProviderOperationId, modelId: string, connection: AiProviderConnectionMetadata) => boolean;
   beforeConnectionChange?: (connectionId: string, credentialGeneration: number) => Promise<boolean>;
@@ -347,12 +349,19 @@ export class AiProviderHubService {
   checkHealth(input: CheckAiConnectionHealthInput): Promise<AiHubMutationResult> {
     return this.enqueue(async () => {
       if (this.destroyed) return this.failure('operation_failed');
-      const parsedId = this.parseConnectionId(input);
-      if (!parsedId) return this.failure('invalid_input');
+      const parsed = CheckAiConnectionHealthInputSchema.safeParse(input);
+      if (!parsed.success) return this.failure('invalid_input');
+      const parsedId = parsed.data.connectionId;
       const connection = this.metadataStore.snapshot().connections.find(
         (connection) => connection.connectionId === parsedId,
       );
       if (!connection) return this.failure('connection_not_found');
+      if (parsed.data.paidProbeConsentVersion !== undefined
+        && (connection.providerId !== 'perplexity' || connection.authKind !== 'api_key'
+          || parsed.data.paidProbeConsentVersion !== PERPLEXITY_PAID_PROBE.version
+          || parsed.data.expectedCredentialGeneration !== (connection.credentialGeneration ?? 1))) {
+        return this.failure('invalid_input');
+      }
       if (!this.hasCurrentAcknowledgement(connection)) return this.failure('stale_acknowledgement');
       if (!this.options.healthCheck) return this.failure('health_adapter_unavailable');
       if (this.blocked.has(parsedId)) return this.failure('operation_failed');
@@ -363,13 +372,16 @@ export class AiProviderHubService {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           const result = await Promise.race([
-            this.options.healthCheck(connection, credential),
+            this.options.healthCheck(connection, credential, parsed.data),
             new Promise<AiConnectionHealth>((resolve) => {
               timeout = setTimeout(() => resolve({ state: 'temporarily_unavailable' }), 10_000);
             }),
           ]);
           if (!this.destroyed && !this.blocked.has(parsedId)) {
-            this.health.set(parsedId, { state: result.state, lastCheckedAt: new Date(this.now()).toISOString() });
+            this.health.set(parsedId, { state: result.state,
+              ...(connection.providerId === 'perplexity' && result.state !== 'healthy'
+                ? { message: 'Prüfung unbestätigt. Bei einem gestarteten Verbindungstest können API-Kosten entstanden sein.' } : {}),
+              lastCheckedAt: new Date(this.now()).toISOString() });
           }
         } finally { if (timeout) clearTimeout(timeout); }
       } catch {

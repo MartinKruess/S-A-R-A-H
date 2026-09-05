@@ -668,7 +668,8 @@ export class SpecialistRuntimeService {
 
   private acceptResult(taskId: string, result: SpecialistTaskResult): void {
     const active = this.tasks.get(taskId);
-    if (!active || this.stopped || isTerminalSpecialistTaskStatus(active.snapshot.status)) return;
+    if (!active || this.stopped || isTerminalSpecialistTaskStatus(active.snapshot.status)
+      || this.dependencies.isTaskAllowed?.(active.metadata.role) === false) return;
     const parsed = SpecialistTaskResultSchema.safeParse(result);
     if (!parsed.success) return;
     active.snapshot = createSpecialistTaskSnapshot({ ...active.snapshot, result: parsed.data });
