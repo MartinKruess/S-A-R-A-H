@@ -133,10 +133,6 @@ describe('compileRouterPlanProposal', () => {
       evidence: 'Öffne Spotify',
       proposal: { kind: 'action', action: 'open_program', param: 'spotify', evidence: 'Öffne Spotify' },
     },
-    {
-      evidence: 'Prüfe den aktuellen Diff',
-      proposal: { kind: 'handoff', specialist: 'coding', evidence: 'Prüfe den aktuellen Diff' },
-    },
   ])('keeps a legitimate first $proposal.kind intent starting with "$evidence"', ({ evidence, proposal }) => {
     const text = `${evidence} und stelle einen Timer auf 10 Minuten`;
     const result = compileRouterPlanProposal(output([
@@ -150,6 +146,21 @@ describe('compileRouterPlanProposal', () => {
     ]), envelope(text), dependencies());
 
     expect(result.ok).toBe(true);
+  });
+
+  it('rejects a specialist handoff followed by another semantic intent', () => {
+    const text = 'Prüfe den aktuellen Diff und stelle einen Timer auf 10 Minuten';
+    const result = compileRouterPlanProposal(output([
+      { kind: 'handoff', specialist: 'coding', evidence: 'Prüfe den aktuellen Diff' },
+      {
+        kind: 'action',
+        action: 'set_timer',
+        param: '10m',
+        evidence: 'stelle einen Timer auf 10 Minuten',
+      },
+    ]), envelope(text), dependencies());
+
+    expect(result).toEqual({ ok: false, reason: 'invalid_plan' });
   });
 
   it('allows a reminder-list question as a plan action', () => {

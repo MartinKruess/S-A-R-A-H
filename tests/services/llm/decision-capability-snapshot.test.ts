@@ -121,6 +121,43 @@ describe('buildDecisionCapabilitySnapshot', () => {
     expect(exclusive.modelExecutionMode).toBe('exclusive');
   });
 
+  it('projects injected provider-neutral specialist readiness', () => {
+    const snapshot = buildDecisionCapabilitySnapshot(input({
+      specialists: {
+        coding: { state: 'available', reason: 'ready' },
+        research: { state: 'unavailable', reason: 'service_unavailable' },
+        vision: { state: 'unavailable', reason: 'no_adapter' },
+      },
+    }));
+
+    expect(snapshot.specialists).toEqual({
+      coding: { state: 'available', reason: 'ready' },
+      research: { state: 'unavailable', reason: 'service_unavailable' },
+      vision: { state: 'unavailable', reason: 'no_adapter' },
+    });
+    expect(JSON.stringify(snapshot)).not.toMatch(/openai|anthropic|perplexity|connection|binding/iu);
+  });
+
+  it.each<RuntimeState>(['registered', 'starting', 'unavailable', 'error', 'stopping', 'stopped'])(
+    'overrides injected specialist readiness while lifecycle state is %s',
+    (state) => {
+      const snapshot = buildDecisionCapabilitySnapshot(input({
+        lifecycle: lifecycle(state),
+        specialists: {
+          coding: { state: 'available', reason: 'ready' },
+          research: { state: 'available', reason: 'ready' },
+          vision: { state: 'available', reason: 'ready' },
+        },
+      }));
+
+      expect(snapshot.specialists).toEqual({
+        coding: { state: 'unavailable', reason: 'lifecycle_unavailable' },
+        research: { state: 'unavailable', reason: 'lifecycle_unavailable' },
+        vision: { state: 'unavailable', reason: 'lifecycle_unavailable' },
+      });
+    },
+  );
+
   it.each(['router', 'local_worker'] as const)(
     'requires the %s lifecycle leaf to be exactly ready',
     (role) => {

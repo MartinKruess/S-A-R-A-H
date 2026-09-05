@@ -44,4 +44,9 @@ describe('IPC contract parity', () => {
     const renderer = matches(preload, /ipcRenderer\.(?:on|once)\(\s*'([^']+)'/g).sort();
     expect(renderer).toEqual(contract);
   });
+
+  it('uses strict forwarding for provider-neutral specialist state', () => {
+    expect(main).toContain('forwardValidatedSpecialistStateToRenderers(bus');
+    expect(main).toContain("SpecialistTaskSnapshotSchema.safeParse(payload)");
+  });
 });

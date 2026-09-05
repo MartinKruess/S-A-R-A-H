@@ -6,6 +6,22 @@ import type { SaveConfigResult } from './config-apply.js';
 import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 import type { PlaybackId, TurnId, VoiceCaptureId } from './turn-contract.js';
 import type { LegacyDbRecoveryResult, LegacyDbRecoveryReview } from './storage/storage.interface.js';
+import type {
+  AcknowledgeAiWarningsInput,
+  AiHubMutationResult,
+  AiProviderHubSnapshot,
+  CheckAiConnectionHealthInput,
+  DeleteAiConnectionInput,
+  ReplaceAiBindingsInput,
+  SaveAiApiKeyInput,
+} from './ai-provider-contract.js';
+import type {
+  SpecialistTaskControlResult,
+  SpecialistTaskIdInput,
+  SpecialistTaskList,
+  SpecialistTaskProvideInput,
+  SpecialistTaskResumeInput,
+} from './specialist-task-ipc.js';
 
 /** IPC channels using ipcMain.handle / ipcRenderer.invoke (request-response) */
 export interface IpcCommands {
@@ -56,6 +72,16 @@ export interface IpcCommands {
   'connection-connect':         { input: string; output: { ok: boolean; error?: string } };
   'connection-cancel':          { input: string; output: void };
   'connection-disconnect':      { input: string; output: void };
+  'ai-provider-hub-list':        { input: void; output: AiProviderHubSnapshot };
+  'ai-provider-save-key':        { input: SaveAiApiKeyInput; output: AiHubMutationResult };
+  'ai-provider-acknowledge-warnings': { input: AcknowledgeAiWarningsInput; output: AiHubMutationResult };
+  'ai-provider-delete':          { input: DeleteAiConnectionInput; output: AiHubMutationResult };
+  'ai-provider-save-bindings':   { input: ReplaceAiBindingsInput; output: AiHubMutationResult };
+  'ai-provider-check-health':    { input: CheckAiConnectionHealthInput; output: AiHubMutationResult };
+  'specialist-tasks-list':       { input: void; output: SpecialistTaskList };
+  'specialist-task-provide-input': { input: SpecialistTaskProvideInput; output: SpecialistTaskControlResult };
+  'specialist-task-resume':      { input: SpecialistTaskResumeInput; output: SpecialistTaskControlResult };
+  'specialist-task-cancel':      { input: SpecialistTaskIdInput; output: SpecialistTaskControlResult };
 }
 
 /** IPC events sent from main to renderer (one-way, forwarded bus events) */
@@ -67,6 +93,7 @@ export interface IpcEvents {
   'turn:terminal':     BusEvents['turn:terminal'];
   'storage:degraded':  BusEvents['storage:degraded'];
   'privacy:incognito': BusEvents['privacy:incognito'];
+  'specialist:state':  BusEvents['specialist:state'];
   'voice:state':       BusEvents['voice:state'];
   'voice:capture-flush-request': BusEvents['voice:capture-flush-request'];
   'voice:transcript':  BusEvents['voice:transcript'];
@@ -122,6 +149,16 @@ export const IPC_COMMAND_CHANNELS: Readonly<Record<keyof IpcCommands, true>> = {
   'connection-connect': true,
   'connection-cancel': true,
   'connection-disconnect': true,
+  'ai-provider-hub-list': true,
+  'ai-provider-save-key': true,
+  'ai-provider-acknowledge-warnings': true,
+  'ai-provider-delete': true,
+  'ai-provider-save-bindings': true,
+  'ai-provider-check-health': true,
+  'specialist-tasks-list': true,
+  'specialist-task-provide-input': true,
+  'specialist-task-resume': true,
+  'specialist-task-cancel': true,
 };
 
 export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
@@ -132,6 +169,7 @@ export const IPC_EVENT_CHANNELS: Readonly<Record<keyof IpcEvents, true>> = {
   'turn:terminal': true,
   'storage:degraded': true,
   'privacy:incognito': true,
+  'specialist:state': true,
   'voice:state': true,
   'voice:capture-flush-request': true,
   'voice:transcript': true,

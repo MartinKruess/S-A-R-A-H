@@ -5,6 +5,7 @@ import { toRowView, performAction } from './connections-section-logic.js';
 import type { ConnectionInfo } from '../../../../core/sarah-api.js';
 import type { SarahConfig } from '../../../../core/config-schema.js';
 import { createSettingsSubtabs } from '../../../shared/settings-subtabs.js';
+import { createAiProviderSection } from './ai-provider-section.js';
 
 /**
  * "Integrationen" settings section: lists every OAuth provider with a status
@@ -32,6 +33,7 @@ export function createConnectionsSection(_config: SarahConfig): HTMLElement {
   errorBox.className = 'conn-error';
   errorBox.hidden = true;
   externalPanel.appendChild(errorBox);
+  externalPanel.appendChild(createAiProviderSection());
 
   const localPanel = document.createElement('div');
   localPanel.className = 'settings-subtab-empty';

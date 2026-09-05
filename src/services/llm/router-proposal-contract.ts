@@ -23,13 +23,30 @@ const handoffProposalSchema = z.object({
   evidence: evidenceSchema,
 }).strict();
 
-export const routerPlanProposalSchema = z.object({
-  intents: z.array(z.discriminatedUnion('kind', [
-    actionProposalSchema,
-    answerProposalSchema,
-    handoffProposalSchema,
-  ])).min(2).max(3),
+const planIntentSchema = z.discriminatedUnion('kind', [
+  actionProposalSchema,
+  answerProposalSchema,
+  handoffProposalSchema,
+]);
+
+const boundedMultiIntentProposalSchema = z.object({
+  intents: z.array(planIntentSchema).min(2).max(3),
 }).strict();
+
+const singleSpecialistHandoffProposalSchema = z.object({
+  intents: z.tuple([
+    z.object({
+      kind: z.literal('handoff'),
+      specialist: z.enum(['coding', 'research']),
+      evidence: evidenceSchema,
+    }).strict(),
+  ]),
+}).strict();
+
+export const routerPlanProposalSchema = z.union([
+  singleSpecialistHandoffProposalSchema,
+  boundedMultiIntentProposalSchema,
+]);
 
 export type RouterPlanProposal = z.infer<typeof routerPlanProposalSchema>;
 export type RouterIntentProposal = RouterPlanProposal['intents'][number];
@@ -48,6 +65,7 @@ export type RouterProposalParseResult =
  * @param output - Vollständige, nicht vertrauenswürdige Router-Ausgabe.
  *
  * - Akzeptiert ausschließlich das verankerte V1-Präfix mit strengem JSON.
+ * - Akzeptiert einen einzelnen Coding-/Research-Handoff oder zwei bis drei Intents.
  * - Begrenzt Ausgabegröße, Intent-Anzahl und erlaubte Felder.
  * - Führt keine Aktionen oder Handoffs aus.
  *

@@ -21,10 +21,18 @@ import { SUMMARY_NUM_PREDICT, SUMMARY_TEMPERATURE } from './services/search/summ
 import { registerProgramHandlers } from './main/ipc-programs.js';
 import { registerConfigHandlers } from './main/ipc-config.js';
 import { registerConnectionHandlers } from './main/ipc-connections.js';
+import { registerAiProviderHandlers } from './main/ipc-ai-providers.js';
+import { registerSpecialistTaskHandlers } from './main/ipc-specialist-tasks.js';
 import { KeyAccessError, KeyManager } from './core/crypto/key-manager.js';
 import { resetAfterFinalKeyLoss } from './core/crypto/key-loss-reset.js';
 import { TokenStore } from './services/integrations/token-store.js';
 import { OAuthConnectionService } from './services/integrations/oauth-connection-service.js';
+import { AiCredentialStore } from './services/integrations/ai-credential-store.js';
+import { AiProviderHubStore } from './services/integrations/ai-provider-hub-store.js';
+import { AiProviderHubService } from './services/integrations/ai-provider-hub-service.js';
+import { SpecialistTaskStore } from './services/specialists/specialist-task-store.js';
+import { SpecialistRuntimeService } from './services/specialists/specialist-runtime-service.js';
+import { SpecialistHandoffCoordinator } from './services/specialists/specialist-handoff-coordinator.js';
 import { getOAuthProviders, redirectPort } from './services/integrations/providers.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
@@ -50,6 +58,7 @@ let systemActions: SystemActions | null = null;
 let bindPrimaryWindowLifecycle: ((window: BrowserWindow) => void) | null = null;
 // Kept in module scope so the IPC connection handlers can read it at call time.
 let oauth: OAuthConnectionService | null = null;
+let aiProviderHub: AiProviderHubService | null = null;
 
 /**
  * Dev convenience: load a project-root `.env` (KEY=VALUE) into process.env so
@@ -216,8 +225,6 @@ function startPrimaryInstance(): void {
       appContext?.lifecycle.setCapability(name, state, message);
     },
   });
-  const routerService = new RouterService(appContext, modelRuntime);
-
   // --- Action layer (Spec Action-Layer V1) ---
   const resourcesPath = app.isPackaged
     ? process.resourcesPath
@@ -266,6 +273,43 @@ function startPrimaryInstance(): void {
     await oauth?.destroy();
     oauth = null;
   });
+  const aiCredentialStore = new AiCredentialStore(app.getPath('userData'), keyManager);
+  const aiProviderHubStore = new AiProviderHubStore(app.getPath('userData'));
+  aiProviderHub = new AiProviderHubService(aiProviderHubStore, aiCredentialStore);
+  appContext.lifecycle.registerCleanup('ai-provider-hub', () => {
+    aiProviderHub?.destroy();
+    aiProviderHub = null;
+  });
+  // Slice 2 owns the provider-neutral specialist lifecycle. Concrete provider
+  // adapters and credential resolution are added in their dedicated slices;
+  // until then this runtime fails closed and only reconciles durable metadata.
+  const specialistRuntime = new SpecialistRuntimeService({
+    store: new SpecialistTaskStore(app.getPath('userData')),
+    adapters: [],
+    resolveBinding: () => null,
+    resolveCredential: () => null,
+  });
+  const specialistHandoffs = new SpecialistHandoffCoordinator(
+    specialistRuntime,
+    () => null,
+  );
+  await specialistRuntime.reconcile();
+  const stopSpecialistStateForwarding = specialistRuntime.subscribe((snapshot) => {
+    appContext?.bus.emit('specialists', 'specialist:state', snapshot);
+  });
+  appContext.lifecycle.registerCleanup('specialist-runtime', () => {
+    const shutdown = specialistRuntime.destroy();
+    stopSpecialistStateForwarding();
+    specialistHandoffs.clear();
+    return shutdown;
+  }, 'before_services');
+  const routerService = new RouterService(
+    appContext,
+    modelRuntime,
+    undefined,
+    undefined,
+    { specialistHandoffs },
+  );
   const spotifyActions = new SpotifyActions(oauth);
   const mediaController = new WindowsMediaController(
     path.join(resourcesPath, 'media-helper', 'media-helper.exe'),
@@ -445,6 +489,14 @@ function startPrimaryInstance(): void {
   });
 
   registerConnectionHandlers(ipcMain, { getOAuth: () => oauth! });
+  registerAiProviderHandlers(ipcMain, { getHub: () => aiProviderHub! });
+  registerSpecialistTaskHandlers(ipcMain, {
+    getRuntime: () => specialistRuntime,
+    isShuttingDown: () => {
+      const state = appContext?.lifecycle.snapshot.state;
+      return state === 'stopping' || state === 'stopped';
+    },
+  });
 
   const voiceLevel = registerVoiceLevelForwarder({
     getMainWindow,

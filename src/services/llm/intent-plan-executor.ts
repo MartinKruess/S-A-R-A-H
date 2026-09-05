@@ -4,7 +4,9 @@ import {
   cancelPlanExecution,
   createPlanExecutionState,
   getReadyPlanStepIds,
+  resumeConfirmedPlanStep,
   startPlanSteps,
+  suspendPlanStepForConfirmation,
   type PlanCancellationReason,
   type PlanExecutionState,
   type PlanStepReportedFailureReason,
@@ -16,6 +18,10 @@ export type IntentPlanAdapterResult =
     readonly status: 'failed';
     readonly reason: PlanStepReportedFailureReason;
   };
+
+export type IntentPlanConfirmationAdapterResult =
+  | IntentPlanAdapterResult
+  | { readonly status: 'waiting_confirmation' };
 
 export interface IntentPlanExecutionContext {
   readonly planId: string;
@@ -43,7 +49,7 @@ export interface IntentPlanExecutorAdapters {
     step: StepOfKind<'handoff_confirmation'>,
     context: IntentPlanExecutionContext,
     signal?: AbortSignal,
-  ): Promise<IntentPlanAdapterResult>;
+  ): Promise<IntentPlanConfirmationAdapterResult>;
   executeSpecialistHandoff(
     step: StepOfKind<'specialist_handoff'>,
     context: IntentPlanExecutionContext,
@@ -83,7 +89,29 @@ export class IntentPlanExecutor {
     cancellationReason: PlanCancellationReason = 'turn_canceled',
   ): Promise<PlanExecutionState> {
     if (!validateIntentPlan(plan)) throw new Error('Intent plan is invalid');
-    let state = createPlanExecutionState(plan);
+    return this.run(plan, createPlanExecutionState(plan), signal, cancellationReason);
+  }
+
+  /** Resumes exactly one confirmed suspended step without replaying completed adapters. */
+  async resume(
+    plan: IntentPlan,
+    state: PlanExecutionState,
+    confirmedStepId: string,
+    signal?: AbortSignal,
+    cancellationReason: PlanCancellationReason = 'turn_canceled',
+  ): Promise<PlanExecutionState> {
+    if (!validateIntentPlan(plan)) throw new Error('Intent plan is invalid');
+    const resumed = resumeConfirmedPlanStep(plan, state, confirmedStepId);
+    return this.run(plan, resumed, signal, cancellationReason);
+  }
+
+  private async run(
+    plan: IntentPlan,
+    initialState: PlanExecutionState,
+    signal?: AbortSignal,
+    cancellationReason: PlanCancellationReason = 'turn_canceled',
+  ): Promise<PlanExecutionState> {
+    let state = initialState;
     const context = executionContext(plan);
 
     while (state.status === 'running') {
@@ -101,13 +129,18 @@ export class IntentPlanExecutor {
       state = startPlanSteps(plan, state, [nextStep.stepId]);
       try {
         const result = await this.executeStep(nextStep, context, signal);
+        if (result.status === 'waiting_confirmation') {
+          if (nextStep.kind !== 'handoff_confirmation') {
+            throw new Error('Only a handoff confirmation can suspend a plan');
+          }
+          const waiting = suspendPlanStepForConfirmation(plan, state, nextStep.stepId);
+          return signal?.aborted
+            ? cancelPlanExecution(plan, waiting, cancellationReason)
+            : waiting;
+        }
         state = applyPlanStepOutcome(plan, state, result.status === 'succeeded'
           ? { stepId: nextStep.stepId, status: 'succeeded' }
-          : {
-            stepId: nextStep.stepId,
-            status: 'failed',
-            reason: result.reason,
-          });
+          : { stepId: nextStep.stepId, status: 'failed', reason: result.reason });
         if (signal?.aborted && state.status === 'running') {
           return cancelPlanExecution(plan, state, cancellationReason);
         }
@@ -132,7 +165,7 @@ export class IntentPlanExecutor {
     step: IntentPlanStep,
     context: IntentPlanExecutionContext,
     signal?: AbortSignal,
-  ): Promise<IntentPlanAdapterResult> {
+  ): Promise<IntentPlanConfirmationAdapterResult> {
     switch (step.kind) {
       case 'action':
         return this.adapters.executeAction(step, context, signal);

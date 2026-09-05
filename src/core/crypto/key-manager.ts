@@ -17,6 +17,7 @@ const EXISTING_ENCRYPTED_STORES = [
   'connections.enc',
   'connections.enc.bak',
 ] as const;
+const EXISTING_ENCRYPTED_STORE_DIRECTORIES = ['ai-credentials'] as const;
 
 interface SafeStorageAdapter {
   isEncryptionAvailable(): boolean;
@@ -113,9 +114,7 @@ export class KeyManager {
       }
     }
 
-    const existingStore = EXISTING_ENCRYPTED_STORES.find((name) =>
-      this.fileExists(path.join(this.storageDir, name)),
-    );
+    const existingStore = this.findExistingEncryptedStore();
     if (existingStore) {
       throw new KeyAccessError(
         'encrypted-stores-without-key',
@@ -248,6 +247,29 @@ export class KeyManager {
         `Der S.A.R.A.H.-Speicher ist vorübergehend nicht zugreifbar (${path.basename(filePath)}).`,
       );
     }
+  }
+
+  private findExistingEncryptedStore(): string | undefined {
+    const fileStore = EXISTING_ENCRYPTED_STORES.find((name) =>
+      this.fileExists(path.join(this.storageDir, name)),
+    );
+    if (fileStore) return fileStore;
+
+    for (const name of EXISTING_ENCRYPTED_STORE_DIRECTORIES) {
+      const directoryPath = path.join(this.storageDir, name);
+      try {
+        const stat = fs.lstatSync(directoryPath);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) return name;
+        if (fs.readdirSync(directoryPath).length > 0) return name;
+      } catch (error) {
+        if (this.isMissingFile(error)) continue;
+        throw new KeyAccessError(
+          'key-files-unavailable',
+          `Der S.A.R.A.H.-Speicher ist vorübergehend nicht zugreifbar (${name}).`,
+        );
+      }
+    }
+    return undefined;
   }
 
   private isMissingFile(error: unknown): boolean {

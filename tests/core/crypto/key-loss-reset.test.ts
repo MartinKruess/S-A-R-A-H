@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { KeyAccessError, KeyManager } from '../../../src/core/crypto/key-manager.js';
 import {
+  FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES,
   FINAL_KEY_LOSS_ARCHIVE_FILES,
   FINAL_KEY_LOSS_RESET_CONFIRMATION,
   KeyLossResetError,
@@ -32,6 +33,9 @@ describe('final key loss reset', () => {
       if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, `encrypted-${index}`, 'utf-8');
       expected.set(fileName, fs.readFileSync(filePath));
     }
+    const credentialDir = path.join(tmpDir, FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES[0]);
+    fs.mkdirSync(credentialDir);
+    fs.writeFileSync(path.join(credentialDir, 'connection.enc'), 'encrypted-ai-key', 'utf-8');
     fs.writeFileSync(path.join(tmpDir, 'unrelated-electron-state.json'), 'keep-me', 'utf-8');
     const failure = readFinalLoss(tmpDir, NEW_WRAPPING_KEY);
     const events: string[] = [];
@@ -46,7 +50,10 @@ describe('final key loss reset', () => {
       },
     );
 
-    expect(result.archivedFiles).toEqual([...FINAL_KEY_LOSS_ARCHIVE_FILES]);
+    expect(result.archivedFiles).toEqual([
+      ...FINAL_KEY_LOSS_ARCHIVE_FILES,
+      ...FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES,
+    ]);
     expect(events.slice(0, 2)).toEqual(['sarah.key', 'sarah.key.bak']);
     expect(path.dirname(result.archivePath)).toBe(path.join(tmpDir, 'key-loss-recovery'));
     for (const [fileName, bytes] of expected) {
@@ -57,6 +64,11 @@ describe('final key loss reset', () => {
       if (fileName === 'sarah.key' || fileName === 'sarah.key.bak') continue;
       expect(fs.existsSync(path.join(tmpDir, fileName))).toBe(false);
     }
+    expect(fs.readFileSync(
+      path.join(result.archivePath, FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES[0], 'connection.enc'),
+      'utf-8',
+    )).toBe('encrypted-ai-key');
+    expect(fs.existsSync(credentialDir)).toBe(false);
     expect(fs.existsSync(path.join(tmpDir, 'sarah.key'))).toBe(true);
     expect(fs.existsSync(path.join(tmpDir, 'sarah.key.bak'))).toBe(true);
     const freshKey = new KeyManager(tmpDir, { testWrappingKey: NEW_WRAPPING_KEY }).getOrCreateKey();
@@ -70,7 +82,7 @@ describe('final key loss reset', () => {
     expect(manifest).toMatchObject({
       version: 1,
       reason: 'key-envelopes-unreadable',
-      files: [...FINAL_KEY_LOSS_ARCHIVE_FILES],
+      files: [...FINAL_KEY_LOSS_ARCHIVE_FILES, ...FINAL_KEY_LOSS_ARCHIVE_DIRECTORIES],
     });
   });
 

@@ -6,8 +6,42 @@ import type { ConnectionInfo } from '../services/integrations/oauth-connection-s
 import type { SaveConfigResult } from './config-apply.js';
 import type { RuntimeSnapshot } from './app-lifecycle-controller.js';
 import type { LegacyDbRecoveryResult, LegacyDbRecoveryReview } from './storage/storage.interface.js';
+import type {
+  AcknowledgeAiWarningsInput,
+  AiHubMutationResult,
+  AiProviderHubSnapshot,
+  CheckAiConnectionHealthInput,
+  DeleteAiConnectionInput,
+  ReplaceAiBindingsInput,
+  SaveAiApiKeyInput,
+} from './ai-provider-contract.js';
+import type {
+  SpecialistTaskControlResult,
+  SpecialistTaskIdInput,
+  SpecialistTaskList,
+  SpecialistTaskProvideInput,
+  SpecialistTaskResumeInput,
+} from './specialist-task-ipc.js';
+import type { SpecialistTaskSnapshot } from './specialist-task.js';
 
 export type { ConnectionInfo };
+export type {
+  AcknowledgeAiWarningsInput,
+  AiHubMutationResult,
+  AiProviderHubSnapshot,
+  CheckAiConnectionHealthInput,
+  DeleteAiConnectionInput,
+  ReplaceAiBindingsInput,
+  SaveAiApiKeyInput,
+};
+export type {
+  SpecialistTaskControlResult,
+  SpecialistTaskIdInput,
+  SpecialistTaskList,
+  SpecialistTaskProvideInput,
+  SpecialistTaskResumeInput,
+  SpecialistTaskSnapshot,
+};
 
 /** Boot sequence status sent from main to splash renderer */
 export type BootStatus = {
@@ -56,6 +90,25 @@ export interface SarahConnectionsApi {
   disconnect(id: string): Promise<void>;
 }
 
+/** AI provider hub sub-API exposed to renderers. */
+export interface SarahAiProvidersApi {
+  list(): Promise<AiProviderHubSnapshot>;
+  saveApiKey(input: SaveAiApiKeyInput): Promise<AiHubMutationResult>;
+  acknowledgeWarnings(input: AcknowledgeAiWarningsInput): Promise<AiHubMutationResult>;
+  deleteConnection(input: DeleteAiConnectionInput): Promise<AiHubMutationResult>;
+  replaceBindings(input: ReplaceAiBindingsInput): Promise<AiHubMutationResult>;
+  checkHealth(input: CheckAiConnectionHealthInput): Promise<AiHubMutationResult>;
+}
+
+/** Provider-neutral specialist task controls exposed to renderers. */
+export interface SarahSpecialistsApi {
+  list(): Promise<SpecialistTaskList>;
+  provideInput(input: SpecialistTaskProvideInput): Promise<SpecialistTaskControlResult>;
+  resume(input: SpecialistTaskResumeInput): Promise<SpecialistTaskControlResult>;
+  cancel(input: SpecialistTaskIdInput): Promise<SpecialistTaskControlResult>;
+  onStateChange(cb: (snapshot: SpecialistTaskSnapshot) => void): () => void;
+}
+
 /** Full API exposed to renderers via contextBridge as `sarah` global */
 export interface SarahApi {
   version: string;
@@ -102,4 +155,6 @@ export interface SarahApi {
   onBusDiagnostic(cb: (data: BusDiagnostic) => void): () => void;
   voice: SarahVoiceApi;
   connections: SarahConnectionsApi;
+  aiProviders: SarahAiProvidersApi;
+  specialists: SarahSpecialistsApi;
 }

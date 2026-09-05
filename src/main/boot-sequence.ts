@@ -7,7 +7,12 @@ import type { OllamaContainerManager } from '../services/llm/ollama-container-ma
 import type { RouterService } from '../services/llm/router-service.js';
 import type { PiperProvider } from '../services/voice/providers/piper-provider.js';
 import { VoiceService } from '../services/voice/voice-service.js';
-import { forwardToRenderers, sendToRendererSafely } from './forward-to-renderers.js';
+import {
+  forwardToRenderers,
+  forwardValidatedSpecialistStateToRenderers,
+  sendToRendererSafely,
+} from './forward-to-renderers.js';
+import { SpecialistTaskSnapshotSchema } from '../core/specialist-task.js';
 import { isValidChatInput, isValidChatMessage } from './ipc-validation.js';
 import { deriveBootCapabilitySteps } from './boot-capabilities.js';
 import type { CapabilitySnapshot } from '../core/app-lifecycle-controller.js';
@@ -442,6 +447,10 @@ export function registerBootHandlers(deps: BootSequenceDeps): () => void {
     forwardToRenderers(bus, 'turn:terminal'),
     forwardToRenderers(bus, 'storage:degraded'),
     forwardToRenderers(bus, 'privacy:incognito'),
+    forwardValidatedSpecialistStateToRenderers(bus, (payload) => {
+      const parsed = SpecialistTaskSnapshotSchema.safeParse(payload);
+      return parsed.success ? parsed.data : null;
+    }),
   ];
 
   const runtimeUnsubscribe = getAppContext().lifecycle.subscribe((snapshot) => {

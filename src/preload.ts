@@ -171,6 +171,32 @@ const api: SarahApi = {
     cancel: (id) => ipcRenderer.invoke('connection-cancel', id),
     disconnect: (id) => ipcRenderer.invoke('connection-disconnect', id),
   },
+
+  // AI provider hub API
+  aiProviders: {
+    list: () => ipcRenderer.invoke('ai-provider-hub-list'),
+    saveApiKey: (input) => ipcRenderer.invoke('ai-provider-save-key', input),
+    acknowledgeWarnings: (input) => ipcRenderer.invoke('ai-provider-acknowledge-warnings', input),
+    deleteConnection: (input) => ipcRenderer.invoke('ai-provider-delete', input),
+    replaceBindings: (input) => ipcRenderer.invoke('ai-provider-save-bindings', input),
+    checkHealth: (input) => ipcRenderer.invoke('ai-provider-check-health', input),
+  },
+
+  // Provider-neutral specialist task API
+  specialists: {
+    list: () => ipcRenderer.invoke('specialist-tasks-list'),
+    provideInput: (input) => ipcRenderer.invoke('specialist-task-provide-input', input),
+    resume: (input) => ipcRenderer.invoke('specialist-task-resume', input),
+    cancel: (input) => ipcRenderer.invoke('specialist-task-cancel', input),
+    onStateChange: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: IpcEvents['specialist:state'],
+      ) => callback(data);
+      ipcRenderer.on('specialist:state', handler);
+      return () => ipcRenderer.removeListener('specialist:state', handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('sarah', api);
