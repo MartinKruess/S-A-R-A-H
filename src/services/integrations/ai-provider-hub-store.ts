@@ -15,6 +15,7 @@ import {
   type AiRoleBinding,
 } from '../../core/ai-provider-contract.js';
 import { getAiProviderCatalogEntry } from './ai-provider-catalog.js';
+import { resolveAiAuthPolicy } from './ai-auth-policy.js';
 
 const STORE_FILE = 'ai-provider-hub.json';
 const STORE_SCHEMA_VERSION = 1;
@@ -372,6 +373,9 @@ export class AiProviderHubStore {
         binding.role,
         binding.operationId,
       )) return false;
+      if (!resolveAiAuthPolicy(connection.providerId, binding.operationId, connection.authKind)) {
+        return false;
+      }
       if (binding.revision !== snapshot.bindingRevision) return false;
       const rolePositions = positions.get(binding.role) ?? [];
       rolePositions.push(binding.position);

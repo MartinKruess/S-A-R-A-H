@@ -1,5 +1,43 @@
 # AI Specialist Integration Decisions
 
+## Authentication boundary (approved 2026-09-05)
+
+Sarah uses only the documented integration routes:
+
+| Operation | Authentication | Billing |
+| --- | --- | --- |
+| OpenAI Responses text/research | User API key | Separate API usage |
+| Codex App Server coding | User API key or Codex-managed ChatGPT login | Actual selected API or ChatGPT plan |
+| Anthropic Messages / own Agent SDK adapter | User API key | Separate API usage |
+| Perplexity research | User API key | Separate API usage |
+
+No cookie extraction, imported consumer session tokens, subscription-to-API
+proxy, credential sharing or silent switch from subscription limits to paid API.
+Codex owns its managed login and refresh; Sarah neither collects the user's
+ChatGPT password nor copies session tokens into its API credential store.
+Managed login must remain unavailable if secure isolated session storage fails.
+
+Anthropic's allowance for users signing into an unmodified Claude Code binary
+under its hosting terms does not authorize Sarah's own Agent SDK login flow.
+That alternative is outside this implementation. Perplexity's API-only choice
+reflects the documented supported route, not a claim of an identical prohibition.
+
+The billing disclosure follows verified authentication, not just provider name.
+For API paths the warnings below remain mandatory. For managed Codex display a
+separate versioned acknowledgement explaining ChatGPT plan access/limits and no
+general API entitlement. Do not promise zero costs or unlimited use.
+
+Before distribution recheck current terms, binary license/notices, supported
+login and secure storage against the actual shipped version. This design is not
+a legal guarantee or permission to bypass provider policies or workspace limits.
+
+Sources checked 2026-09-05:
+
+- https://learn.chatgpt.com/docs/app-server
+- https://learn.chatgpt.com/docs/auth
+- https://code.claude.com/docs/en/legal-and-compliance
+- https://www.perplexity.ai/help-center/en/articles/10354847-api-payment-and-billing
+
 ## General external AI API cost warning
 
 When a user selects a separately billed external AI API connection, Sarah must display the following warning prominently before the connection is created:
