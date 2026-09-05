@@ -24,8 +24,19 @@ describe('parseRouterPlanProposal', () => {
     expect(three.ok).toBe(true);
   });
 
+  it.each(['coding', 'research'] as const)(
+    'accepts one provider-neutral %s handoff',
+    (specialist) => {
+      expect(parseRouterPlanProposal(proposal([
+        { kind: 'handoff', specialist, evidence: 'Bearbeite dieses ausdrückliche Ziel' },
+      ])).ok).toBe(true);
+    },
+  );
+
   it.each([
     [{ kind: 'answer', evidence: 'nur eine Frage' }],
+    [{ kind: 'action', action: 'open_program', param: 'spotify', evidence: 'Öffne Spotify' }],
+    [{ kind: 'handoff', specialist: 'vision', evidence: 'Prüfe dieses Bild' }],
     [
       { kind: 'answer', evidence: 'eins' },
       { kind: 'action', action: 'open_program', param: 'spotify', evidence: 'zwei' },
@@ -37,6 +48,17 @@ describe('parseRouterPlanProposal', () => {
       ok: false,
       reason: 'invalid_schema',
     });
+  });
+
+  it('rejects provider selection and other authority fields on a single handoff', () => {
+    expect(parseRouterPlanProposal(proposal([
+      {
+        kind: 'handoff',
+        specialist: 'coding',
+        evidence: 'Baue TTS in Sarah ein',
+        provider: 'openai',
+      },
+    ]))).toEqual({ ok: false, reason: 'invalid_schema' });
   });
 
   it('rejects fields that let the model choose planning or authority state', () => {

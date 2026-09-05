@@ -18,6 +18,7 @@ import { compileRouterPlanProposal } from './router-plan-validator.js';
 import {
   IntentPlanExecutor,
 } from './intent-plan-executor.js';
+import type { SpecialistHandoffCoordinator } from '../specialists/specialist-handoff-coordinator.js';
 import {
   isActiveReminderListShortcut,
   reminderCancelFromMisroutedSet,
@@ -41,6 +42,7 @@ interface RouterWorkerFlowOptions {
   isWorkerUnavailable: () => boolean;
   buildDecisionContext: (envelope: TurnEnvelope) => DecisionContext | null;
   reminderClock: ReminderClock;
+  specialistHandoffs?: SpecialistHandoffCoordinator;
 }
 
 const PLAN_REJECTED_MESSAGE = 'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.';
@@ -352,10 +354,9 @@ export class RouterWorkerFlow {
           ? { status: 'succeeded' }
           : { status: 'failed', reason: 'answer_failed' };
       },
-      requestHandoffConfirmation: async () => ({
-        status: 'failed',
-        reason: 'confirmation_failed',
-      }),
+      requestHandoffConfirmation: async () => this.options.specialistHandoffs
+        ? { status: 'waiting_confirmation' }
+        : { status: 'failed', reason: 'confirmation_failed' },
       executeSpecialistHandoff: async () => ({
         status: 'failed',
         reason: 'handoff_failed',
@@ -363,6 +364,17 @@ export class RouterWorkerFlow {
     });
     const state = await executor.execute(plan, signal);
     throwIfAborted(signal);
+    if (state.status === 'waiting_confirmation') {
+      const registration = this.options.specialistHandoffs?.register(plan, state);
+      if (registration?.ok) {
+        await this.options.emitAssistantResponse(
+          envelope.turnId,
+          registration.prompt,
+          signal,
+        );
+        return;
+      }
+    }
     if (state.status !== 'completed') {
       await this.options.emitAssistantResponse(envelope.turnId, PLAN_INCOMPLETE_MESSAGE, signal);
     }

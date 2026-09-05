@@ -5,7 +5,9 @@ import {
   cancelPlanExecution,
   createPlanExecutionState,
   getReadyPlanStepIds,
+  resumeConfirmedPlanStep,
   startPlanSteps,
+  suspendPlanStepForConfirmation,
 } from '../../src/core/plan-execution-state.js';
 import {
   createIntentPlan,
@@ -179,5 +181,76 @@ describe('plan execution state', () => {
     expect(state.cancellationReason).toBe('user_canceled');
     expect(state.steps.map((step) => step.status)).toEqual(['succeeded', 'canceled', 'canceled']);
     expect(cancelPlanExecution(source, state, 'user_canceled')).toBe(state);
+  });
+
+  it('suspends exactly one running handoff confirmation and resumes it once', () => {
+    const source = createIntentPlan({
+      sourceTurnId: TURN_ID,
+      intents: [{
+        kind: 'handoff',
+        order: 'independent',
+        evidence: evidence(0),
+        capability: 'coding',
+        task: 'Prüfe den Code.',
+      }],
+    });
+    const confirmationId = source.steps[0]!.stepId;
+    const handoffId = source.steps[1]!.stepId;
+    const running = startPlanSteps(source, createPlanExecutionState(source), [confirmationId]);
+
+    const waiting = suspendPlanStepForConfirmation(source, running, confirmationId);
+
+    expect(waiting.status).toBe('waiting_confirmation');
+    expect(waiting.steps).toMatchObject([
+      { stepId: confirmationId, status: 'waiting_confirmation', attempts: 1 },
+      { stepId: handoffId, status: 'pending', attempts: 0 },
+    ]);
+    expect(getReadyPlanStepIds(source, waiting)).toEqual([]);
+
+    const resumed = resumeConfirmedPlanStep(source, waiting, confirmationId);
+    expect(resumed.status).toBe('running');
+    expect(resumed.steps[0]).toMatchObject({ status: 'succeeded', attempts: 1 });
+    expect(getReadyPlanStepIds(source, resumed)).toEqual([handoffId]);
+    expect(() => resumeConfirmedPlanStep(source, resumed, confirmationId)).toThrow(/waiting/u);
+  });
+
+  it('refuses suspension for a non-confirmation step or a foreign step', () => {
+    const source = plan(['independent']);
+    const stepId = source.steps[0]!.stepId;
+    const running = startPlanSteps(source, createPlanExecutionState(source), [stepId]);
+
+    expect(() => suspendPlanStepForConfirmation(source, running, stepId))
+      .toThrow(/confirmation/u);
+    expect(() => suspendPlanStepForConfirmation(source, running, 'foreign'))
+      .toThrow(/confirmation/u);
+  });
+
+  it('cancels a suspended plan without undoing completed preparation', () => {
+    const preparation = actionIntent(0, 'independent');
+    const source = createIntentPlan({
+      sourceTurnId: TURN_ID,
+      intents: [preparation, {
+        kind: 'handoff',
+        order: 'after_previous',
+        evidence: evidence(1),
+        capability: 'research',
+        task: 'Recherchiere die Quellen.',
+      }],
+    });
+    const preparationId = source.steps[0]!.stepId;
+    const confirmationId = source.steps[1]!.stepId;
+    let state = startPlanSteps(source, createPlanExecutionState(source), [preparationId]);
+    state = applyPlanStepOutcome(source, state, { stepId: preparationId, status: 'succeeded' });
+    state = startPlanSteps(source, state, [confirmationId]);
+    state = suspendPlanStepForConfirmation(source, state, confirmationId);
+
+    const canceled = cancelPlanExecution(source, state, 'superseded');
+
+    expect(canceled.status).toBe('canceled');
+    expect(canceled.steps.map((step) => [step.status, step.attempts])).toEqual([
+      ['succeeded', 1],
+      ['canceled', 1],
+      ['canceled', 0],
+    ]);
   });
 });

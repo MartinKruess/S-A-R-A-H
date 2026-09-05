@@ -57,6 +57,29 @@ describe('buildRoutingPrompt output contract', () => {
     expect(prompt).toContain('Questions that explicitly ask which reminders');
   });
 
+  it('permits only provider-neutral single coding or research handoffs', () => {
+    const availableContext = createDecisionContext({
+      ...decisionContext,
+      capabilities: {
+        ...decisionContext.capabilities,
+        specialists: {
+          coding: { state: 'available', reason: 'ready' },
+          research: { state: 'available', reason: 'ready' },
+          vision: { state: 'unavailable', reason: 'no_adapter' },
+        },
+      },
+    });
+    const prompt = buildRoutingPrompt(new Date(2026, 8, 4, 10, 0), availableContext);
+
+    expect(prompt).toContain('exactly 1 explicit coding or research delegation goal');
+    expect(prompt).toContain('A single action, answer or vision request still uses exactly one legacy tag');
+    expect(prompt).toContain('Never name or choose a provider');
+    expect(prompt).toContain('User: Baue TTS in Sarah ein');
+    expect(prompt).toContain('"specialist":"coding"');
+    expect(prompt).toContain('User: Wie implementiert man TTS?\n[ROUTE:9b]');
+    expect(prompt).toContain('User: Wann fand die Fußball-WM statt?\n[ROUTE:9b]');
+  });
+
   it('forbids user-visible prose and routes every non-action to the worker', () => {
     const prompt = buildRoutingPrompt();
 
@@ -64,6 +87,7 @@ describe('buildRoutingPrompt output contract', () => {
     expect(prompt).toContain('Never answer the user');
     expect(prompt).toContain('For every non-action message return [ROUTE:9b]');
     expect(prompt).not.toContain('[ROUTE:self]');
+    expect(prompt).not.toContain('SARAH_PROPOSAL_V1');
   });
 
   it('defines Timer V2 durations, semantic labels and explicit cancel selectors', () => {

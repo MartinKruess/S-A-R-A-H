@@ -74,6 +74,81 @@ function statuses(plan: IntentPlan, state: Awaited<ReturnType<IntentPlanExecutor
 }
 
 describe('IntentPlanExecutor', () => {
+  it('returns a suspension and resumes the exact remaining state without replaying work', async () => {
+    const actionEvidence = evidence('action', 0, 0, 20);
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [
+        { kind: 'action', order: 'independent', intent: timerIntent(actionEvidence) },
+        {
+          kind: 'handoff',
+          order: 'after_previous',
+          evidence: evidence('handoff', 1, 30, 55),
+          capability: 'coding',
+          task: 'Prüfe den Diff.',
+        },
+      ],
+    });
+    const executeAction = vi.fn<IntentPlanExecutorAdapters['executeAction']>(
+      async () => ({ status: 'succeeded' }),
+    );
+    const requestConfirmation = vi.fn<IntentPlanExecutorAdapters['requestHandoffConfirmation']>(
+      async () => ({ status: 'waiting_confirmation' }),
+    );
+    const executeHandoff = vi.fn<IntentPlanExecutorAdapters['executeSpecialistHandoff']>(
+      async () => ({ status: 'succeeded' }),
+    );
+    const executor = new IntentPlanExecutor(adapters({
+      executeAction,
+      requestHandoffConfirmation: requestConfirmation,
+      executeSpecialistHandoff: executeHandoff,
+    }));
+
+    const waiting = await executor.execute(plan);
+
+    expect(waiting.status).toBe('waiting_confirmation');
+    expect(executeAction).toHaveBeenCalledOnce();
+    expect(requestConfirmation).toHaveBeenCalledOnce();
+    expect(executeHandoff).not.toHaveBeenCalled();
+
+    const resumed = await executor.resume(plan, waiting, plan.steps[1]!.stepId);
+
+    expect(resumed.status).toBe('completed');
+    expect(executeAction).toHaveBeenCalledOnce();
+    expect(requestConfirmation).toHaveBeenCalledOnce();
+    expect(executeHandoff).toHaveBeenCalledOnce();
+    await expect(executor.resume(plan, resumed, plan.steps[1]!.stepId)).rejects.toThrow(/waiting/u);
+  });
+
+  it('cancels instead of publishing a suspension when the turn aborts during confirmation', async () => {
+    const plan = createIntentPlan({
+      sourceTurnId: SOURCE_TURN_ID,
+      intents: [{
+        kind: 'handoff',
+        order: 'independent',
+        evidence: evidence('handoff', 0, 0, 20),
+        capability: 'research',
+        task: 'Recherchiere das Thema.',
+      }],
+    });
+    const controller = new AbortController();
+    const executor = new IntentPlanExecutor(adapters({
+      requestHandoffConfirmation: async () => {
+        controller.abort();
+        return { status: 'waiting_confirmation' };
+      },
+    }));
+
+    const state = await executor.execute(plan, controller.signal, 'turn_canceled');
+
+    expect(state.status).toBe('canceled');
+    expect(state.cancellationReason).toBe('turn_canceled');
+    expect(state.steps.map((step) => [step.status, step.attempts])).toEqual([
+      ['canceled', 1],
+      ['canceled', 0],
+    ]);
+  });
+
   it('dispatches every step kind serially in immutable plan order', async () => {
     const actionEvidence = evidence('action', 0, 0, 20);
     const plan = createIntentPlan({

@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
 import type { BusTopic } from '../core/bus-events.js';
+import type { BusEvents } from '../core/bus-events.js';
 import type { MessageBus } from '../core/message-bus.js';
 
 /** Deliver one IPC event without letting a closing renderer break main-process work. */
@@ -35,6 +36,27 @@ export function forwardToRenderers(bus: MessageBus, topic: BusTopic): () => void
         source: msg.source,
         timestamp: msg.timestamp,
         ...(turnId ? { turnId } : {}),
+      });
+    }
+  });
+}
+
+/** Forwards only payloads that pass a strict public-event projection. */
+export function forwardValidatedSpecialistStateToRenderers(
+  bus: MessageBus,
+  validate: (
+    payload: BusEvents['specialist:state'],
+  ) => BusEvents['specialist:state'] | null,
+): () => void {
+  return bus.on('specialist:state', (msg) => {
+    const payload = validate(msg.data);
+    if (!payload) return;
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!sendToRendererSafely(win, 'specialist:state', payload)) continue;
+      sendToRendererSafely(win, 'bus:diagnostic', {
+        topic: msg.topic,
+        source: msg.source,
+        timestamp: msg.timestamp,
       });
     }
   });

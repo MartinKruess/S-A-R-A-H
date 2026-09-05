@@ -181,6 +181,22 @@ const api: SarahApi = {
     replaceBindings: (input) => ipcRenderer.invoke('ai-provider-save-bindings', input),
     checkHealth: (input) => ipcRenderer.invoke('ai-provider-check-health', input),
   },
+
+  // Provider-neutral specialist task API
+  specialists: {
+    list: () => ipcRenderer.invoke('specialist-tasks-list'),
+    provideInput: (input) => ipcRenderer.invoke('specialist-task-provide-input', input),
+    resume: (input) => ipcRenderer.invoke('specialist-task-resume', input),
+    cancel: (input) => ipcRenderer.invoke('specialist-task-cancel', input),
+    onStateChange: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        data: IpcEvents['specialist:state'],
+      ) => callback(data);
+      ipcRenderer.on('specialist:state', handler);
+      return () => ipcRenderer.removeListener('specialist:state', handler);
+    },
+  },
 };
 
 contextBridge.exposeInMainWorld('sarah', api);

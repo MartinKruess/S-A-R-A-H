@@ -15,6 +15,14 @@ import type {
   ReplaceAiBindingsInput,
   SaveAiApiKeyInput,
 } from './ai-provider-contract.js';
+import type {
+  SpecialistTaskControlResult,
+  SpecialistTaskIdInput,
+  SpecialistTaskList,
+  SpecialistTaskProvideInput,
+  SpecialistTaskResumeInput,
+} from './specialist-task-ipc.js';
+import type { SpecialistTaskSnapshot } from './specialist-task.js';
 
 export type { ConnectionInfo };
 export type {
@@ -25,6 +33,14 @@ export type {
   DeleteAiConnectionInput,
   ReplaceAiBindingsInput,
   SaveAiApiKeyInput,
+};
+export type {
+  SpecialistTaskControlResult,
+  SpecialistTaskIdInput,
+  SpecialistTaskList,
+  SpecialistTaskProvideInput,
+  SpecialistTaskResumeInput,
+  SpecialistTaskSnapshot,
 };
 
 /** Boot sequence status sent from main to splash renderer */
@@ -84,6 +100,15 @@ export interface SarahAiProvidersApi {
   checkHealth(input: CheckAiConnectionHealthInput): Promise<AiHubMutationResult>;
 }
 
+/** Provider-neutral specialist task controls exposed to renderers. */
+export interface SarahSpecialistsApi {
+  list(): Promise<SpecialistTaskList>;
+  provideInput(input: SpecialistTaskProvideInput): Promise<SpecialistTaskControlResult>;
+  resume(input: SpecialistTaskResumeInput): Promise<SpecialistTaskControlResult>;
+  cancel(input: SpecialistTaskIdInput): Promise<SpecialistTaskControlResult>;
+  onStateChange(cb: (snapshot: SpecialistTaskSnapshot) => void): () => void;
+}
+
 /** Full API exposed to renderers via contextBridge as `sarah` global */
 export interface SarahApi {
   version: string;
@@ -131,4 +156,5 @@ export interface SarahApi {
   voice: SarahVoiceApi;
   connections: SarahConnectionsApi;
   aiProviders: SarahAiProvidersApi;
+  specialists: SarahSpecialistsApi;
 }
