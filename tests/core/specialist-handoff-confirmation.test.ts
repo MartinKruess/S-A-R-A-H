@@ -38,6 +38,23 @@ function subject(
 }
 
 describe('SpecialistHandoffConfirmationGate', () => {
+  it('pins model, credential generation, billing path, retention consent and provider budgets', () => {
+    const gate = new SpecialistHandoffConfirmationGate(5_000, () => 1_000, () => 'grant-new');
+    const original = subject({modelId:'example-model',backgroundConsent:true,
+      bindingLease:{...subject().bindingLease,credentialGeneration:2,authKind:'api_key'},
+      budget:{maxTurns:25,timeoutMs:60_000,maxOutputTokens:4096,maxToolCalls:10}});
+    gate.request(original);
+    const grant = gate.approve('grant-new',CONFIRMATION_TURN)!;
+    const changes: Partial<SpecialistHandoffConfirmationSubject>[] = [
+      {modelId:'other-model'}, {backgroundConsent:false},
+      {bindingLease:{...original.bindingLease,credentialGeneration:3}},
+      {bindingLease:{...original.bindingLease,authKind:'codex_managed_chatgpt'}},
+      {budget:{...original.budget,maxOutputTokens:8192}},
+      {budget:{...original.budget,maxToolCalls:20}},
+    ];
+    for (const change of changes) expect(gate.consume(grant,{...original,...change})).toBe(false);
+    expect(gate.consume(grant,original)).toBe(true);
+  });
   it('binds a short-lived grant to the exact subject and consumes it once', () => {
     let now = 1_000;
     const gate = new SpecialistHandoffConfirmationGate(5_000, () => now, () => 'grant-1');

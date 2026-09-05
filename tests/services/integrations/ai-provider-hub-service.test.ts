@@ -11,6 +11,7 @@ import {
 } from '../../../src/services/integrations/ai-provider-catalog.js';
 import { AiProviderHubService } from '../../../src/services/integrations/ai-provider-hub-service.js';
 import { AiProviderHubStore } from '../../../src/services/integrations/ai-provider-hub-store.js';
+import { CODEX_MANAGED_CHATGPT_NOTICE } from '../../../src/services/integrations/ai-auth-policy.js';
 
 describe('AiProviderHubService', () => {
   let tmpDir: string;
@@ -46,6 +47,86 @@ describe('AiProviderHubService', () => {
     expect(snapshot.connections).toEqual([]);
     expect(snapshot.bindings).toEqual([]);
     expect(snapshot.storage).toEqual({ state: 'ready' });
+  });
+
+  it('recovers only an exact accepted API identity without enabling unhealthy new dispatch', async () => {
+    await service.saveApiKey({ providerId: 'openai', apiKey: 'sk-recovery-fixture', acknowledgement: { generalWarningVersion: AI_GENERAL_COST_WARNING.version } });
+    const connectionId = service.snapshot().connections[0]!.connectionId;
+    const restarted = new AiProviderHubService(new AiProviderHubStore(tmpDir), credentials);
+    expect(restarted.resolveCredential(connectionId, 'openai', 1)).toBeNull();
+    expect(restarted.resolveRecoveryCredential(connectionId, 'openai', 1)).toBe('sk-recovery-fixture');
+    expect(restarted.resolveRecoveryCredential(connectionId, 'openai')).toBeNull();
+    expect(restarted.resolveRecoveryCredential(connectionId, 'openai', 2)).toBeNull();
+    expect(restarted.resolveRecoveryCredential(connectionId, 'anthropic', 1)).toBeNull();
+    restarted.invalidateConnection(connectionId);
+    expect(restarted.resolveRecoveryCredential(connectionId, 'openai', 1)).toBeNull();
+  });
+
+  it('does not recover a deleted API credential', async () => {
+    await service.saveApiKey({ providerId: 'openai', apiKey: 'sk-deleted-recovery-fixture', acknowledgement: { generalWarningVersion: AI_GENERAL_COST_WARNING.version } });
+    const connectionId = service.snapshot().connections[0]!.connectionId;
+    expect(service.resolveRecoveryCredential(connectionId, 'openai', 1)).toBe('sk-deleted-recovery-fixture');
+    expect((await service.deleteConnection({ connectionId })).ok).toBe(true);
+    expect(new AiProviderHubService(new AiProviderHubStore(tmpDir), credentials).resolveRecoveryCredential(connectionId, 'openai', 1)).toBeNull();
+  });
+
+  it('requires model, readiness, health and explicit cloud text opt-in, and revokes old generations', async () => {
+    const draining = vi.fn(async () => true);
+    service = new AiProviderHubService(new AiProviderHubStore(tmpDir), credentials, {
+      healthCheck: async () => ({ state: 'healthy' }), isOperationReady: () => true,
+      isModelSupported: (_operation, model) => model === 'test-model', beforeConnectionChange: draining,
+    });
+    const input = { providerId: 'openai' as const, apiKey: 'sk-test-secret',
+      acknowledgement: { generalWarningVersion: AI_GENERAL_COST_WARNING.version } };
+    await service.saveApiKey(input);
+    const connectionId = service.snapshot().connections[0]!.connectionId;
+    const binding = { bindingId: randomUUID(), connectionId, role: 'text' as const,
+      operationId: 'openai_responses_text' as const, modelProfile: 'provider_default' as const,
+      modelId: 'test-model', enabled: true, position: 0, revision: 1 };
+    await service.replaceBindings({ bindings: [binding], expectedRevision: 0 });
+    await service.checkHealth({ connectionId });
+    expect(service.resolveBinding('text')).toBeNull();
+    await service.replaceBindings({ bindings: [{ ...binding, cloudTextOptIn: true }], expectedRevision: 1 });
+    expect(service.resolveBinding('text')).toMatchObject({ credentialGeneration: 1, modelId: 'test-model' });
+    expect(service.resolveCredential(connectionId, 'openai', 1)).toBe(input.apiKey);
+    await service.saveApiKey({ ...input, apiKey: 'sk-replacement-secret' });
+    expect(draining).toHaveBeenCalledWith(connectionId, 1);
+    expect(service.resolveBinding('text')).toBeNull();
+    await service.checkHealth({ connectionId });
+    expect(service.resolveCredential(connectionId, 'openai', 1)).toBeNull();
+    expect(service.resolveCredential(connectionId, 'openai', 2)).toBe('sk-replacement-secret');
+  });
+
+  it('keeps managed sessions outside encrypted API secrets and supports four connections', async () => {
+    for (const providerId of ['openai', 'anthropic', 'perplexity'] as const) {
+      await service.saveApiKey({ providerId, apiKey: 'sk-test-secret', acknowledgement: {
+        generalWarningVersion: AI_GENERAL_COST_WARNING.version,
+        ...(providerId === 'anthropic' ? { providerWarningVersion: ANTHROPIC_COST_WARNING.version } : {}),
+      } });
+    }
+    const secretWrite = vi.spyOn(credentials, 'write');
+    const saved = await service.saveManagedConnection({ acknowledgement: {
+      generalWarningVersion: CODEX_MANAGED_CHATGPT_NOTICE.version,
+    } });
+    expect(saved.ok).toBe(true);
+    expect(service.snapshot().connections).toHaveLength(4);
+    expect(secretWrite).not.toHaveBeenCalled();
+    const managed = service.snapshot().connections.find((entry) => entry.authKind === 'codex_managed_chatgpt')!;
+    expect(service.resolveCredential(managed.connectionId, 'openai')).toBeNull();
+    expect(managed.hasCredential).toBe(false);
+  });
+
+  it('blocks rotation and selection when accepted work cannot safely drain', async () => {
+    service = new AiProviderHubService(new AiProviderHubStore(tmpDir), credentials, {
+      beforeConnectionChange: async () => false,
+    });
+    const input = { providerId: 'openai' as const, apiKey: 'sk-original-secret',
+      acknowledgement: { generalWarningVersion: AI_GENERAL_COST_WARNING.version } };
+    await service.saveApiKey(input);
+    const connection = service.snapshot().connections[0]!;
+    expect(await service.saveApiKey({ ...input, apiKey: 'sk-replacement-secret' })).toMatchObject({ ok: false });
+    expect(credentials.read({ connectionId: connection.connectionId, providerId: 'openai', authKind: 'api_key' })).toBe(input.apiKey);
+    expect(service.resolveCredential(connection.connectionId, 'openai')).toBeNull();
   });
 
   it('rejects stale warning acknowledgement before creating a credential file', async () => {
@@ -186,7 +267,7 @@ describe('AiProviderHubService', () => {
     })).toBe('pplx-test-secret');
   });
 
-  it('restores the credential when metadata deletion cannot be published', async () => {
+  it('never restores a revoked credential when metadata deletion cannot be published', async () => {
     const metadataStore = new AiProviderHubStore(tmpDir);
     const isolatedService = new AiProviderHubService(metadataStore, credentials, {
       now: () => now,
@@ -207,12 +288,12 @@ describe('AiProviderHubService', () => {
       connectionId: connection.connectionId,
     });
 
-    expect(deleted).toMatchObject({ ok: false, code: 'operation_failed' });
+    expect(deleted).toMatchObject({ ok: false, code: 'storage_degraded' });
     expect(credentials.read({
       connectionId: connection.connectionId,
       providerId: connection.providerId,
       authKind: connection.authKind,
-    })).toBe('sk-openai-rollback-secret');
+    })).toBeUndefined();
     expect(isolatedService.snapshot().connections).toHaveLength(1);
   });
 
@@ -288,12 +369,14 @@ describe('AiProviderHubService', () => {
     if (!saved.ok) throw new Error('Expected connection save');
     const stored = metadataStore.snapshot();
     const connection = stored.connections[0]!;
+    expect(isolatedService.resolveRecoveryCredential(connection.connectionId, 'openai', connection.credentialGeneration ?? 1)).toBe('sk-openai-stale-warning');
     metadataStore.upsertConnection({
       ...connection,
       acknowledgement: { generalWarningVersion: 'old-warning' },
     }, stored.generation);
 
     const current = isolatedService.snapshot();
+    expect(isolatedService.resolveRecoveryCredential(connection.connectionId, 'openai', connection.credentialGeneration ?? 1)).toBeNull();
     expect(current.connections[0]?.health.message).toContain('aktualisiert');
     const result = await isolatedService.replaceBindings({
       expectedRevision: current.bindingRevision,

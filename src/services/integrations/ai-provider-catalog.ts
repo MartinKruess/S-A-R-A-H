@@ -20,7 +20,7 @@ const parsedCatalog = [
   {
     id: 'openai',
     displayName: 'OpenAI',
-    authKinds: ['api_key'],
+    authKinds: ['api_key', 'codex_managed_chatgpt'],
     operations: [
       { id: 'openai_responses_text', providerId: 'openai', role: 'text' },
       { id: 'openai_deep_research', providerId: 'openai', role: 'research' },

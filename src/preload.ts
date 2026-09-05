@@ -173,6 +173,11 @@ const api: SarahApi = {
   },
 
   // AI provider hub API
+  codexConnection: {
+    start: (input) => ipcRenderer.invoke('codex-connection-start', input),
+    status: () => ipcRenderer.invoke('codex-connection-status'),
+    logout: () => ipcRenderer.invoke('codex-connection-logout'),
+  },
   aiProviders: {
     list: () => ipcRenderer.invoke('ai-provider-hub-list'),
     saveApiKey: (input) => ipcRenderer.invoke('ai-provider-save-key', input),

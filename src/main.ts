@@ -33,6 +33,8 @@ import { AiProviderHubService } from './services/integrations/ai-provider-hub-se
 import { SpecialistTaskStore } from './services/specialists/specialist-task-store.js';
 import { SpecialistRuntimeService } from './services/specialists/specialist-runtime-service.js';
 import { SpecialistHandoffCoordinator } from './services/specialists/specialist-handoff-coordinator.js';
+import { createAiProviderRuntime } from './main/ai-provider-runtime.js';
+import { registerCodexConnectionHandlers } from './main/ipc-codex-connection.js';
 import { getOAuthProviders, redirectPort } from './services/integrations/providers.js';
 import { registerVoiceHandlers } from './main/ipc-voice.js';
 import { registerBootHandlers } from './main/boot-sequence.js';
@@ -275,7 +277,11 @@ function startPrimaryInstance(): void {
   });
   const aiCredentialStore = new AiCredentialStore(app.getPath('userData'), keyManager);
   const aiProviderHubStore = new AiProviderHubStore(app.getPath('userData'));
-  aiProviderHub = new AiProviderHubService(aiProviderHubStore, aiCredentialStore);
+  const providers = createAiProviderRuntime(app.getPath('userData'), aiProviderHubStore, aiCredentialStore,
+    () => appContext?.parsedConfig.trust.webAccessAllowed === true);
+  aiProviderHub = providers.hub;
+  registerCodexConnectionHandlers(ipcMain, providers.codex);
+  appContext.lifecycle.registerCleanup('codex-process', () => providers.codex.close(), 'before_services');
   appContext.lifecycle.registerCleanup('ai-provider-hub', () => {
     aiProviderHub?.destroy();
     aiProviderHub = null;
@@ -283,16 +289,8 @@ function startPrimaryInstance(): void {
   // Slice 2 owns the provider-neutral specialist lifecycle. Concrete provider
   // adapters and credential resolution are added in their dedicated slices;
   // until then this runtime fails closed and only reconciles durable metadata.
-  const specialistRuntime = new SpecialistRuntimeService({
-    store: new SpecialistTaskStore(app.getPath('userData')),
-    adapters: [],
-    resolveBinding: () => null,
-    resolveCredential: () => null,
-  });
-  const specialistHandoffs = new SpecialistHandoffCoordinator(
-    specialistRuntime,
-    () => null,
-  );
+  const specialistRuntime = providers.runtime;
+  const specialistHandoffs = providers.handoffs;
   await specialistRuntime.reconcile();
   const stopSpecialistStateForwarding = specialistRuntime.subscribe((snapshot) => {
     appContext?.bus.emit('specialists', 'specialist:state', snapshot);
@@ -308,7 +306,7 @@ function startPrimaryInstance(): void {
     modelRuntime,
     undefined,
     undefined,
-    { specialistHandoffs },
+    { specialistHandoffs, getSpecialistReadiness: providers.readiness, selectCloudText: providers.selectCloudText },
   );
   const spotifyActions = new SpotifyActions(oauth);
   const mediaController = new WindowsMediaController(

@@ -17,6 +17,8 @@ export interface SpecialistBindingLease {
   readonly connectionId: string;
   readonly bindingId: string;
   readonly revision: number;
+  readonly credentialGeneration?: number;
+  readonly authKind?: import('./ai-provider-contract.js').AiAuthKind;
 }
 
 export interface SpecialistHandoffDisplay {
@@ -37,10 +39,14 @@ export interface SpecialistHandoffConfirmationSubject {
   readonly originMode: TurnMode;
   readonly dataEgress: readonly ('goal' | 'workspace_files' | 'conversation_context')[];
   readonly workspaceReference?: string;
+  readonly modelId?: string;
+  readonly backgroundConsent?: boolean;
   readonly accessMode: 'none' | 'read_only' | 'workspace_write';
   readonly budget: {
     readonly maxTurns: number;
     readonly timeoutMs: number;
+    readonly maxOutputTokens?: number;
+    readonly maxToolCalls?: number;
   };
   readonly bindingLease: SpecialistBindingLease;
   readonly display: SpecialistHandoffDisplay;
@@ -111,6 +117,14 @@ function isValidSubject(subject: SpecialistHandoffConfirmationSubject): boolean 
     && subject.bindingLease.revision > 0
     && validText(subject.display.providerName, 100)
     && validText(subject.display.roleName, 100)
+    && (subject.modelId === undefined || validText(subject.modelId, 200))
+    && (subject.backgroundConsent === undefined || typeof subject.backgroundConsent === 'boolean')
+    && (subject.bindingLease.credentialGeneration === undefined
+      || (Number.isSafeInteger(subject.bindingLease.credentialGeneration) && subject.bindingLease.credentialGeneration > 0))
+    && (subject.budget.maxOutputTokens === undefined
+      || (Number.isSafeInteger(subject.budget.maxOutputTokens) && subject.budget.maxOutputTokens > 0 && subject.budget.maxOutputTokens <= 100_000))
+    && (subject.budget.maxToolCalls === undefined
+      || (Number.isSafeInteger(subject.budget.maxToolCalls) && subject.budget.maxToolCalls > 0 && subject.budget.maxToolCalls <= 100))
     && validText(subject.display.modelName, 200);
 }
 
@@ -129,6 +143,8 @@ function copySubject(
     originMode: subject.originMode,
     dataEgress: Object.freeze([...subject.dataEgress]),
     ...(subject.workspaceReference ? { workspaceReference: subject.workspaceReference } : {}),
+    ...(subject.modelId ? { modelId: subject.modelId } : {}),
+    ...(subject.backgroundConsent !== undefined ? { backgroundConsent: subject.backgroundConsent } : {}),
     accessMode: subject.accessMode,
     budget: Object.freeze({ ...subject.budget }),
     bindingLease: Object.freeze({ ...subject.bindingLease }),
@@ -152,14 +168,20 @@ function subjectsMatch(
     && left.dataEgress.length === right.dataEgress.length
     && left.dataEgress.every((item, index) => item === right.dataEgress[index])
     && left.workspaceReference === right.workspaceReference
+    && left.modelId === right.modelId
+    && left.backgroundConsent === right.backgroundConsent
     && left.accessMode === right.accessMode
     && left.budget.maxTurns === right.budget.maxTurns
     && left.budget.timeoutMs === right.budget.timeoutMs
+    && left.budget.maxOutputTokens === right.budget.maxOutputTokens
+    && left.budget.maxToolCalls === right.budget.maxToolCalls
     && left.bindingLease.providerId === right.bindingLease.providerId
     && left.bindingLease.operationId === right.bindingLease.operationId
     && left.bindingLease.connectionId === right.bindingLease.connectionId
     && left.bindingLease.bindingId === right.bindingLease.bindingId
     && left.bindingLease.revision === right.bindingLease.revision
+    && left.bindingLease.credentialGeneration === right.bindingLease.credentialGeneration
+    && left.bindingLease.authKind === right.bindingLease.authKind
     && left.display.providerName === right.display.providerName
     && left.display.roleName === right.display.roleName
     && left.display.modelName === right.display.modelName;

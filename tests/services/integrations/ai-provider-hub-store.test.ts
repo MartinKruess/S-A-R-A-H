@@ -73,6 +73,24 @@ describe('AiProviderHubStore', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it.each(['codex_managed_chatgpt', 'chatgptAuthTokens', 'claude_oauth', 'session_cookie'])(
+    'does not activate %s by injecting a saved auth kind', (authKind) => {
+      const original = connection('openai');
+      const writer = new AiProviderHubStore(tmpDir);
+      const valid = writer.upsertConnection(original, 0);
+      expect(new AiProviderHubStore(tmpDir).getStatus().state).toBe('ready');
+      const invalid = JSON.stringify({
+        ...valid,
+        connections: [{ ...original, authKind }],
+      });
+      fs.writeFileSync(primary(), invalid, 'utf-8');
+      fs.writeFileSync(backup(), invalid, 'utf-8');
+      const store = new AiProviderHubStore(tmpDir);
+      expect(store.getStatus().state).toBe('degraded');
+      expect(store.snapshot().connections).toEqual([]);
+    },
+  );
+
   it('starts empty and persists only strict non-secret metadata in matching copies', () => {
     const store = new AiProviderHubStore(tmpDir);
     const empty = store.snapshot();

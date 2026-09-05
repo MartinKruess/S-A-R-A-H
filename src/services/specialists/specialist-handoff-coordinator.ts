@@ -30,6 +30,11 @@ export interface SpecialistHandoffSelection {
   readonly providerName: string;
   readonly roleName: string;
   readonly modelName: string;
+  readonly modelId?: string;
+  readonly credentialGeneration?: number;
+  readonly authKind?: import('../../core/ai-provider-contract.js').AiAuthKind;
+  readonly workspaceReference?: string;
+  readonly backgroundConsent?: boolean;
 }
 
 export type SpecialistHandoffSelectionResolver = (
@@ -88,15 +93,22 @@ function buildSubject(
     capability: step.capability,
     privateContext: plan.privateContext,
     originMode: plan.originMode,
-    dataEgress: ['goal'],
-    accessMode: 'none',
-    budget: { maxTurns: DEFAULT_MAX_TURNS, timeoutMs: DEFAULT_TIMEOUT_MS },
+    dataEgress: selection.workspaceReference ? ['goal', 'workspace_files'] : ['goal'],
+    accessMode: selection.workspaceReference ? 'read_only' : 'none',
+    ...(selection.workspaceReference ? { workspaceReference: selection.workspaceReference } : {}),
+    ...(selection.modelId ? { modelId: selection.modelId } : {}),
+    ...(selection.backgroundConsent !== undefined ? { backgroundConsent: selection.backgroundConsent } : {}),
+    budget: { maxTurns: DEFAULT_MAX_TURNS, timeoutMs: DEFAULT_TIMEOUT_MS,
+      ...(selection.modelId ? { maxOutputTokens: 8_192, maxToolCalls: 10 } : {}),
+    },
     bindingLease: {
       providerId: selection.providerId,
       operationId: selection.operationId,
       connectionId: selection.connectionId,
       bindingId: selection.bindingId,
       revision: selection.bindingRevision,
+      ...(selection.credentialGeneration ? { credentialGeneration: selection.credentialGeneration } : {}),
+      ...(selection.authKind ? { authKind: selection.authKind } : {}),
     },
     display: {
       providerName,
@@ -134,7 +146,7 @@ export class SpecialistHandoffCoordinator {
     return {
       ok: true,
       confirmationId: request.confirmationId,
-      prompt: `Ziel: ${confirmation.task}\nRolle: ${subject.display.roleName}. Anbieter: ${subject.display.providerName} (${subject.display.modelName}). Übertragen wird nur der Zieltext; kein Workspace und kein Gesprächskontext. Soll ich den Spezialisten jetzt starten? Im Textchat: /confirm ${request.confirmationId}`,
+      prompt: `Ziel: ${confirmation.task}\nRolle: ${subject.display.roleName}. Anbieter: ${subject.display.providerName} (${subject.display.modelName}). ${subject.workspaceReference ? 'Übertragen werden Ziel und benötigte Dateien aus dem ausgewählten Projekt (nur lesender Zugriff).' : 'Übertragen wird nur der Zieltext; kein Workspace und kein Gesprächskontext.'}${subject.backgroundConsent ? ' Die Recherche nutzt Websuche; der Anbieter speichert die Antwort vorübergehend zur Hintergrundverarbeitung und Statusabfrage.' : ''} Soll ich den Spezialisten jetzt starten? Im Textchat: /confirm ${request.confirmationId}`,
     };
   }
 
@@ -225,6 +237,10 @@ export class SpecialistHandoffCoordinator {
           connectionId: expected.bindingLease.connectionId,
           bindingId: expected.bindingLease.bindingId,
           bindingRevision: expected.bindingLease.revision,
+          credentialGeneration: expected.bindingLease.credentialGeneration,
+          authKind: expected.bindingLease.authKind,
+          modelId: expected.modelId,
+          backgroundConsent: expected.backgroundConsent,
           privateContext: false,
           originMode: expected.originMode,
           dataEgress: expected.dataEgress,

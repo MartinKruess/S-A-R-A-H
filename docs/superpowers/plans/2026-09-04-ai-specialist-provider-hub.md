@@ -3,7 +3,10 @@
 **Scope:** Provider-neutral AI connection and role hub plus OpenAI, Anthropic,
 and Perplexity adapters.
 
-**Status:** Planning only. No provider integration is implemented by this plan.
+**Status:** Shared foundation and inert specialist runtime merged into `dev`
+through PRs #54/#55. Productive provider adapters remain unimplemented.
+The OpenAI implementation plan and authentication decision addendum are in
+`2026-09-05-openai-specialist-adapters.md` and the integration decisions spec.
 
 ## Goal
 
@@ -656,10 +659,10 @@ the renderer, or the generic plan contracts.
 
 ## Decisions to confirm before Slice 1 implementation
 
-1. **Codex authentication:** API key only, or API key plus documented
-   ChatGPT-managed login? Recommendation: support ChatGPT-managed login for Codex
-   if the app-server integration and product terms remain supported; keep OpenAI
-   text/research API-key-only.
+1. **Codex authentication (approved 2026-09-05):** API key plus documented
+   Codex-managed ChatGPT login, subject to secure storage and current supported
+   app-server behavior; OpenAI text/research remain API-key-only. Anthropic's
+   own SDK adapter and Perplexity use API keys, not consumer subscription tokens.
 2. **Cloud text behavior:** Recommendation: the configured standard text binding
    may answer without per-message confirmation in ordinary mode; private mode
    remains local-only.

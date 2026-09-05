@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { z } from 'zod';
 import {
-  AI_PROVIDER_IDS,
+  AI_MAX_CONNECTIONS,
   AI_PROVIDER_ROLES,
   AiAuthKindSchema,
   AiCostAcknowledgementSchema,
@@ -15,6 +15,7 @@ import {
   type AiRoleBinding,
 } from '../../core/ai-provider-contract.js';
 import { getAiProviderCatalogEntry } from './ai-provider-catalog.js';
+import { CODEX_MANAGED_CHATGPT_NOTICE, resolveAiAuthPolicy } from './ai-auth-policy.js';
 
 const STORE_FILE = 'ai-provider-hub.json';
 const STORE_SCHEMA_VERSION = 1;
@@ -25,6 +26,7 @@ const StoredConnectionSchema = z.object({
   connectionId: z.uuid(),
   providerId: AiProviderIdSchema,
   authKind: AiAuthKindSchema,
+  credentialGeneration: z.number().int().min(1).optional(),
   displayLabel: z.string().trim().min(1).max(100),
   acknowledgement: AiCostAcknowledgementSchema,
   createdAt: ISO_TIMESTAMP,
@@ -35,7 +37,7 @@ const StoredSnapshotSchema = z.object({
   schemaVersion: z.literal(STORE_SCHEMA_VERSION),
   generation: z.number().int().min(1),
   commitId: z.uuid(),
-  connections: z.array(StoredConnectionSchema).max(AI_PROVIDER_IDS.length).readonly(),
+  connections: z.array(StoredConnectionSchema).max(AI_MAX_CONNECTIONS).readonly(),
   bindings: z.array(AiRoleBindingSchema).max(MAX_BINDINGS).readonly(),
   bindingRevision: z.number().int().min(0),
 }).strict().readonly();
@@ -48,6 +50,8 @@ export interface AiRoleBindingDraft {
   readonly role: AiProviderRole;
   readonly operationId: AiProviderOperationId;
   readonly modelProfile: 'provider_default';
+  readonly modelId?: string;
+  readonly cloudTextOptIn?: boolean;
   readonly enabled: boolean;
   readonly position: number;
 }
@@ -147,6 +151,7 @@ export class AiProviderHubStore {
       existing.providerId !== parsedConnection.providerId
       || existing.authKind !== parsedConnection.authKind
       || existing.createdAt !== parsedConnection.createdAt
+      || (parsedConnection.credentialGeneration ?? 1) < (existing.credentialGeneration ?? 1)
       || Date.parse(parsedConnection.updatedAt) < Date.parse(existing.updatedAt)
     )) throw new AiProviderHubStoreValidationError();
 
@@ -372,6 +377,9 @@ export class AiProviderHubStore {
         binding.role,
         binding.operationId,
       )) return false;
+      if (!resolveAiAuthPolicy(connection.providerId, binding.operationId, connection.authKind)) {
+        return false;
+      }
       if (binding.revision !== snapshot.bindingRevision) return false;
       const rolePositions = positions.get(binding.role) ?? [];
       rolePositions.push(binding.position);
@@ -388,6 +396,9 @@ export class AiProviderHubStore {
     const catalog = getAiProviderCatalogEntry(connection.providerId);
     const acknowledgement = connection.acknowledgement;
     return catalog.authKinds.includes(connection.authKind)
+      && (connection.authKind === 'api_key' || connection.providerId === 'openai')
+      && (connection.authKind !== 'codex_managed_chatgpt'
+        || acknowledgement.generalWarningVersion === CODEX_MANAGED_CHATGPT_NOTICE.version)
       && (catalog.providerWarning
         ? acknowledgement.providerWarningVersion !== undefined
         : acknowledgement.providerWarningVersion === undefined)

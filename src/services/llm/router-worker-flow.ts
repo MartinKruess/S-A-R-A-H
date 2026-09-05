@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import type { CloudTextGenerator } from '../providers/cloud-text-service.js';
 import type { AppContext } from '../../core/bootstrap.js';
 import { WORKER_UNAVAILABLE_MESSAGE } from '../../core/chat-availability.js';
 import type { TurnEnvelope, TurnId } from '../../core/turn-contract.js';
@@ -43,6 +44,7 @@ interface RouterWorkerFlowOptions {
   buildDecisionContext: (envelope: TurnEnvelope) => DecisionContext | null;
   reminderClock: ReminderClock;
   specialistHandoffs?: SpecialistHandoffCoordinator;
+  selectCloudText?: () => CloudTextGenerator | null;
 }
 
 const PLAN_REJECTED_MESSAGE = 'Ich konnte den kombinierten Auftrag nicht zuverlässig aufteilen. Bitte formuliere die Schritte noch einmal einzeln.';
@@ -229,6 +231,8 @@ export class RouterWorkerFlow {
   ): Promise<void> {
     const { context, serviceId, modelRuntime, drafts } = this.options;
     const { turnId, mode } = envelope;
+    const cloud = drafts.get(turnId)?.privateContext === false
+      ? this.options.selectCloudText?.() : null;
     await this.options.waitForMemoryPolicy(signal);
     const systemPrompt = buildSystemPrompt(context.parsedConfig, mode);
     const responseStyle = context.parsedConfig.personalization.responseStyle;
@@ -251,7 +255,7 @@ export class RouterWorkerFlow {
 
     await this.options.enqueueOutput(async () => {
       if (!this.options.isTurnOperational(turnId, signal)) return;
-      const { fullText, tookMs } = await modelRuntime.streamWorker(messages, responseStyle, (chunk) => {
+      const onChunk = (chunk: string): void => {
         if (bufferOutput) return;
         if (this.options.isTurnOperational(turnId, signal)) {
           onOutputStarted?.();
@@ -262,7 +266,10 @@ export class RouterWorkerFlow {
             text: chunk,
           });
         }
-      }, signal, numPredict);
+      };
+      const { fullText, tookMs } = cloud
+        ? await cloud(currentUser, signal, onChunk)
+        : await modelRuntime.streamWorker(messages, responseStyle, onChunk, signal, numPredict);
       if (!this.options.isTurnOperational(turnId, signal)) return;
       const protectedFullText = redactSensitiveLiterals(fullText, sensitiveGuard);
       if (bufferOutput && protectedFullText) {

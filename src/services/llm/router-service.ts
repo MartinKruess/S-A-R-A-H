@@ -76,6 +76,7 @@ const EXPLICIT_REMEMBER_PATTERN = /^(?:bitte\s+)?(?:merk(?:e)?\s+dir|behalt(?:e)
 const MEANINGLESS_MEMORY_PATTERN = /^(?:das|dies|dieses|daran|es)$/iu;
 const RESUME_SPEECH_PATTERN = /^[^\p{L}\p{N}]*(?:(?:ich\s+)?bin\s+)?wieder da[^\p{L}\p{N}]*$/u;
 export interface RouterServiceOptions {
+  selectCloudText?: () => import('../providers/cloud-text-service.js').CloudTextGenerator | null;
   memoryPolicyWaitTimeoutMs?: number;
   actionResultTimeoutMs?: number;
   shutdownDrainTimeoutMs?: number;
@@ -233,6 +234,7 @@ export class RouterService implements SarahService {
       persistTurn: (...args) => this.persistenceRuntime.persistTurn(this.conversationId, ...args),
     });
     this.workerFlow = new RouterWorkerFlow({
+      selectCloudText: options.selectCloudText,
       context: this.context,
       serviceId: this.id,
       modelRuntime: this.modelRuntime,
