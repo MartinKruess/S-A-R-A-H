@@ -56,7 +56,7 @@ export interface AiProviderHubServiceOptions {
   createId?: () => string;
   healthCheck?: (connection: AiProviderConnectionMetadata, credential: string | null) => Promise<AiConnectionHealth>;
   isOperationReady?: (operationId: AiProviderOperationId) => boolean;
-  isModelSupported?: (operationId: AiProviderOperationId, modelId: string) => boolean;
+  isModelSupported?: (operationId: AiProviderOperationId, modelId: string, connection: AiProviderConnectionMetadata) => boolean;
   beforeConnectionChange?: (connectionId: string, credentialGeneration: number) => Promise<boolean>;
   managedSessionAvailable?: (connectionId: string) => boolean;
 }
@@ -318,8 +318,11 @@ export class AiProviderHubService {
         return this.failure('storage_degraded');
       }
       try {
-        if (parsed.data.bindings.some((binding) => binding.modelId
-          && this.options.isModelSupported?.(binding.operationId, binding.modelId) === false)) {
+        if (parsed.data.bindings.some((binding) => {
+          const connection = stored.connections.find((entry) => entry.connectionId === binding.connectionId);
+          return binding.modelId && (!connection
+            || this.options.isModelSupported?.(binding.operationId, binding.modelId, connection) === false);
+        })) {
           return this.failure('invalid_input');
         }
         const hasStaleAcknowledgement = parsed.data.bindings.some((binding) => {
@@ -424,7 +427,7 @@ export class AiProviderHubService {
         || !this.hasCurrentAcknowledgement(connection)
         || !resolveAiAuthPolicy(connection.providerId, binding.operationId, connection.authKind)
         || this.options.isOperationReady?.(binding.operationId) !== true
-        || this.options.isModelSupported?.(binding.operationId, binding.modelId) !== true) continue;
+        || this.options.isModelSupported?.(binding.operationId, binding.modelId, connection) !== true) continue;
       return { ...binding, modelId: binding.modelId, providerId: connection.providerId,
         authKind: connection.authKind, credentialGeneration: connection.credentialGeneration ?? 1 };
     }

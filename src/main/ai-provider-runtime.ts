@@ -1,4 +1,3 @@
-import OpenAI from 'openai';
 import type { AiProviderOperationId } from '../core/ai-provider-contract.js';
 import type { AiCredentialStore } from '../services/integrations/ai-credential-store.js';
 import { AiProviderHubService } from '../services/integrations/ai-provider-hub-service.js';
@@ -15,45 +14,37 @@ import type { SpecialistCapability } from '../core/intent-plan.js';
 import { CodexConnectionService } from './codex-connection-service.js';
 import { CodexTaskAdapter } from '../services/providers/codex/codex-task-adapter.js';
 import { AiUsageStore } from '../services/providers/ai-usage-store.js';
+import { ApiKeyHealthService } from '../services/providers/api-key-health-service.js';
+import { AnthropicTextAdapter } from '../services/providers/anthropic/anthropic-text-adapter.js';
 
 /** Composes real provider adapters without exposing provider objects to the local router. */
 export function createAiProviderRuntime(userData: string, store: AiProviderHubStore,
   credentials: AiCredentialStore, webAllowed: () => boolean) {
   const textAdapters = new Map<AiProviderOperationId, TextGenerationAdapter>([
     ['openai_responses_text', new OpenAiTextAdapter()],
+    ['anthropic_messages_text', new AnthropicTextAdapter()],
   ]);
   const research = new OpenAiResearchAdapter();
   const coding = new CodexTaskAdapter(() => null);
   const usage = new AiUsageStore(userData);
   let codex: CodexConnectionService | undefined;
-  const knownModels = new Set<string>();
+  const health = new ApiKeyHealthService();
   let runtime: SpecialistRuntimeService | undefined;
   const hub = new AiProviderHubService(store, credentials, {
     isOperationReady: (operation) => textAdapters.has(operation)
       || (operation === 'openai_deep_research' && webAllowed()),
-    isModelSupported: (operation, model) => operation === 'openai_deep_research'
-      ? ['o3-deep-research', 'o4-mini-deep-research'].includes(model)
-      : operation === 'openai_responses_text' && knownModels.has(model) && /^gpt-/u.test(model),
-    beforeConnectionChange: async (id) => runtime ? runtime.cancelConnection(id) : true,
+    isModelSupported: (operation, model, connection) => health.isModelSupported(operation, model, connection),
+    beforeConnectionChange: async (id) => {
+      health.invalidate(id);
+      return runtime ? runtime.cancelConnection(id) : true;
+    },
     managedSessionAvailable: (id) => codex?.available(id) === true,
     healthCheck: async (connection, key) => {
       if (connection.authKind === 'codex_managed_chatgpt') return {
         state: codex?.available(connection.connectionId) ? 'healthy' : 'not_configured',
         message: 'Coding ist bis zum Nachweis der Projektbegrenzung gesperrt.',
       };
-      if (connection.providerId !== 'openai' || connection.authKind !== 'api_key' || !key) {
-        return {state: 'temporarily_unavailable', message: 'Dieser Anmeldeweg ist noch nicht verfügbar.'};
-      }
-      try {
-        const client = new OpenAI({apiKey: key, maxRetries: 0, timeout: 8_000,
-          baseURL: 'https://api.openai.com/v1'});
-        const models = await client.models.list();
-        for (const model of models.data) knownModels.add(model.id);
-        return {state: 'healthy', message: 'API-Schlüssel geprüft. Modellzugriff wird bei der Anfrage geprüft.'};
-      } catch (error) {
-        return {state: error instanceof OpenAI.APIError && [401,403].includes(error.status ?? 0)
-          ? 'invalid_credentials' : 'temporarily_unavailable', message: 'Die API-Prüfung ist fehlgeschlagen.'};
-      }
+      return health.check(connection, key);
     },
   });
   const resolve = (role: 'coding' | 'research') => {

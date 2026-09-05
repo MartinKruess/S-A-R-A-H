@@ -41,6 +41,7 @@
     "vitest": "^4.1.2"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.124.0",
     "@openai/codex": "0.153.4",
     "@picovoice/porcupine-node": "^4.0.2",
     "better-sqlite3": "^12.8.0",

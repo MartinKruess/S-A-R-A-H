@@ -16,6 +16,14 @@ function entry(): AiUsageInput { return { requestId: randomUUID(), providerId: '
   role: 'text', authKind: 'api_key', model: 'gpt-4.1-mini', usage }; }
 
 describe('metadata usage store', () => {
+  it('reloads partially known Anthropic usage without inventing reasoning or cache reads', () => {
+    const dir = directory();
+    const partial = { inputTokens: 15, outputTokens: 3, cacheWriteInputTokens: 5 };
+    expect(new AiUsageStore(dir).record({ ...entry(), providerId: 'anthropic',
+      operationId: 'anthropic_messages_text', model: 'claude-test', usage: partial })).toBe(true);
+    expect(new AiUsageStore(dir).list()[0].usage).toEqual(partial);
+  });
+
   it('persists a single cumulative terminal checkpoint and preserves unknown usage', () => {
     const dir = directory(); const store = new AiUsageStore(dir); const input = entry();
     expect(store.record(input)).toBe(true);
