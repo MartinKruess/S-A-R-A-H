@@ -6,6 +6,7 @@ export type OpenAiClientFactory = (apiKey: string) => OpenAI;
 /** Fixed official endpoint, bounded calls and no automatic retries after dispatch. */
 export const createOpenAiClient: OpenAiClientFactory = (apiKey) => new OpenAI({
   apiKey, baseURL: 'https://api.openai.com/v1', maxRetries: 0, timeout: 30_000,
+  logLevel: 'off', organization: null, project: null,
 });
 
 /** Normalizes documented cumulative response usage; absent usage stays absent. */

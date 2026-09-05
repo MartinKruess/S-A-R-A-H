@@ -43,11 +43,13 @@ export const SpecialistTaskRoleSchema = z.enum(SPECIALIST_TASK_ROLES);
 export const SpecialistTaskStatusSchema = z.enum(SPECIALIST_TASK_STATUSES);
 
 export const SpecialistTaskUsageSchema = z.object({
+  // Total input includes cache reads and writes; optional subcounts are unknown when absent.
   inputTokens: z.number().int().min(0),
-  cachedInputTokens: z.number().int().min(0),
+  cachedInputTokens: z.number().int().min(0).optional(),
+  cacheWriteInputTokens: z.number().int().min(0).optional(),
   outputTokens: z.number().int().min(0),
-  reasoningTokens: z.number().int().min(0),
-  toolCalls: z.number().int().min(0),
+  reasoningTokens: z.number().int().min(0).optional(),
+  toolCalls: z.number().int().min(0).optional(),
   providerReportedCost: z.object({
     amount: z.number().min(0),
     currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),

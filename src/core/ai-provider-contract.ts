@@ -207,11 +207,13 @@ export const AiUsageRecordSchema = z.object({
   role: AiProviderRoleSchema,
   operationId: AiProviderOperationIdSchema,
   model: z.string().trim().min(1).max(200),
+  // Total input includes cache reads and writes; absent subcounts are not zero.
   inputTokens: z.number().int().min(0),
-  cachedInputTokens: z.number().int().min(0),
+  cachedInputTokens: z.number().int().min(0).optional(),
+  cacheWriteInputTokens: z.number().int().min(0).optional(),
   outputTokens: z.number().int().min(0),
-  reasoningTokens: z.number().int().min(0),
-  toolCalls: z.number().int().min(0),
+  reasoningTokens: z.number().int().min(0).optional(),
+  toolCalls: z.number().int().min(0).optional(),
   providerReportedCost: z.object({
     amount: z.number().min(0),
     currency: z.string().trim().length(3).transform((value) => value.toUpperCase()),
