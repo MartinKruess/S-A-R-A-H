@@ -132,16 +132,14 @@ describe('IntentPlan core contract', () => {
     },
   );
 
-  it('expands three handoffs to the maximum of six valid steps', () => {
+  it('requires a specialist handoff to be the final explicit intent', () => {
     const intents: ValidatedExplicitIntent[] = [
       { kind: 'handoff', order: 'independent', evidence: evidence('coding', 0, 0, 13), capability: 'coding', task: 'Implementiere.' },
-      { kind: 'handoff', order: 'independent', evidence: evidence('research', 1, 14, 27), capability: 'research', task: 'Recherchiere.' },
-      { kind: 'handoff', order: 'independent', evidence: evidence('vision', 2, 28, 43), capability: 'vision', task: 'Prüfe das Bild.' },
+      { kind: 'answer', order: 'independent', evidence: evidence('answer', 1, 14, 27), text: 'Danach.' },
     ];
-    const plan = createIntentPlan({ sourceTurnId: SOURCE_TURN_ID, intents });
 
-    expect(plan.steps).toHaveLength(MAX_PLAN_STEPS);
-    expect(validateIntentPlan(plan)).toBe(true);
+    expect(() => createIntentPlan({ sourceTurnId: SOURCE_TURN_ID, intents }))
+      .toThrow(/final explicit intent/u);
   });
 
   it('links an explicitly sequential intent to the previous terminal step', () => {

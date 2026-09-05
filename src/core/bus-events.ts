@@ -11,6 +11,7 @@ import type {
 } from './turn-contract.js';
 import type { ActionConfirmationReference } from './action-confirmation.js';
 import type { ActionIntent } from './action-intent.js';
+import type { SpecialistTaskSnapshot } from './specialist-task.js';
 
 /** Semantic speech classes carried by the main-process-only priority speech bus. */
 export type PrioritySpeechCategory = 'background' | 'normal' | 'timer' | 'critical' | 'user';
@@ -55,6 +56,7 @@ export type BusEvents = {
   'boot:status':         { step: string; message?: string };
   'storage:degraded':    { message: string };
   'privacy:incognito':   { active: boolean; turnId: TurnId };
+  'specialist:state':    SpecialistTaskSnapshot;
   'search:discard-session': { requestId: string };
   'action:request':      ActionIntent & { turnId: TurnId; requestId: string; sourceRequestId?: string; confirmation?: ActionConfirmationReference; originMode?: TurnMode; privateContext?: boolean };
   'action:cancel':       { turnId: TurnId; requestId: string; reason: string };

@@ -8,6 +8,7 @@ import type { TurnId } from './turn-contract.js';
 export type PlanStepExecutionStatus =
   | 'pending'
   | 'running'
+  | 'waiting_confirmation'
   | 'succeeded'
   | 'failed'
   | 'skipped'
@@ -15,6 +16,7 @@ export type PlanStepExecutionStatus =
 
 export type PlanExecutionStatus =
   | 'running'
+  | 'waiting_confirmation'
   | 'completed'
   | 'partially_completed'
   | 'failed'
@@ -67,10 +69,10 @@ export type PlanStepOutcome =
 export const MAX_CONCURRENT_PLAN_STEPS = MAX_EXPLICIT_INTENTS;
 
 const STEP_STATUSES: ReadonlySet<PlanStepExecutionStatus> = new Set([
-  'pending', 'running', 'succeeded', 'failed', 'skipped', 'canceled',
+  'pending', 'running', 'waiting_confirmation', 'succeeded', 'failed', 'skipped', 'canceled',
 ]);
 const PLAN_STATUSES: ReadonlySet<PlanExecutionStatus> = new Set([
-  'running', 'completed', 'partially_completed', 'failed', 'canceled',
+  'running', 'waiting_confirmation', 'completed', 'partially_completed', 'failed', 'canceled',
 ]);
 const REPORTED_FAILURE_REASONS: ReadonlySet<PlanStepReportedFailureReason> = new Set([
   'action_failed', 'answer_failed', 'confirmation_failed', 'handoff_failed', 'timeout', 'executor_error',
@@ -116,13 +118,16 @@ function assertStateMatchesPlan(plan: IntentPlan, state: PlanExecutionState): vo
     || state.sourceTurnId !== plan.sourceTurnId
     || state.steps.length !== plan.steps.length
     || state.steps.some((step, index) => step.stepId !== plan.steps[index]?.stepId)
-    || !isValidPlanExecutionState(state)
+    || !isValidPlanExecutionState(state, plan)
   ) {
     throw new Error('Plan execution state does not match the intent plan');
   }
 }
 
 function deriveStatus(steps: readonly PlanStepExecutionState[]): PlanExecutionStatus {
+  if (steps.some((step) => step.status === 'waiting_confirmation')) {
+    return 'waiting_confirmation';
+  }
   if (steps.some((step) => step.status === 'pending' || step.status === 'running')) {
     return 'running';
   }
@@ -132,7 +137,10 @@ function deriveStatus(steps: readonly PlanStepExecutionState[]): PlanExecutionSt
 }
 
 /** Validates the immutable state shape and its single-attempt invariants. */
-export function isValidPlanExecutionState(state: PlanExecutionState): boolean {
+export function isValidPlanExecutionState(
+  state: PlanExecutionState,
+  plan?: IntentPlan,
+): boolean {
   if (
     !Object.isFrozen(state)
     || !Object.isFrozen(state.steps)
@@ -143,10 +151,20 @@ export function isValidPlanExecutionState(state: PlanExecutionState): boolean {
 
   const stepIds = new Set(state.steps.map((step) => step.stepId));
   if (stepIds.size !== state.steps.length || state.steps.some((step) => !step.stepId.trim())) return false;
+  if (plan && (
+    !validateIntentPlan(plan)
+    || state.planId !== plan.planId
+    || state.revision !== plan.revision
+    || state.fingerprint !== plan.fingerprint
+    || state.sourceTurnId !== plan.sourceTurnId
+    || state.steps.length !== plan.steps.length
+    || state.steps.some((step, index) => step.stepId !== plan.steps[index]?.stepId)
+  )) return false;
   for (const step of state.steps) {
     if (step.attempts !== 0 && step.attempts !== 1) return false;
     if ((step.status === 'pending' || step.status === 'skipped') && step.attempts !== 0) return false;
-    if ((step.status === 'running' || step.status === 'succeeded' || step.status === 'failed')
+    if ((step.status === 'running' || step.status === 'waiting_confirmation'
+      || step.status === 'succeeded' || step.status === 'failed')
       && step.attempts !== 1) return false;
     if (step.status === 'failed') {
       const reason = step.failureReason;
@@ -159,8 +177,20 @@ export function isValidPlanExecutionState(state: PlanExecutionState): boolean {
   if (state.status === 'canceled') {
     return state.cancellationReason !== undefined
       && CANCELLATION_REASONS.has(state.cancellationReason)
-      && state.steps.every((step) => step.status !== 'pending' && step.status !== 'running');
+      && state.steps.every((step) => step.status !== 'pending'
+        && step.status !== 'running'
+        && step.status !== 'waiting_confirmation');
   }
+  const waitingSteps = state.steps.filter((step) => step.status === 'waiting_confirmation');
+  if (state.status === 'waiting_confirmation') {
+    return state.cancellationReason === undefined
+      && waitingSteps.length === 1
+      && (!plan || plan.steps.find(
+        (step) => step.stepId === waitingSteps[0]?.stepId,
+      )?.kind === 'handoff_confirmation')
+      && state.steps.every((step) => step.status !== 'running');
+  }
+  if (waitingSteps.length > 0) return false;
   return state.cancellationReason === undefined && state.status === deriveStatus(state.steps);
 }
 
@@ -282,6 +312,66 @@ export function applyPlanStepOutcome(
   return createState(plan, steps, deriveStatus(steps));
 }
 
+/** Suspends one already-started specialist confirmation without completing its attempt. */
+export function suspendPlanStepForConfirmation(
+  plan: IntentPlan,
+  state: PlanExecutionState,
+  stepId: string,
+): PlanExecutionState {
+  assertStateMatchesPlan(plan, state);
+  if (state.status !== 'running') {
+    throw new Error('Only a running plan can wait for confirmation');
+  }
+  const index = state.steps.findIndex((step) => step.stepId === stepId);
+  const current = state.steps[index];
+  const planStep = plan.steps[index];
+  if (
+    !current
+    || !planStep
+    || planStep.kind !== 'handoff_confirmation'
+    || current.status !== 'running'
+    || current.attempts !== 1
+  ) {
+    throw new Error('Plan suspension requires one running handoff confirmation step');
+  }
+  const steps = state.steps.map((step, stepIndex): PlanStepExecutionState => (
+    stepIndex === index
+      ? { stepId: step.stepId, status: 'waiting_confirmation', attempts: 1 }
+      : step
+  ));
+  return createState(plan, steps, 'waiting_confirmation');
+}
+
+/** Completes the exact suspended confirmation once and unlocks only its dependents. */
+export function resumeConfirmedPlanStep(
+  plan: IntentPlan,
+  state: PlanExecutionState,
+  stepId: string,
+): PlanExecutionState {
+  assertStateMatchesPlan(plan, state);
+  if (state.status !== 'waiting_confirmation') {
+    throw new Error('Plan resume requires a waiting confirmation');
+  }
+  const index = state.steps.findIndex((step) => step.stepId === stepId);
+  const current = state.steps[index];
+  const planStep = plan.steps[index];
+  if (
+    !current
+    || !planStep
+    || planStep.kind !== 'handoff_confirmation'
+    || current.status !== 'waiting_confirmation'
+    || current.attempts !== 1
+  ) {
+    throw new Error('Plan resume does not match the waiting confirmation step');
+  }
+  const steps = state.steps.map((step, stepIndex): PlanStepExecutionState => (
+    stepIndex === index
+      ? { stepId: step.stepId, status: 'succeeded', attempts: 1 }
+      : step
+  ));
+  return createState(plan, steps, deriveStatus(steps));
+}
+
 /** Cancels all unfinished steps; successful side effects remain successful. */
 export function cancelPlanExecution(
   plan: IntentPlan,
@@ -290,7 +380,9 @@ export function cancelPlanExecution(
 ): PlanExecutionState {
   assertStateMatchesPlan(plan, state);
   if (state.status === 'canceled') return state;
-  if (state.status !== 'running') throw new Error('A completed plan cannot be canceled');
+  if (state.status !== 'running' && state.status !== 'waiting_confirmation') {
+    throw new Error('A completed plan cannot be canceled');
+  }
   const steps = state.steps.map((step): PlanStepExecutionState => (
     step.status === 'succeeded' || step.status === 'failed' || step.status === 'skipped'
       ? step

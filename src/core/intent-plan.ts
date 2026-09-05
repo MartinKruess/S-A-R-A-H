@@ -357,9 +357,11 @@ function validateIntentGroups(steps: readonly IntentPlanStep[], sourceTurnId: Tu
   }
 
   let previousTerminalStepId: string | null = null;
+  let sawHandoff = false;
   for (const group of byIntent.values()) {
     const [first] = group;
     if (!first) return false;
+    if (sawHandoff) return false;
     if (group.some((step) => (
       !evidenceMatches(step.evidence, first.evidence)
     ))) return false;
@@ -401,6 +403,7 @@ function validateIntentGroups(steps: readonly IntentPlanStep[], sourceTurnId: Tu
       || handoff.dependsOn.length !== 1
       || handoff.dependsOn[0] !== confirmation.stepId
     ) return false;
+    sawHandoff = true;
     previousTerminalStepId = handoff.stepId;
   }
   return true;
@@ -512,6 +515,9 @@ export function createIntentPlan(input: CreateIntentPlanInput): IntentPlan {
     }
     if (!isSpecialistCapability(explicit.capability) || !isNonEmpty(explicit.task)) {
       throw new Error('Handoff intent requires a supported capability and task');
+    }
+    if (index !== input.intents.length - 1) {
+      throw new Error('A specialist handoff must be the final explicit intent');
     }
     const confirmationStepId = randomUUID();
     steps.push({

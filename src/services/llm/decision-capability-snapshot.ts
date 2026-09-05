@@ -4,6 +4,7 @@ import {
   type DecisionCapability,
   type DecisionCapabilitySnapshot,
 } from '../../core/decision-context.js';
+import type { SpecialistCapability } from '../../core/intent-plan.js';
 import type { ServiceStatus } from '../../core/types.js';
 import type { ModelRuntimeSnapshot } from './model-runtime.js';
 
@@ -20,6 +21,7 @@ export interface BuildDecisionCapabilitySnapshotInput {
   readonly searchAcceptingWork: boolean;
   readonly webAccessAllowed: boolean;
   readonly hasVisibleBrowserResult: boolean;
+  readonly specialists?: Readonly<Record<SpecialistCapability, DecisionCapability>>;
 }
 
 function capability(
@@ -119,6 +121,18 @@ export function buildDecisionCapabilitySnapshot(
       ? capability('unknown', 'no_readiness_source')
       : capability('unavailable', 'service_unavailable');
   const noAdapter = capability('unavailable', 'no_adapter');
+  const lifecycleUnavailable = capability('unavailable', 'lifecycle_unavailable');
+  const specialists = !lifecycleReady
+    ? {
+        coding: lifecycleUnavailable,
+        research: lifecycleUnavailable,
+        vision: lifecycleUnavailable,
+      }
+    : input.specialists ?? {
+        coding: noAdapter,
+        research: noAdapter,
+        vision: noAdapter,
+      };
 
   return createDecisionCapabilitySnapshot({
     lifecycleGeneration: input.lifecycle.generation,
@@ -130,10 +144,6 @@ export function buildDecisionCapabilitySnapshot(
     visibleBrowserResult,
     reminders,
     media,
-    specialists: {
-      coding: noAdapter,
-      research: noAdapter,
-      vision: noAdapter,
-    },
+    specialists,
   });
 }

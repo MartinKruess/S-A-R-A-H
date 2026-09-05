@@ -54,7 +54,11 @@ import { RouterPersistenceRuntime } from './router-persistence-runtime.js';
 import { buildDecisionContext } from './decision-context-builder.js';
 import { buildDecisionCapabilitySnapshot } from './decision-capability-snapshot.js';
 import type { DecisionContext } from '../../core/decision-context.js';
+import type { DecisionCapability } from '../../core/decision-context.js';
+import type { SpecialistCapability } from '../../core/intent-plan.js';
 import { looksLikeBoundedMultiIntentCandidate } from './multi-intent-candidate.js';
+import { looksLikeExplicitSpecialistGoal } from './specialist-goal-candidate.js';
+import type { SpecialistHandoffCoordinator } from '../specialists/specialist-handoff-coordinator.js';
 
 const ERROR_MESSAGES: Record<string, string> = {
   unavailable: 'Sarah träumt noch... Einen Moment.',
@@ -76,6 +80,8 @@ export interface RouterServiceOptions {
   actionResultTimeoutMs?: number;
   shutdownDrainTimeoutMs?: number;
   reminderClock?: ReminderClock;
+  specialistHandoffs?: SpecialistHandoffCoordinator;
+  getSpecialistReadiness?: () => Readonly<Record<SpecialistCapability, DecisionCapability>>;
 }
 
 export class RouterService implements SarahService {
@@ -110,6 +116,8 @@ export class RouterService implements SarahService {
   private shuttingDown = false;
   private readonly actionResultTimeoutMs: number;
   private readonly reminderClock: ReminderClock;
+  private readonly specialistHandoffs?: SpecialistHandoffCoordinator;
+  private readonly getSpecialistReadiness?: RouterServiceOptions['getSpecialistReadiness'];
 
   constructor(
     private context: AppContext,
@@ -125,6 +133,8 @@ export class RouterService implements SarahService {
     const shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs
       ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
     this.reminderClock = options.reminderClock ?? createSystemReminderClock();
+    this.specialistHandoffs = options.specialistHandoffs;
+    this.getSpecialistReadiness = options.getSpecialistReadiness;
     if ('generateWorkerText' in runtimeOrRouterProvider) {
       this.modelRuntime = runtimeOrRouterProvider;
       this.mediaContext = workerProviderOrMediaContext instanceof MediaContext
@@ -238,6 +248,7 @@ export class RouterService implements SarahService {
       isWorkerUnavailable: () => this.isWorkerUnavailable(),
       buildDecisionContext: (envelope) => this.buildCurrentDecisionContext(envelope),
       reminderClock: this.reminderClock,
+      ...(this.specialistHandoffs ? { specialistHandoffs: this.specialistHandoffs } : {}),
     });
   }
 
@@ -269,6 +280,7 @@ export class RouterService implements SarahService {
     if (!this.lifecycleUnsubscribe && typeof this.context.lifecycle?.subscribe === 'function') {
       this.lifecycleUnsubscribe = this.context.lifecycle.subscribe((snapshot) => {
         if (snapshot.state === 'stopping' || snapshot.state === 'stopped') {
+          this.specialistHandoffs?.clear();
           this.coordinator.destroy();
         }
       });
@@ -312,6 +324,7 @@ export class RouterService implements SarahService {
     this.memoryFlow.reset();
     this.mediaContext.clear();
     this.context.actionConfirmations.clear();
+    this.specialistHandoffs?.clear();
     try {
       await this.persistenceRuntime.drainPendingWork(activeTurnId, this.outputFlow.pendingOutput, signal);
       await this.memoryCurator.destroy();
@@ -327,11 +340,13 @@ export class RouterService implements SarahService {
       void this.handleTurnRequest(msg.data);
     } else if (msg.topic === 'turn:cancel') {
       this.context.actionConfirmations.invalidateTurn(msg.data.turnId);
+      this.specialistHandoffs?.invalidateSourceTurn(msg.data.turnId);
       this.actionFlow.clearVisibleSearchForTurn(msg.data.turnId);
       this.coordinator.cancel(msg.data.turnId, msg.data.reason);
     } else if (msg.topic === 'turn:terminal') {
       if (msg.data.status === 'canceled' || msg.data.status === 'error') {
         this.context.actionConfirmations.invalidateTurn(msg.data.turnId);
+        this.specialistHandoffs?.invalidateSourceTurn(msg.data.turnId);
         this.actionFlow.clearVisibleSearchForTurn(msg.data.turnId);
         this.actionFlow.clearReminderFollowupForTurn(msg.data.turnId);
       }
@@ -557,24 +572,57 @@ export class RouterService implements SarahService {
           ? `Diesen Slash-Command kenne ich nicht: ${envelope.command.command}.`
           : null;
 
-      const confirmationIntent = this.context.actionConfirmations.hasSinglePending()
-        ? resolveActionConfirmationIntent(envelope.normalizedText)
+      const actionConfirmationPending = this.context.actionConfirmations.hasSinglePending();
+      const specialistConfirmationPending = this.specialistHandoffs?.hasSinglePending() === true;
+      const pendingConfirmationCount = Number(actionConfirmationPending)
+        + Number(specialistConfirmationPending);
+      const resolvedConfirmationIntent = resolveActionConfirmationIntent(envelope.normalizedText);
+      const confirmationIntent = pendingConfirmationCount === 1
+        ? resolvedConfirmationIntent
         : 'none';
       if (
         confirmationIntent === 'none'
         && envelope.command.kind !== 'confirmation'
-      ) this.context.actionConfirmations.cancelSinglePending();
+        && resolvedConfirmationIntent === 'none'
+      ) {
+        this.context.actionConfirmations.cancelSinglePending();
+        this.specialistHandoffs?.cancelSinglePending();
+      }
       if (envelope.command.kind === 'memory') {
         await this.memoryFlow.handleCommand(envelope, signal);
       } else if (immediateResponse) {
         await this.outputFlow.emitAssistantResponse(envelope.turnId, immediateResponse, signal);
         if (entersIncognito) this.prewarmAnonymousWorker();
       } else if (envelope.command.kind === 'confirmation') {
-        await this.actionFlow.confirmAction(envelope, signal);
+        const specialistId = this.specialistHandoffs?.singleConfirmationId();
+        if (specialistId && envelope.command.arguments.trim() === specialistId) {
+          await this.confirmSpecialistHandoff(envelope, specialistId, signal);
+        } else {
+          await this.actionFlow.confirmAction(envelope, signal);
+        }
       } else if (confirmationIntent === 'confirm') {
-        await this.actionFlow.confirmSpokenAction(envelope, signal);
+        if (specialistConfirmationPending) {
+          await this.confirmSpecialistHandoff(envelope, undefined, signal);
+        } else {
+          await this.actionFlow.confirmSpokenAction(envelope, signal);
+        }
       } else if (confirmationIntent === 'cancel') {
-        await this.actionFlow.cancelPendingAction(envelope, signal);
+        if (specialistConfirmationPending) {
+          this.specialistHandoffs?.cancelSinglePending();
+          await this.outputFlow.emitAssistantResponse(
+            envelope.turnId,
+            'Der Spezialistenauftrag wurde abgebrochen.',
+            signal,
+          );
+        } else {
+          await this.actionFlow.cancelPendingAction(envelope, signal);
+        }
+      } else if (pendingConfirmationCount > 1 && resolvedConfirmationIntent !== 'none') {
+        await this.outputFlow.emitAssistantResponse(
+          envelope.turnId,
+          'Es sind mehrere Bestätigungen offen. Bitte verwende den vollständigen /confirm-Befehl.',
+          signal,
+        );
       } else if (await this.actionFlow.handleReminderCancelFollowup(envelope, signal)) {
         // A structured ambiguity result authorizes exactly one time-only follow-up.
       } else {
@@ -652,6 +700,38 @@ export class RouterService implements SarahService {
     void this.modelRuntime.ensureRole('local_worker').catch(() => {
       console.warn('[Router] Anonymous worker prewarm failed; continuing without prewarm');
     });
+  }
+
+  private async confirmSpecialistHandoff(
+    envelope: TurnEnvelope,
+    confirmationId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const id = confirmationId ?? this.specialistHandoffs?.singleConfirmationId();
+    if (!id || !this.specialistHandoffs) {
+      await this.outputFlow.emitAssistantResponse(
+        envelope.turnId,
+        'Dafür ist kein bestätigbarer Spezialistenauftrag offen.',
+        signal,
+      );
+      return;
+    }
+    const result = await this.specialistHandoffs.confirm(
+      id,
+      envelope.turnId,
+      this.turnDrafts.get(envelope.turnId)?.privateContext ?? this.incognitoActive,
+      signal,
+    );
+    const message = result.ok
+      ? 'Der Spezialistenauftrag wurde gestartet.'
+      : result.code === 'stale'
+        ? 'Die ausgewählte Spezialistenverbindung hat sich geändert. Bitte starte den Auftrag neu.'
+        : result.code === 'private_context'
+          ? 'Im privaten Modus kann ich keinen externen Spezialisten starten.'
+          : result.code === 'expired' || result.code === 'not_found'
+            ? 'Diese Bestätigung ist nicht mehr gültig. Bitte starte den Auftrag neu.'
+            : 'Der Spezialistenauftrag konnte nicht sicher gestartet werden.';
+    await this.outputFlow.emitAssistantResponse(envelope.turnId, message, signal);
   }
 
   private async runTurn(envelope: TurnEnvelope, signal: AbortSignal): Promise<void> {
@@ -743,8 +823,9 @@ export class RouterService implements SarahService {
     }
 
     const requiresPlan = looksLikeBoundedMultiIntentCandidate(text);
+    const requiresSpecialistDecision = looksLikeExplicitSpecialistGoal(text);
     if (this.modelRuntime.snapshot.activeRole === 'local_worker') {
-      if (looksLikeActionCommand(text) || requiresPlan) {
+      if (looksLikeActionCommand(text) || requiresPlan || requiresSpecialistDecision) {
         // Bridge the 9B→2B swap pause with a spoken filler (voice only). The
         // routing target isn't known yet at swap start, so use a short/neutral
         // phrase; the real action announcement follows over the normal path.
@@ -779,6 +860,9 @@ export class RouterService implements SarahService {
       searchAcceptingWork: search?.acceptingWork === true,
       webAccessAllowed: this.context.parsedConfig.trust.webAccessAllowed,
       hasVisibleBrowserResult: this.actionFlow.hasVisibleSearchSession,
+      ...(this.getSpecialistReadiness
+        ? { specialists: this.getSpecialistReadiness() }
+        : {}),
     });
     return buildDecisionContext({
       envelope,
