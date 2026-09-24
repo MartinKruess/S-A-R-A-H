@@ -31,4 +31,18 @@ describe('resolveProfileResponse', () => {
     expect(resolveProfileResponse('Wie heiße ich? Öffne Spotify.', profile('Martin'))).toBeNull();
     expect(resolveProfileResponse('Wie heiße ich; anschließend öffne Spotify.', profile('Martin'))).toBeNull();
   });
+
+  it.each([
+    'Wie ist mein Name, stelle einen Timer auf zehn Minuten',
+    'Wie ist mein Name & stelle einen Timer auf zehn Minuten',
+    'Wie ist mein Name,stelle einen Timer auf zehn Minuten',
+    'Wie ist mein Name&stelle einen Timer auf zehn Minuten',
+    'Kennst du meinen Namen, stelle einen Timer auf zehn Minuten',
+    'Stelle einen Timer auf zehn Minuten, wie ist mein Name?',
+    'Weißt du meinen Namen, stelle einen Timer auf zehn Minuten',
+    'Weißt du, wie ich heiße, stelle einen Timer auf zehn Minuten',
+    'Wie ist mein Name stelle einen Timer auf zehn Minuten',
+  ])('leaves additional requested work to normal routing: %s', (text) => {
+    expect(resolveProfileResponse(text, profile('Martin'))).toBeNull();
+  });
 });

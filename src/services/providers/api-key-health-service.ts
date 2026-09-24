@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { AiConnectionHealth, AiProviderOperationId } from '../../core/ai-provider-contract.js';
 import type { AiProviderConnectionMetadata } from '../integrations/ai-provider-hub-store.js';
 import { createAnthropicClient } from './anthropic/anthropic-text-adapter.js';
+import { createOpenAiClient } from './openai/responses-common.js';
 
 interface ModelPage {
   data: { id: string }[];
@@ -68,11 +69,8 @@ export class ApiKeyHealthService {
   }
 
   private async discover(connection: AiProviderConnectionMetadata, key: string, signal: AbortSignal): Promise<ReadonlySet<string>> {
-    const options = { apiKey: key, maxRetries: 0, timeout: 8_000,
-      ...(this.fetchImpl ? { fetch: this.fetchImpl } : {}) };
     let page: ModelPage = connection.providerId === 'openai'
-      ? await new OpenAI({ ...options, baseURL: 'https://api.openai.com/v1',
-        logLevel: 'off', organization: null, project: null }).models.list({ signal })
+      ? await createOpenAiClient(key, { fetchImpl: this.fetchImpl, timeoutMs: 8_000 }).models.list({ signal })
       : await createAnthropicClient(key, { fetchImpl: this.fetchImpl, timeoutMs: 8_000 }).models.list({ limit: 100 }, { signal });
     const models = new Set<string>();
     for (let count = 0; count < 20; count++) {

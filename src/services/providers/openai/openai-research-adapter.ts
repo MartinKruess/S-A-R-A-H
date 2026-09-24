@@ -2,7 +2,7 @@ import type OpenAI from 'openai';
 import type { Response, ResponseCreateParamsNonStreaming } from 'openai/resources/responses/responses';
 import type { AcceptedSpecialistTaskMetadata, SpecialistAdapterEvent, SpecialistTaskRequest } from '../../../core/specialist-task.js';
 import type { SpecialistAdapterAcceptance, SpecialistAdapterContext, SpecialistResolvedBinding, SpecialistTaskAdapter } from '../../specialists/specialist-task-adapter.js';
-import { createOpenAiClient, responseResult, responseUsage, type OpenAiClientFactory } from './responses-common.js';
+import { createOpenAiClient, responseHasRefusal, responseResult, responseUsage, type OpenAiClientFactory } from './responses-common.js';
 
 interface ActiveResponse {
   readonly client: OpenAI;
@@ -148,6 +148,10 @@ export class OpenAiResearchAdapter implements SpecialistTaskAdapter {
 
   private event(response: Response, context: SpecialistAdapterContext): SpecialistAdapterEvent | null {
     const eventId = `research.${response.status ?? 'unknown'}`;
+    if (['completed', 'failed', 'incomplete'].includes(response.status ?? '') && responseHasRefusal(response)) {
+      context.publishResult?.(responseResult(response));
+      return { eventId: 'research.refused', type: 'failed', code: 'research_refused', usage: responseUsage(response) };
+    }
     switch (response.status) {
       case 'queued': return null;
       case 'in_progress': return { eventId, type: 'running' };

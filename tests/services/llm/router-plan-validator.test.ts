@@ -92,6 +92,63 @@ function output(intents: readonly object[]): string {
 
 describe('compileRouterPlanProposal', () => {
   it.each([
+    ['set_volume', 'Stelle die Systemlautstärke erst morgen auf 20 Prozent'],
+    ['set_volume', 'Stelle die Systemlautstärke auf 20 Prozent, wenn Spotify läuft'],
+    ['spotify_volume', 'Stelle Spotify erst morgen auf 20 Prozent'],
+    ['spotify_volume', 'Stelle Spotify auf 20 Prozent, wenn die Musik läuft'],
+  ])('rejects absolute volume clauses with unsupported conditions: %s / %s', (action, evidence) => {
+    const text = `${evidence} und öffne Spotify`;
+    expect(compileRouterPlanProposal(output([
+      { kind: 'action', action, param: '20', evidence },
+      { kind: 'action', action: 'open_program', param: 'Spotify', evidence: 'öffne Spotify' },
+    ]), envelope(text), dependencies()).ok).toBe(false);
+  });
+
+  it.each([
+    ['Senke Spotify auf 20 Prozent', '-20'],
+    ['Senke Spotify von 80 auf 20 Prozent', '-80'],
+    ['Senke Spotify um 20 Prozent', '-25'],
+    ['Senke Spotify um 20,5 Prozent', '-20'],
+    ['Senke Spotify um 20 oder 30 Prozent', '-20'],
+  ])('rejects the ungrounded relative volume proposal %s=%s', (evidence, param) => {
+    const text = `${evidence} und öffne Spotify`;
+    expect(compileRouterPlanProposal(output([
+      { kind: 'action', action: 'spotify_volume_adjust', param, evidence },
+      { kind: 'action', action: 'open_program', param: 'Spotify', evidence: 'öffne Spotify' },
+    ]), envelope(text), dependencies()).ok).toBe(false);
+  });
+
+  it.each([
+    ['Senke Spotify um 20 Prozent', '-20'],
+    ['Mach Spotify etwas leiser', '-5'],
+    ['Mach Spotify lauter', '25'],
+  ])('compiles the unambiguous relative volume proposal %s=%s', (evidence, param) => {
+    const text = `${evidence} und öffne Spotify`;
+    expect(compileRouterPlanProposal(output([
+      { kind: 'action', action: 'spotify_volume_adjust', param, evidence },
+      { kind: 'action', action: 'open_program', param: 'Spotify', evidence: 'öffne Spotify' },
+    ]), envelope(text), dependencies()).ok).toBe(true);
+  });
+
+  it('compiles only the requested absolute volume target, never its source value', () => {
+    const evidence = 'Setze die Systemlautstärke von 80 auf 20 Prozent';
+    const text = `${evidence} und öffne Spotify`;
+    const proposal = (param: string) => output([
+      { kind: 'action', action: 'set_volume', param, evidence },
+      { kind: 'action', action: 'open_program', param: 'Spotify', evidence: 'öffne Spotify' },
+    ]);
+
+    expect(compileRouterPlanProposal(proposal('80'), envelope(text), dependencies()).ok).toBe(false);
+    const result = compileRouterPlanProposal(proposal('20'), envelope(text), dependencies());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.plan.steps[0]).toMatchObject({
+      kind: 'action',
+      intent: { action: 'set_volume', param: '20', provenance: { validation: 'semantic_grounding' } },
+    });
+  });
+
+  it.each([
     {
       evidence: 'übrigens',
       proposal: { kind: 'answer', evidence: 'übrigens' },

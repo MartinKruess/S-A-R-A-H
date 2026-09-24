@@ -208,18 +208,18 @@ export class RouterWorkerFlow {
   ): Promise<boolean> {
     let outputStarted = false;
     try {
-      await this.runWorker(envelope, currentUser, signal, () => {
+      return await this.runWorker(envelope, currentUser, signal, () => {
         outputStarted = true;
         const draft = this.options.drafts.get(envelope.turnId);
         if (draft) draft.workerOutputStarted = true;
       }, bufferUntilComplete);
     } catch (error) {
       throwIfAborted(signal);
+      if (error instanceof Error && error.name === 'AbortError') throw error;
       if (outputStarted || !this.options.isWorkerUnavailable()) throw error;
       await this.options.emitAssistantResponse(envelope.turnId, WORKER_UNAVAILABLE_MESSAGE, signal);
       return false;
     }
-    return true;
   }
 
   private async runWorker(
@@ -228,16 +228,15 @@ export class RouterWorkerFlow {
     signal: AbortSignal,
     onOutputStarted?: () => void,
     bufferUntilComplete = false,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { context, serviceId, modelRuntime, drafts } = this.options;
     const { turnId, mode } = envelope;
     const cloud = drafts.get(turnId)?.privateContext === false
       ? this.options.selectCloudText?.() : null;
     await this.options.waitForMemoryPolicy(signal);
-    const systemPrompt = buildSystemPrompt(context.parsedConfig, mode);
     const responseStyle = context.parsedConfig.personalization.responseStyle;
-    const { messages, numPredict } = buildRouterContext({
-      systemPrompt,
+    const localContext = cloud ? null : buildRouterContext({
+      systemPrompt: buildSystemPrompt(context.parsedConfig, mode),
       responseStyle,
       currentUser,
       memoryAllowed: context.parsedConfig.trust.memoryAllowed,
@@ -252,6 +251,7 @@ export class RouterWorkerFlow {
       ?? { hasSensitiveInput: false, literals: [] };
     const bufferSensitiveOutput = sensitiveGuard.literals.length > 0;
     const bufferOutput = bufferSensitiveOutput || bufferUntilComplete;
+    let succeeded = false;
 
     await this.options.enqueueOutput(async () => {
       if (!this.options.isTurnOperational(turnId, signal)) return;
@@ -267,10 +267,19 @@ export class RouterWorkerFlow {
           });
         }
       };
-      const { fullText, tookMs } = cloud
-        ? await cloud(currentUser, signal, onChunk)
-        : await modelRuntime.streamWorker(messages, responseStyle, onChunk, signal, numPredict);
+      let generated: { fullText: string; tookMs: number };
+      let completed: boolean;
+      if (cloud) {
+        const result = await cloud(currentUser, signal, onChunk);
+        generated = result;
+        completed = result.status === 'completed';
+      } else {
+        if (!localContext) throw new Error('Local worker context is missing');
+        generated = await modelRuntime.streamWorker(localContext.messages, responseStyle, onChunk, signal, localContext.numPredict);
+        completed = true;
+      }
       if (!this.options.isTurnOperational(turnId, signal)) return;
+      const { fullText, tookMs } = generated;
       const protectedFullText = redactSensitiveLiterals(fullText, sensitiveGuard);
       if (bufferOutput && protectedFullText) {
         onOutputStarted?.();
@@ -290,7 +299,9 @@ export class RouterWorkerFlow {
         sequence,
         fullText: protectedFullText,
       });
+      succeeded = completed;
     });
+    return succeeded;
   }
 
   private async executePlan(

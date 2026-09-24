@@ -87,6 +87,34 @@ describe('AI provider contracts', () => {
     }).success).toBe(false);
   });
 
+  it.each([
+    ['perplexity/sonar', true],
+    ['gpt-4.1-mini', true],
+    ['claude-sonnet-4-20250514', true],
+    ['perplexity/other', false],
+    ['openai/gpt-4.1-mini', false],
+    ['../sonar', false],
+    ['perplexity/../sonar', false],
+    ['https://example.com/model', false],
+    ['C:\\models\\sonar', false],
+    ['perplexity/sonar\nextra', false],
+  ] as const)('validates bounded model identifier %s as %s', (modelId, allowed) => {
+    expect(ReplaceAiBindingsInputSchema.safeParse({
+      expectedRevision: 0,
+      bindings: [{
+        bindingId: UUID,
+        connectionId: UUID,
+        role: 'research',
+        operationId: 'perplexity_agent_research',
+        modelProfile: 'provider_default',
+        modelId,
+        enabled: true,
+        position: 0,
+        revision: 1,
+      }],
+    }).success).toBe(allowed);
+  });
+
   it('rejects catalog operations assigned to another provider', () => {
     expect(AiProviderCatalogEntrySchema.safeParse({
       id: 'openai',

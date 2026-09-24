@@ -12,11 +12,29 @@ export interface TextGenerationContext {
 }
 export interface TextGenerationResult {
   readonly fullText: string;
-  readonly status: 'completed' | 'incomplete';
+  readonly status: 'completed' | 'incomplete' | 'refused';
   readonly usage?: SpecialistTaskUsage;
 }
 export interface TextGenerationAdapter {
   generate(request: TextGenerationRequest, context: TextGenerationContext): Promise<TextGenerationResult>;
+}
+
+/**
+ * @param iterator - Provider stream awaiting its next event.
+ * @param signal - Caller cancellation combined with the whole-request deadline.
+ * - Bounds body reads even when a transport does not settle after cancellation.
+ * @returns Next event while the generation remains active.
+ * @category External Integration
+ */
+export async function nextTextGenerationEvent<T>(iterator: AsyncIterator<T>, signal: AbortSignal): Promise<IteratorResult<T>> {
+  signal.throwIfAborted();
+  let rejectAbort: (() => void) | undefined;
+  const abort = new Promise<IteratorResult<T>>((_, reject) => {
+    rejectAbort = () => reject(new Error('provider_stream_aborted'));
+    signal.addEventListener('abort', rejectAbort, { once: true });
+  });
+  try { return await Promise.race([iterator.next(), abort]); }
+  finally { if (rejectAbort) signal.removeEventListener('abort', rejectAbort); }
 }
 
 /** Safe failure retaining partial output without permitting an automatic paid retry. */

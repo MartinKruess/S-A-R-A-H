@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageDeltaUsage, Usage } from '@anthropic-ai/sdk/resources/messages';
 import type { SpecialistTaskUsage } from '../../../core/specialist-task.js';
-import { TextGenerationError, type TextGenerationAdapter, type TextGenerationContext,
+import { nextTextGenerationEvent, TextGenerationError, type TextGenerationAdapter, type TextGenerationContext,
   type TextGenerationRequest, type TextGenerationResult } from '../text-generation-adapter.js';
 
 export type AnthropicClientFactory = (apiKey: string) => Anthropic;
@@ -21,18 +21,6 @@ export function createAnthropicClient(apiKey: string,
       return transport(input, { ...init, headers, redirect: 'error' });
     },
   });
-}
-
-/** Races a body read against the whole-request deadline, not merely response headers. */
-async function nextWithAbort<T>(iterator: AsyncIterator<T>, signal: AbortSignal): Promise<IteratorResult<T>> {
-  signal.throwIfAborted();
-  let rejectAbort: (() => void) | undefined;
-  const abort = new Promise<IteratorResult<T>>((_, reject) => {
-    rejectAbort = () => reject(new Error('provider_stream_aborted'));
-    signal.addEventListener('abort', rejectAbort, { once: true });
-  });
-  try { return await Promise.race([iterator.next(), abort]); }
-  finally { if (rejectAbort) signal.removeEventListener('abort', rejectAbort); }
 }
 
 /** Text-only Messages implementation; the shared cloud lane owns privacy, lease and accounting. */
@@ -92,7 +80,7 @@ export class AnthropicTextAdapter implements TextGenerationAdapter {
       try {
         const iterator = stream[Symbol.asyncIterator]();
         while (true) {
-          const next = await nextWithAbort(iterator, signal);
+          const next = await nextTextGenerationEvent(iterator, signal);
           if (next.done) break;
           const event = next.value;
           signal.throwIfAborted();

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { PerplexityResearchAdapter } from '../../../../src/services/providers/perplexity/perplexity-research-adapter.js';
 import { createPerplexityClient, PerplexityResponseSchema, perplexityResult, perplexityUsage } from '../../../../src/services/providers/perplexity/perplexity-common.js';
 import { PERPLEXITY_STORAGE_DISCLOSURE } from '../../../../src/core/perplexity-policy.js';
@@ -23,7 +23,20 @@ function fixture(payloads: object[]) {
   const context = { resolveCredential: () => 'test-secret', isAllowed: () => true, emit: vi.fn(), publishResult: vi.fn() };
   return { adapter, fetchImpl, context };
 }
+afterEach(() => vi.unstubAllEnvs());
+
 describe('Perplexity native research', () => {
+  it('keeps the selected key authoritative over ambient SDK credentials and custom headers', async () => {
+    vi.stubEnv('PERPLEXITY_API_KEY', 'ambient-key');
+    vi.stubEnv('PERPLEXITY_CUSTOM_HEADERS', 'aUtHoRiZaTiOn: Bearer other-ambient-key\nX-Injected: ambient');
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(response()));
+    const adapter = new PerplexityResearchAdapter((key) => createPerplexityClient(key, { fetchImpl }));
+    await adapter.start(request(), fixture([]).context);
+    const headers = new Headers(fetchImpl.mock.calls[0]![1]?.headers);
+    expect(headers.get('authorization')).toBe('Bearer test-secret');
+    expect(headers.get('x-injected')).toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
   it('sends one native stored bounded request and publishes only after activation', async () => {
     const { adapter, fetchImpl, context } = fixture([response()]);
     expect(await adapter.start(request(), context)).toEqual({ remoteRef: 'resp_test', status: 'running' });

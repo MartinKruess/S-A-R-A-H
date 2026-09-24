@@ -1,11 +1,11 @@
 import type { SarahConfig } from '../../core/config-schema.js';
 
 const NAME_QUESTION_PATTERNS: readonly RegExp[] = [
-  /\bwie (?:heiße|heisse|heiß|heiss) ich\b/i,
-  /\bwie ist mein name\b/i,
-  /\bwas ist mein name\b/i,
-  /\bkennst du meinen namen\b/i,
-  /\bweißt du\b.*\b(?:meinen namen|wie ich (?:heiße|heisse))\b/i,
+  /^wie (?:heiße|heisse|heiß|heiss) ich[.!?]*$/i,
+  /^wie ist mein name[.!?]*$/i,
+  /^was ist mein name[.!?]*$/i,
+  /^kennst du meinen namen[.!?]*$/i,
+  /^weißt du(?: eigentlich)?(?: meinen namen|,? wie ich (?:heiße|heisse))[.!?]*$/i,
 ];
 
 /**
@@ -25,11 +25,6 @@ export function resolveProfileResponse(
 ): string | null {
   const normalized = text.normalize('NFC').trim();
   if (!NAME_QUESTION_PATTERNS.some((pattern) => pattern.test(normalized))) return null;
-  if (
-    /\b(?:und|aber|außerdem|danach|dann|anschließend|zusätzlich|sowie)\b/iu.test(normalized)
-    || /[.!?;:]\s*\p{L}/u.test(normalized)
-    || /[\r\n]/u.test(normalized)
-  ) return null;
 
   const name = profile.displayName.replace(/[\r\n\t]/g, ' ').trim().slice(0, 200);
   return name ? `Du heißt ${name}.` : 'Du hast mir noch keinen Namen genannt.';

@@ -30,7 +30,10 @@ export function createPerplexityClient(apiKey: string, options: { fetchImpl?: ty
     fetch: async (input, init) => {
       const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       if (url.origin !== 'https://api.perplexity.ai') throw new Error('perplexity_origin_denied');
-      return fetchImpl(input, { ...init, redirect: 'error' });
+      // Custom SDK environment headers must not replace the selected Sarah credential.
+      const headers = new Headers({ authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json', accept: 'application/json' });
+      return fetchImpl(input, { ...init, headers, redirect: 'error' });
     },
   });
 }

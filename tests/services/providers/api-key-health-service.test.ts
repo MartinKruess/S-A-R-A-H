@@ -21,6 +21,7 @@ describe('API model health discovery', () => {
     vi.stubEnv('OPENAI_LOG', 'debug');
     vi.stubEnv('OPENAI_ORG_ID', 'ambient-org');
     vi.stubEnv('OPENAI_PROJECT_ID', 'ambient-project');
+    vi.stubEnv('OPENAI_CUSTOM_HEADERS', 'Authorization: Bearer ambient-openai-key\nOpenAI-Organization: other-org\nOpenAI-Project: other-project\nX-Injected: ambient');
     const requests: Headers[] = [];
     const fetch: typeof globalThis.fetch = async (_input, init) => {
       requests.push(new Headers(init?.headers));
@@ -35,6 +36,18 @@ describe('API model health discovery', () => {
     expect(requests[1]!.get('openai-organization')).toBeNull();
     expect(requests[1]!.get('openai-project')).toBeNull();
     expect(requests[1]!.get('authorization')).toBe('Bearer openai-fixture');
+    expect(requests[1]!.get('x-injected')).toBeNull();
+  });
+  it('cannot verify a rejected saved OpenAI key through an ambient valid identity', async () => {
+    vi.stubEnv('OPENAI_CUSTOM_HEADERS', 'Authorization: Bearer valid-ambient-key');
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) =>
+      new Headers(init?.headers).get('authorization') === 'Bearer valid-ambient-key'
+        ? page(['gpt-test']) : Response.json({ error: { message: 'Rejected', type: 'authentication_error' } }, { status: 401 }));
+    const service = new ApiKeyHealthService(fetch);
+    const openai = { ...connection, providerId: 'openai' as const };
+    expect(await service.check(openai, 'invalid-saved-key')).toEqual({ state: 'invalid_credentials' });
+    expect(service.isModelSupported('openai_responses_text', 'gpt-test', openai)).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
   it('discovers every bounded page and binds models to the exact account generation', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(page(['claude-first'], true))

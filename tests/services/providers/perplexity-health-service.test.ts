@@ -14,9 +14,19 @@ function response(status = 'completed'): Response {
   return Response.json({ id: 'probe-1', model: 'perplexity/sonar', status,
     usage: { input_tokens: 3, output_tokens: 1 } });
 }
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
 
 describe('Perplexity paid authentication probe', () => {
+  it('cannot verify a rejected saved key through an ambient valid identity', async () => {
+    vi.stubEnv('PERPLEXITY_CUSTOM_HEADERS', 'Authorization: Bearer valid-ambient-key');
+    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) =>
+      new Headers(init?.headers).get('authorization') === 'Bearer valid-ambient-key'
+        ? response() : Response.json({ error: 'Rejected' }, { status: 401 }));
+    const service = new PerplexityHealthService(vi.fn(), fetch);
+    expect(await service.check(connection, 'invalid-saved-key', consent)).toMatchObject({ state: 'invalid_credentials' });
+    expect(service.isModelSupported('perplexity/sonar', connection)).toBe(false);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('never sends a paid request without exact consent, generation and provider', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const usage = vi.fn();

@@ -155,7 +155,9 @@ export const AiRoleBindingSchema = z.object({
   role: AiProviderRoleSchema,
   operationId: AiProviderOperationIdSchema,
   modelProfile: z.literal('provider_default'),
-  modelId: z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/u).optional(),
+  // Perplexity's native identifier is namespaced; arbitrary paths remain invalid.
+  modelId: z.string().trim().min(1).max(100)
+    .regex(/^(?:[a-zA-Z0-9][a-zA-Z0-9._:-]*|perplexity\/sonar)$/u).optional(),
   cloudTextOptIn: z.boolean().optional(),
   enabled: z.boolean(),
   position: z.number().int().min(0).max(9),

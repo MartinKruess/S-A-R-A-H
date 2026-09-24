@@ -282,6 +282,9 @@ function startPrimaryInstance(): void {
   aiProviderHub = providers.hub;
   registerCodexConnectionHandlers(ipcMain, providers.codex);
   appContext.lifecycle.registerCleanup('codex-process', () => providers.codex.close(), 'before_services');
+  appContext.lifecycle.registerCleanup('cloud-text', async () => {
+    await providers.cloudText.destroy();
+  }, 'before_services');
   appContext.lifecycle.registerCleanup('ai-provider-hub', () => {
     aiProviderHub?.destroy();
     aiProviderHub = null;

@@ -51,6 +51,13 @@ const LOCK_SCREEN_CONTROL_TOKENS: ReadonlySet<string> = new Set([
   'mein', 'meine', 'meinen', 'meinem', 'meiner', 'meines',
   'bildschirm', 'computer', 'pc',
 ]);
+const VOLUME_REQUEST_CONTROL_TOKENS: ReadonlySet<string> = new Set([
+  'bitte', 'doch', 'du', 'einmal', 'jetzt', 'mal', 'mir', 'sofort',
+  'kann', 'kannst', 'konntest', 'soll', 'sollst', 'wurdest',
+  'der', 'die', 'das', 'den', 'dem', 'des',
+  'mein', 'meine', 'meinen', 'meinem', 'meiner', 'meines',
+  'lautstarke', 'volume', 'prozent', 'prozentpunkte',
+]);
 const LIST_REMINDER_CONTROL_TOKENS: ReadonlySet<string> = new Set([
   'bitte', 'du', 'fur', 'habe', 'haben', 'ich', 'mir', 'noch', 'nur', 'sind',
   'der', 'die', 'das', 'den', 'dem', 'des',
@@ -99,8 +106,62 @@ function semanticSearchTokens(value: string): readonly string[] | null {
   ));
 }
 
-function containsExactInteger(text: string, value: number): boolean {
-  return lexicalTokens(text).some((token) => /^\d{1,3}$/u.test(token) && Number(token) === value);
+function isVolumeRequestControlToken(token: string): boolean {
+  return VOLUME_REQUEST_CONTROL_TOKENS.has(token)
+    || /^(?:mach|stell|setz|senk|reduzier|erhoh)\p{L}*$/u.test(token)
+    || /^\d{1,3}$/u.test(token);
+}
+
+/**
+ * Binds one relative change to its direction and explicit "um" magnitude.
+ * Unqualified changes retain the established 25-point and "etwas" 5-point defaults.
+ *
+ * @category Validation
+ */
+function relativeVolumeChange(text: string): number | null {
+  const tokens = lexicalTokens(text);
+  if (!tokens.every((token) => isVolumeRequestControlToken(token)
+    || /^(?:spotify|musik|leiser|lauter|um|etwas)$/u.test(token))) return null;
+  const less = /\b(?:leiser|senk\p{L}*|reduzier\p{L}*)\b/u.test(text);
+  const more = /\b(?:lauter|erhoh\p{L}*)\b/u.test(text);
+  if (less === more) return null;
+  const direction = less ? -1 : 1;
+  const numbers = text.match(/\d+(?:[.,]\d+)?/gu) ?? [];
+  const magnitudeWords = tokens.filter((token) => token === 'um');
+  if (numbers.length > 0 || magnitudeWords.length > 0) {
+    const magnitude = /\bum\s+(\d{1,3})\b/u.exec(text);
+    if (!magnitude || magnitudeWords.length !== 1 || numbers.length !== 1
+      || magnitude[1] !== numbers[0] || tokens.includes('etwas')) return null;
+    return direction * Number(magnitude[1]);
+  }
+  if (tokens.includes('prozent') || tokens.includes('prozentpunkte')) return null;
+  const slight = /\betwas\s+(?:leiser|lauter)\b/u.test(text);
+  if (tokens.includes('etwas') && !slight) return null;
+  return direction * (slight ? 5 : 25);
+}
+
+/**
+ * Binds an absolute percentage to "auf", optionally preceded by "von".
+ * Consumes the complete clause; times, conditions and unsupported numeric references require clarification.
+ *
+ * @category Validation
+ */
+function absoluteVolumeTarget(text: string, action: 'spotify_volume' | 'set_volume'): number | null {
+  const targetToken = action === 'spotify_volume'
+    ? /^(?:spotify|musik)$/u
+    : /^(?:system|computer|pc)(?:lautstarke)?$/u;
+  if (!lexicalTokens(text).every((token) => isVolumeRequestControlToken(token)
+    || token === 'auf' || token === 'von' || targetToken.test(token))) return null;
+  const targets = [...text.matchAll(
+    /\b(?:von\s+(\d{1,3})\s*(?:(?:prozent|%)\s*)?)?auf\s+(\d{1,3})\b/gu,
+  )];
+  if (targets.length !== 1) return null;
+  const target = targets[0]!;
+  const expectedNumbers = target[1] === undefined ? [target[2]!] : [target[1], target[2]!];
+  const numbers = text.match(/\d+(?:[.,]\d+)?/gu) ?? [];
+  if (numbers.length !== expectedNumbers.length
+    || numbers.some((number, index) => number !== expectedNumbers[index])) return null;
+  return Number(target[2]);
 }
 
 function removeFirstTokenPhrase(
@@ -204,20 +265,12 @@ function groundSimpleAction(action: ActionName, param: string, effectiveText: st
     return targetGrounded
       && VOLUME_OPERATION_SIGNAL.test(normalized)
       && Number.isInteger(value)
-      && containsExactInteger(effectiveText, value);
+      && absoluteVolumeTarget(normalized, action) === value;
   }
   if (action === 'spotify_volume_adjust') {
     const value = Number(param);
     if (!SPOTIFY_SIGNAL.test(normalized) || !Number.isInteger(value) || value === 0) return false;
-    const explicitMagnitude = containsExactInteger(effectiveText, Math.abs(value));
-    const less = /\b(?:leiser|senk\p{L}*|reduzier\p{L}*)\b/u.test(normalized);
-    const more = /\b(?:lauter|erhoh\p{L}*)\b/u.test(normalized);
-    if (explicitMagnitude) return value < 0 ? less : more;
-    if (value === -5) return /\betwas\s+leiser\b/u.test(normalized);
-    if (value === 5) return /\betwas\s+lauter\b/u.test(normalized);
-    if (value === -25) return less && !/\betwas\s+leiser\b/u.test(normalized);
-    if (value === 25) return more && !/\betwas\s+lauter\b/u.test(normalized);
-    return false;
+    return relativeVolumeChange(normalized) === value;
   }
   if (action === 'list_reminders') {
     const scope = parseListReminderParam(param);

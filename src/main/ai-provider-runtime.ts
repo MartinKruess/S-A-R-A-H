@@ -8,7 +8,7 @@ import { SpecialistHandoffCoordinator } from '../services/specialists/specialist
 import { OpenAiTextAdapter } from '../services/providers/openai/openai-text-adapter.js';
 import { OpenAiResearchAdapter } from '../services/providers/openai/openai-research-adapter.js';
 import type { TextGenerationAdapter } from '../services/providers/text-generation-adapter.js';
-import { selectCloudText } from '../services/providers/cloud-text-service.js';
+import { CloudTextService } from '../services/providers/cloud-text-service.js';
 import type { DecisionCapability } from '../core/decision-context.js';
 import type { SpecialistCapability } from '../core/intent-plan.js';
 import { CodexConnectionService } from './codex-connection-service.js';
@@ -35,6 +35,7 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
   const perplexityHealth = new PerplexityHealthService((entry) => { usage.record(entry); });
   const perplexityResearch = new PerplexityResearchAdapter();
   let runtime: SpecialistRuntimeService | undefined;
+  let cloudText: CloudTextService | undefined;
   const hub = new AiProviderHubService(store, credentials, {
     isOperationReady: (operation) => textAdapters.has(operation)
       || (['openai_deep_research', 'perplexity_agent_research'].includes(operation) && webAllowed()),
@@ -43,7 +44,11 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
     beforeConnectionChange: async (id) => {
       health.invalidate(id);
       perplexityHealth.invalidate(id);
-      return runtime ? runtime.cancelConnection(id) : true;
+      const drained = await Promise.all([
+        runtime?.cancelConnection(id) ?? true,
+        cloudText?.cancelConnection(id) ?? true,
+      ]);
+      return drained.every(Boolean);
     },
     managedSessionAvailable: (id) => codex?.available(id) === true,
     healthCheck: async (connection, key, input) => {
@@ -55,6 +60,7 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
         ? perplexityHealth.check(connection, key, input) : health.check(connection, key);
     },
   });
+  cloudText = new CloudTextService(hub, textAdapters, (entry) => { usage.record(entry); });
   const resolve = (role: 'coding' | 'research') => {
     if (role === 'research' && !webAllowed()) return null;
     const binding = hub.resolveBinding(role);
@@ -80,7 +86,8 @@ export function createAiProviderRuntime(userData: string, store: AiProviderHubSt
       modelName: binding.modelId, backgroundConsent: role === 'research',
       ...(binding.operationId === 'perplexity_agent_research' ? { storageDisclosureVersion: PERPLEXITY_STORAGE_DISCLOSURE.version } : {}) } : null;
   });
-  return {hub, runtime, handoffs, codex, selectCloudText: () => selectCloudText(hub, textAdapters, (entry) => { usage.record(entry); }),
+  const textService = cloudText;
+  return {hub, runtime, handoffs, codex, cloudText: textService, selectCloudText: () => textService.select(),
     readiness: (): Readonly<Record<SpecialistCapability, DecisionCapability>> => ({
       coding: {state:'unavailable', reason:'no_adapter'},
       research: resolve('research') ? {state:'available', reason:'ready'} : {state:'unavailable', reason:'no_adapter'},
