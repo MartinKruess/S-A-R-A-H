@@ -416,7 +416,7 @@ export class SpecialistRuntimeService {
         }
         try {
           const event = await this.runProviderOperation(
-            (operationSignal) => retrieve(
+            (operationSignal) => retrieve.call(adapter,
               metadata,
               this.contextFor(active),
               operationSignal,
